@@ -150,9 +150,28 @@ pub enum ServerMessage {
 trusted, and the divergence between it and the server's arrival timestamp is
 itself the signal for exploit class 4.
 
-Encoded `ServerMessage::View` is padded to fixed size buckets: without padding,
-message length leaks the number of nearby entities, which is a maphack through
-the side door (see `MILESTONES.md` M7).
+**The traffic-shape invariant: one message per player per tick, at a constant
+cadence, of a constant encoded size, independent of content.** Both halves are
+load bearing, and padding alone is not the property:
+
+- Padding to fixed size buckets closes the *length* channel. Without it, message
+  length is close to a linear readout of the number of visible entities.
+- Constant cadence closes the *count and timing* channel, and that channel is
+  the one padding does nothing about. A server that sends a `View` only when
+  something changed, or that emits an extra message when an event fires, leaks
+  the number of visible entities through message counts and inter-arrival times
+  no matter how well each individual message is padded.
+
+So the server emits a `View` every tick for every connected player, whether or
+not anything happened, at the tick rate rather than at the rate the world
+produces news. Events do not get their own messages: they ride inside the tick
+message or they wait for the next one. "Nothing visible" and "six entities
+visible" must be indistinguishable to an observer who counts and times packets
+without reading them.
+
+The cost is bandwidth spent on nothing, which at 3v3 is not a cost. The exploit
+that must fail against this is scheduled in `MILESTONES.md` M7: recovering the
+number of nearby entities from message sizes *and* arrival times.
 
 ### `replay`
 
@@ -223,6 +242,10 @@ Each is a test or a lint, not a convention:
 6. `cargo tree -p client` shows no path to `anticheat`.
 7. Every detector in `anticheat` has an exploit in `cheat-client` that fails
    against it in CI.
+8. Every `View` message has the same encoded size, and the server emits exactly
+   one per connected player per tick. Checked by the M7 traffic-analysis
+   exploit, which must fail to recover the visible-entity count from a recorded
+   session's message sizes and arrival times.
 
 ## Deliberate non-abstractions
 
