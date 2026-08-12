@@ -174,6 +174,15 @@ it later means auditing every path that touches `State`.
 `State::digest()` rather than encoded bytes; replay storage holds seed and inputs,
 never snapshots. A CI check greps for a serialization derive on the state types.
 
+That grep was true by vacuity until M2 — `sim` had no serialization dependency,
+so nothing in it *could* derive one, and the check had never rejected anything.
+It has now been exercised: a `#[derive(Serialize)]` placed on `State` and then
+removed produced `a serialization derive reached sim outside the view types
+(docs/RISKS.md R5)`, naming the line. The view types arrived with M2 and are
+excluded from the grep by path, and they carry a hand-written encoding rather
+than a derive, so `sim`'s `[dependencies]` table is still empty — which is the
+stronger statement, and is itself now asserted by `cargo tree` in CI.
+
 The two pressures that will push back — mid-match reconnection and test fixtures
 — are answered in advance in `ARCHITECTURE.md`, "The `State` escape hatch",
 rather than left to be improvised the week they bite: reconnection resends a
@@ -249,6 +258,13 @@ iterator inside `sim` breaks R1 without any float appearing in your code.
 `serde` for the view types. Game frameworks are allowed in `client` only. The
 determinism job is the detector, and it must run on every change to `sim`, not
 on a schedule.
+
+In practice `sim` has taken neither of the two allowances: the fixed-point type
+is written out, and the M2 view types encode themselves by hand rather than
+deriving. So the hedge is enforced at its strongest — `cargo tree -p sim --edges
+normal` must print one node, checked in `ci` and exercised against a path
+dependency on `protocol`. The permission to add `serde` for the view types
+stands and is deliberately unused until a transport picks a codec (M3).
 
 ## R10 — Signature of `step`
 

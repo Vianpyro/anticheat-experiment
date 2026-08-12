@@ -10,7 +10,7 @@ CI is not a delivered detector.**
 
 ## Current state
 
-**M0 and M1 are reached.** The workspace exists with
+**M0, M1 and M2 are reached.** The workspace exists with
 its seven crates; the toolchain is pinned; `ci`, `pr-hygiene` and `determinism`
 are the only workflows and none holds write permissions; `LICENSE`,
 `SECURITY.md` and `CONTRIBUTING.md` exist. The template's super-linter, its
@@ -42,7 +42,35 @@ test that fails. Both are constructions rather than assumptions now, which is
 recorded here because it is the argument for raising the budget in the first
 place.
 
-The other six crates are still empty. Next is M2, the visibility projection.
+**The determinism matrix has since been shown to work.** Agreement on the first
+attempt was the outcome to be least smug about, so a divergence was manufactured
+on a throwaway branch: `f64` libm transcendentals folded into a field no rule
+reads, so that every target simulated the same match and only the digest moved.
+The `fixture` job went red on all three with three distinct digests. The full
+record, including which function diverged and the expectation that turned out to
+be wrong, is in `RISKS.md` beside R1.
+
+**M2 is reached.** `sim::view::view_for` is the projection, `State` carries the
+events of the tick that produced it, and `sim/tests/visibility.rs` asserts the
+exit criterion over both M1 fixtures — six players, every tick, entity list and
+events alike. Two things about that test are the reason it counts as reached
+rather than written. It re-derives the visibility predicate instead of calling
+`sim`'s, so it is not a function agreeing with itself. And every assertion has a
+completeness half, because a culling test that only checks absences passes
+against a projection that returns nothing: the run reports 24 822 sightings
+withheld, 30 events withheld and 228 delivered, and fails if those numbers
+collapse.
+
+Two guards that had never rejected anything were exercised rather than trusted.
+The `Serialize` grep, given a deliberate `#[derive(Serialize)]` on `State`,
+reported `a serialization derive reached sim outside the view types`. `sim`'s
+dependency invariant — read from an empty `[dependencies]` table until now — is
+a `cargo tree -p sim --edges normal` assertion in `ci`, and adding a path
+dependency on `protocol` turns it red.
+
+The other six crates are still empty. Next is M3, the server and the protocol,
+which is where the traffic-shape invariant lands: culling is worth nothing if
+message sizes and arrival times report the number of visible entities anyway.
 
 ---
 
@@ -109,6 +137,25 @@ outside that player's vision appears anywhere in `view_for`'s output — includi
 in derived events (damage, casts, sounds). A size assertion bounds the encoded
 `PlayerView` so that an accidental full-state leak fails the test rather than
 merely inflating the packet.
+
+Reached. Two things the criterion did not say, which the work had to decide:
+
+- **Derived events had to be built before they could be culled.** Nothing
+  produced them at M1, and an empty event list satisfies the criterion without
+  meaning anything. They live in `State`, and therefore under the digest, for
+  the reasons in `ARCHITECTURE.md`.
+- **The size assertion is a bound plus a comparison, not a bound alone.** With
+  six champions and four towers there is no dramatic difference between a leaked
+  full state and a legitimate view, so a constant on its own proves little. Each
+  view is also encoded a second time under a vision radius wide enough to cover
+  the map and required to be no larger than that — a projection that stopped
+  culling stops being smaller than an omniscient one, on 5 000+ of the fixture's
+  6 000 views.
+
+`view_for` is where the projection is; nothing sends it anywhere yet. The
+transport, the constant message size and the constant cadence are M3, and
+`ARCHITECTURE.md` is explicit that the culling here is worth nothing without
+them.
 
 ## M3 — Server, protocol, three clients · 4–5 weeks
 
