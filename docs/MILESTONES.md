@@ -10,7 +10,7 @@ CI is not a delivered detector.**
 
 ## Current state
 
-**M0 is reached. M1 is written but not yet reached.** The workspace exists with
+**M0 and M1 are reached.** The workspace exists with
 its seven crates; the toolchain is pinned; `ci`, `pr-hygiene` and `determinism`
 are the only workflows and none holds write permissions; `LICENSE`,
 `SECURITY.md` and `CONTRIBUTING.md` exist. The template's super-linter, its
@@ -23,15 +23,24 @@ are the only workflows and none holds write permissions; `LICENSE`,
 carries its own `Rules` value to do it — check their digests against constants
 committed in the repository.
 
-**Why M1 is not yet reached.** Its exit criterion is a criterion about three
-platforms, and until this branch is pushed only one of them has ever run the
-fixture: every digest in the repository was recorded on x86-64 Linux. A green
-local test is evidence that the simulation is deterministic *on this machine*,
-which is the claim R1 says is worth the least. The milestone is reached when the
-`determinism` workflow reports the same digests from `ubuntu-latest` x86-64,
-`windows-latest` x86-64 and a macOS aarch64 runner, and not before; a red
-aarch64 job at that point is not a setback but the whole reason the target is in
-the matrix.
+**What made M1 reached rather than written.** Every digest in the repository was
+recorded on x86-64 Linux, and until the `determinism` workflow had run, a green
+local test was evidence that the simulation is deterministic *on this machine* —
+the claim R1 says is worth the least. It has now run: `ubuntu-latest` x86-64,
+`windows-latest` x86-64 and `macos-14` aarch64 report byte-identical digests for
+both fixtures against the constants committed here. The second architecture
+agreed on the first attempt, which is the outcome to be least smug about; it
+means the aarch64 job has caught nothing yet, not that there is nothing for it to
+catch.
+
+The `properties` job did fail, on all three targets at once, the first time it
+ran at CI's case budget — and not with a counter-example: two properties
+discarded about half their samples through `prop_assume!`, and proptest's global
+reject cap does not scale with the case count, so raising the budget aborted the
+tests instead of running them. A test that stops running looks nothing like a
+test that fails. Both are constructions rather than assumptions now, which is
+recorded here because it is the argument for raising the budget in the first
+place.
 
 The other six crates are still empty. Next is M2, the visibility projection.
 
