@@ -10,14 +10,19 @@ CI is not a delivered detector.**
 
 ## Current state
 
-**M0 is implemented.** The workspace exists with its seven crates, all empty;
-the toolchain is pinned; `ci` and `pr-hygiene` are the only workflows and
-neither holds write permissions; `LICENSE`, `SECURITY.md` and `CONTRIBUTING.md`
-exist. The template's super-linter, its `.dockerignore` and its branch-deleting
-VS Code task are gone.
+**M0 and M1 are implemented.** The workspace exists with its seven crates; the
+toolchain is pinned; `ci`, `pr-hygiene` and `determinism` are the only
+workflows and none holds write permissions; `LICENSE`, `SECURITY.md` and
+`CONTRIBUTING.md` exist. The template's super-linter, its `.dockerignore` and
+its branch-deleting VS Code task are gone.
 
-Nothing else exists yet: no simulation, no protocol, no server, no exploits.
-Next is M1.
+`sim` holds the fixed-point type, the seeded generator, `State`, `Input`,
+`step`, the rules constants and their hash, and a hand-written SHA-256 behind
+`State::digest()`. It has no dependencies at all. Two fixtures — a scripted
+1000-tick match and a shorter one whose job is to kill somebody — run on all
+three targets against digests committed in the repository.
+
+The other six crates are still empty. Next is M2, the visibility projection.
 
 ---
 

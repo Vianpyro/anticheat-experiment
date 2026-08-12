@@ -48,9 +48,9 @@ required.
 
 | Workflow | Trigger | Jobs | Permissions | Budget |
 | --- | --- | --- | --- | --- |
-| `ci` | PR, push to `main` | `check` (fmt + clippy `-D warnings` + test, matrixed over Linux and Windows), and from M7 `exploits` (Linux) | `contents: read` | < 5 min wall, warm |
-| `pr-hygiene` | PR, push to any branch but `main` | `branch-name`, `pr-title` (Conventional Commits) | `contents: read` | seconds |
-| `determinism` | PR and push touching `sim/`, `replay/`, or the fixtures | The 1000-tick fixture on Linux x86-64, Windows x86-64, macOS aarch64; digests compared across jobs | `contents: read` | < 4 min |
+| `ci` | PR, push to `main` | `check` (fmt + clippy `-D warnings` + test, matrixed over Linux and Windows, plus a Linux-only grep for a serialization derive in `sim` — `RISKS.md` R5), and from M7 `exploits` (Linux) | `contents: read` | < 5 min wall, warm |
+| `pr-hygiene` | PR, push to any branch but `main` | `branch-name` (skipped for pull requests from a fork, whose branch names are the fork's business), `pr-title` (Conventional Commits, every pull request) | `contents: read` | seconds |
+| `determinism` | PR and push touching `sim/`, `replay/`, the fixtures, the lockfile or the toolchain pin | The fixtures on Linux x86-64, Windows x86-64, macOS aarch64, under `--release`; each compared against digests committed in the repository | `contents: read` | < 4 min |
 | `supply-chain` | PR (licenses, bans, sources) and weekly cron (advisories) | `cargo-deny` | `contents: read` | < 1 min |
 | `coverage` | Weekly cron, manual dispatch | `cargo llvm-cov`, uploaded as an artifact | `contents: read` | untimed |
 | `release` | Tag `v*` | Build matrix, container, SBOM, attestation, GitHub Release | `contents: write`, `packages: write`, `id-token: write`, `attestations: write` — this job only | < 20 min |
@@ -61,6 +61,16 @@ for all three green on both platforms. On an already-compiled workspace the two
 extra Windows steps cost seconds, and a Windows-only clippy finding — from a
 `cfg`-gated path, most likely — is exactly the kind of thing a Linux-only lint
 job would let through.
+
+The determinism job compares against committed digests rather than shipping each
+job's result to a fourth job that compares them. That is strictly stronger and
+much simpler: three jobs checking the same constant already detect any
+disagreement between platforms, and the constant additionally detects drift over
+time on a single platform — which cross-job comparison cannot see at all, since
+three jobs that have all drifted the same way still agree with each other. It
+also means a compiler upgrade that perturbs the simulation arrives as a failing
+test with a diff, which is exactly the reviewable event the pinned toolchain
+exists to produce.
 
 Advisories run on a schedule rather than on PRs deliberately: a CVE published in
 a transitive dependency has nothing to do with the PR in front of you, and a red

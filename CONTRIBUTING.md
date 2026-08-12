@@ -38,6 +38,19 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
+If your change touches `sim/`, `replay/` or the fixtures, one more runs on three
+platforms including aarch64 macOS:
+
+```sh
+cargo test -p sim --release --locked --test determinism -- --nocapture
+```
+
+Its expected digests are committed. If your change moves them, that is not a
+test to update — it is a change to the rules that makes every existing replay
+unverifiable (`docs/RISKS.md` R2), so say in the pull request why the rules
+changed. There is a regeneration tool documented at the top of
+`sim/tests/determinism.rs`.
+
 The toolchain comes from `rust-toolchain.toml`; `rustup` installs it for you on
 the first `cargo` invocation. Do not install a different toolchain and do not
 change the pin as part of an unrelated change — a compiler upgrade is a

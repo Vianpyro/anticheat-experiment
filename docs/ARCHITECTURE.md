@@ -65,15 +65,15 @@ boundary.
 
 ```rust
 #![forbid(unsafe_code)]
-#![deny(clippy::float_arithmetic)]
+#![deny(clippy::float_arithmetic, clippy::arithmetic_side_effects)]
 
 pub struct Tick(pub u32);
 pub struct PlayerId(pub u8);        // 0..6
 pub struct EntityId(pub u16);
-pub type Fx = /* fixed-point scalar, i32 with a fixed fractional width */;
+pub struct Fx(i32);                 // Q15.16: i32 read as a multiple of 2^-16
 pub struct FxVec2 { pub x: Fx, pub y: Fx }
 
-pub struct State { /* tick, rng, [Champion; 6], towers, projectiles, outcome */ }
+pub struct State { /* tick, rng, next_projectile_id, [Champion; 6], towers, projectiles, outcome */ }
 
 pub struct Input {
     pub tick: Tick,               // tick this input applies to
@@ -102,6 +102,92 @@ impl State {
 
 pub fn new_state(seed: u64) -> State;
 ```
+
+### Fixed point: the domain, and what happens outside it
+
+`Fx` is Q15.16 — an `i32` read as a multiple of `2^-16`. Representable range
+`[-32768, 32767.99998]`, resolution `0.0000153`. The tick rate is **30 Hz**.
+Both are frozen by `RISKS.md` R2 and both are covered by `rules_hash()`, so a
+change to either is a loud verification failure rather than a silent
+resimulation into a different match.
+
+**The legal domain**, which the property tests assert and which is what "the
+operations do not overflow" is a claim *about*:
+
+| Quantity | Domain | Why that bound |
+| --- | --- | --- |
+| Coordinates, both axes | `[-128, 128]` | The product of two in-domain values is at most `16384`, comfortably inside the type. This is the bound that makes multiplication closed |
+| Per-tick displacement, per component | `[-16, 16]` | Two orders of magnitude above any speed in the rules. A displacement is added to a coordinate, so the sum stays inside the type |
+| Divisor, relative to dividend | `abs(a) <= abs(b)`, `b != 0` | Division is *not* closed on the coordinate domain: `128 / 2^-16` is far outside the type. The rules only ever divide a vector component by that vector's own length, where the quotient cannot exceed one, and that is the domain stated |
+| Direction to be normalised | length `>= 1/16` | Below that the integer square root has too few significant bits: `(2^-16, 2^-16)` normalises 41% too long. Shorter directions are discarded by the rules, not normalised |
+
+Positions and hit points are held inside these bounds by the rules themselves —
+clamped, never rejected — so a client sending a coordinate of `i32::MAX` moves
+its champion to the edge of the map and produces no error path.
+
+**Outside the domain, arithmetic saturates.** This is a decision, and the two
+alternatives were rejected for stated reasons:
+
+- *Not wrapping.* Wrapping is what `release` does to `i32` by default, and it is
+  the behaviour this whole type exists to remove. A position that wraps
+  teleports across the map; a position that saturates stops at the edge. Only
+  one of those is debuggable, and neither is supposed to happen.
+- *Not panicking.* `step` runs inside an authoritative server for six players
+  and a panic is a match everybody loses. A `checked_*` API returning `Option`
+  would push an error path through every rule for a condition the domain already
+  excludes. A total function has no failure path to get wrong.
+
+Saturation is still a silent change of value, so it is not treated as a design —
+it is a floor under the failure. The property tests assert that no operation
+saturates anywhere inside the legal domain, by requiring the `checked_*` form to
+return `Some`; saturation is thus provably unreachable in-domain rather than
+merely unlikely.
+
+**Overflow checks are on in every Cargo profile**, `dev`, `release`, `test` and
+`bench` alike. Cargo's default — panic in debug, wrap silently in release — is a
+difference in what arithmetic *means* between the build that gets tested and the
+build that gets shipped, which a project claiming bit-identical results across
+platforms cannot also tolerate across profiles. The determinism job runs
+`--release` on all three targets for the same reason: one profile, one meaning.
+The flag is a tripwire rather than the mechanism — `sim` reaches its saturating
+semantics through explicit `saturating_*` and `checked_*` calls, which the flag
+does not affect — and what it catches is a bare `+` arriving in a crate that was
+supposed to have none.
+
+Rounding: multiplication and division truncate **toward zero**, not to nearest
+and not toward negative infinity. Toward zero keeps the type symmetric about the
+origin, so `(-a) * b == -(a * b)`; on a map whose origin is the middle of the
+lane, a rounding rule that drifts one way is a rounding rule that treats the two
+teams differently.
+
+### `State::digest()` and the field somebody adds in eight months
+
+`State` is not serializable, so the digest cannot lean on a derive: the encoding
+is written by hand, fixed-width big-endian, one tag byte before every enum and
+every `Option`. The risk in a hand-written encoding is not that it is wrong at
+the start — a wrong encoding fails the first time the fixture runs. It is the
+field added later and not hashed. Nothing would break: the determinism suite
+would stay green while quietly no longer covering part of the state, and the
+first symptom would be two servers disagreeing about a match they had both
+digested identically. That is a silent gap in every claim built on top of the
+digest, up to "this replay is the match that was played".
+
+So the encoding is written by **exhaustive destructuring**, and this is an
+invariant rather than a style: `..` is forbidden in a pattern in that module and
+so is a `_` arm in a `match`. Adding a field to `State` stops
+`let State { .. } = self` compiling; adding a variant to `Order` stops its
+`match` compiling; binding a field and forgetting to hash it trips
+`unused_variables`, which the crate denies at its root so the invariant holds
+under a plain `cargo build` and not only under CI's `-D warnings`. The same
+treatment covers every nested type, and `Rules` as well — a balance constant
+that escaped `rules_hash()` would defeat R2's hedge in exactly the same way.
+
+The hash is SHA-256, written out in the crate rather than depended upon, pinned
+to FIPS 180-4 by its published test vectors. `sim` has no dependencies and this
+is one of the two places that policy costs something; it is worth paying, since
+the digest has to produce the same 32 bytes for as long as any replay exists.
+Signatures at M5 are a different matter and will take an audited crate — a
+security portfolio does not hand-roll signature code.
 
 ### `sim::view` — the visibility projection
 
@@ -273,23 +359,37 @@ acting on a finding is a human decision, per `SCOPE.md`.
 
 Each is a test or a lint, not a convention:
 
-1. `sim` compiles with `forbid(unsafe_code)` and denies float arithmetic; a
-   `clippy.toml` disallowed-types list blocks `std::time`, `HashMap`, and `rand`.
+1. `sim` compiles with `forbid(unsafe_code)` and denies float arithmetic, bare
+   arithmetic (`clippy::arithmetic_side_effects`, so every operation names what
+   it does on overflow) and `unused_variables`; a `clippy.toml` disallowed-types
+   list blocks `f32`, `f64`, `std::time`, and the randomized-hasher collections.
+   `rand` is absent from that list on purpose: it is not a dependency of `sim`
+   at all, so no path into it resolves, and an empty `[dependencies]` table is a
+   stronger statement than a lint — a lint can be allowed, a missing dependency
+   cannot be named.
 2. Identical seed and input log produce an identical `State::digest()` on
-   x86-64 Linux, x86-64 Windows, and aarch64 macOS.
+   x86-64 Linux, x86-64 Windows, and aarch64 macOS. Two fixtures, both run under
+   `--release` with overflow checks on, compared against digests committed in
+   the repository — which catches disagreement between platforms *and* drift
+   over time on one, where comparing the three jobs to each other would catch
+   only the first.
 3. No `Serialize` impl exists for `State` or its components; only the view types
-   have one. Checked in CI.
-4. For every tick and player of the reference fixture, `view_for` output
+   have one. Checked in CI. Until the view types arrive at M2 the enforcement is
+   stronger still: `sim` has no serialization dependency, so no type in it can
+   derive one.
+4. Every field of `State` and of `Rules` reaches the digest, because the
+   encoding destructures both exhaustively and a new field stops the build.
+5. For every tick and player of the reference fixture, `view_for` output
    contains no entity outside that player's vision.
-5. `cargo tree -p cheat-client` shows no path to `sim`, `client`, or `anticheat`.
-6. `cargo tree -p client` shows no path to `anticheat`.
-7. Every detector in `anticheat` has an exploit in `cheat-client` that fails
+6. `cargo tree -p cheat-client` shows no path to `sim`, `client`, or `anticheat`.
+7. `cargo tree -p client` shows no path to `anticheat`.
+8. Every detector in `anticheat` has an exploit in `cheat-client` that fails
    against it in CI.
-8. Every `View` message has the same encoded size, and the server emits exactly
+9. Every `View` message has the same encoded size, and the server emits exactly
    one per connected player per tick. Checked by the M7 traffic-analysis
    exploit, which must fail to recover the visible-entity count from a recorded
    session's message sizes and arrival times.
-9. No `Serialize` impl for `State` exists behind any Cargo feature either — the
+10. No `Serialize` impl for `State` exists behind any Cargo feature either — the
    only sanctioned constructors are `#[cfg(test)]`-gated, and no reconnection
    path transports state.
 

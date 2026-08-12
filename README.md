@@ -15,8 +15,13 @@ repository and fails against it in CI.
 
 ## Status
 
-**M0 — toolchain floor and repository hygiene.** The workspace exists and is
-empty: no simulation, no protocol, no server, no exploits. See
+**M1 — deterministic simulation core.** `sim` holds the rules: a fixed-point
+type with stated overflow semantics, a seeded generator, `State`, `Input`,
+`step`, and a `State::digest()` whose encoding stops compiling if a field is
+added and not covered. It depends on nothing. Two fixtures run on x86-64 Linux,
+x86-64 Windows and aarch64 macOS against digests committed here.
+
+No protocol, no server, no rendering and no exploits yet. See
 `docs/MILESTONES.md` for what lands when.
 
 ## Workspace
@@ -48,7 +53,12 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
-Those three commands are exactly what CI runs, on Linux and on Windows.
+Those three commands are exactly what CI runs, on Linux and on Windows. The
+determinism fixtures additionally run on aarch64 macOS, under `--release`:
+
+```sh
+cargo test -p sim --release --locked --test determinism -- --nocapture
+```
 
 ## Documents
 
