@@ -4,8 +4,11 @@
     // the host and in CI are the same build.
     "name": "moba",
     "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
+    // Pinned to the major only: these are conveniences inside the container,
+    // never build inputs. rust-toolchain.toml is what has to stay exact.
     "features": {
-        "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+        "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
+        "ghcr.io/devcontainers/features/github-cli:1": {}
     },
     "customizations": {
         "vscode": {
@@ -16,6 +19,13 @@
             ]
         }
     },
-    "postCreateCommand": "rustup show active-toolchain",
+    // Keeps the `claude` and `gh` logins across rebuilds. Docker creates a new
+    // volume's mountpoint owned by root, so the chown is what makes them
+    // writable as `vscode` — without it both tools fail on first write.
+    "mounts": [
+        "source=moba-claude-${devcontainerId},target=/home/vscode/.claude,type=volume",
+        "source=moba-gh-${devcontainerId},target=/home/vscode/.config/gh,type=volume"
+    ],
+    "postCreateCommand": "sudo chown vscode: /home/vscode/.claude /home/vscode/.config/gh && rustup show active-toolchain",
     "remoteUser": "vscode"
 }
