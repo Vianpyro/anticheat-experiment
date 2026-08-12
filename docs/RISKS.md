@@ -26,6 +26,55 @@ disallowed-types list covering `f32`, `f64`, `std::time::*`,
 not once the game is playable. The aarch64 target is not optional: it is what
 catches the leaks x86-only CI hides.
 
+### The negative control, run 2026-08-12
+
+The hedge above is only worth what the job can actually detect, and until this
+date nothing had established that. The three targets agreed on the first run of
+M1 and on every run since; a job that would stay green on a real divergence and
+a job with nothing to report look identical from the outside. So the divergence
+was manufactured once, deliberately, on the throwaway branch
+`experiment/negative-control-aarch64` (pull request #3, closed unmerged, branch
+deleted).
+
+**The operation.** `f64` libm transcendentals — `sin`, `cos`, `tan`, `powf` —
+evaluated on champion positions in `step`, with their raw bits folded into the
+generator's state. The generator is read by no rule, so all three targets
+simulated exactly the same match and only the digest moved: any disagreement
+observed is the floating point and nothing else. `clippy::float_arithmetic` and
+`clippy::disallowed_types` were lifted on that one statement with a comment
+naming the branch.
+
+**What diverged.** All three targets produced three *different* digests, at the
+first checkpoint (tick 100) and in the duel fixture, and the `fixture` job went
+red on all three. A companion test printing the raw bits of individual functions
+attributes it: `f64::tan` differs by one unit in the last place, and it differs
+three ways.
+
+| `x` | `tan(x)` glibc / x86-64 Linux | MSVC / x86-64 Windows | Apple libm / aarch64 |
+| --- | --- | --- | --- |
+| `0.1` | `3fb9af8877430b80` | `3fb9af8877430b80` | `3fb9af8877430b7f` |
+| `123.456` | `3ff5a0fe5da94891` | `3ff5a0fe5da94890` | `3ff5a0fe5da9488f` |
+| `98765.4321` | `3fa5a5ef83cff794` | `3fa5a5ef83cff794` | `3fa5a5ef83cff793` |
+
+`sin`, `cos`, `exp`, `ln` and `powf` agreed bit-for-bit on every sampled point.
+
+**What this establishes, and what it does not.** The job reports a divergence
+rather than absorbing it, and it distinguishes all three targets rather than
+only detecting that something moved. That is the property that was missing.
+
+It does *not* isolate "aarch64 disagrees with x86-64" as a separate phenomenon,
+and the expectation going in — the two x86-64 targets agreeing while `macos-14`
+stood apart — was wrong. The two x86-64 targets link different libms, so
+Windows diverged from Linux on the same operation. The honest statement is
+narrower than "the second architecture caught it": what the matrix catches is a
+*per-platform* disagreement, of which a per-architecture one is a special case.
+Basic IEEE-754 arithmetic — `+`, `-`, `*`, `/`, `sqrt` — is exactly specified
+and does not differ between these targets at all; the divergence lives in libm
+and in anything a compiler is free to contract. That is a narrower attack
+surface than R1's framing suggests, and it is the reason the mechanical defence
+is the *type* (`Fx`, integers only) rather than the matrix. The matrix is the
+detector of last resort, and it now demonstrably works.
+
 ## R2 — Fixed-point representation and tick rate
 
 **Irreversible because:** they are baked into every replay file and every corpus
@@ -125,6 +174,15 @@ it later means auditing every path that touches `State`.
 `State::digest()` rather than encoded bytes; replay storage holds seed and inputs,
 never snapshots. A CI check greps for a serialization derive on the state types.
 
+That grep was true by vacuity until M2 — `sim` had no serialization dependency,
+so nothing in it *could* derive one, and the check had never rejected anything.
+It has now been exercised: a `#[derive(Serialize)]` placed on `State` and then
+removed produced `a serialization derive reached sim outside the view types
+(docs/RISKS.md R5)`, naming the line. The view types arrived with M2 and are
+excluded from the grep by path, and they carry a hand-written encoding rather
+than a derive, so `sim`'s `[dependencies]` table is still empty — which is the
+stronger statement, and is itself now asserted by `cargo tree` in CI.
+
 The two pressures that will push back — mid-match reconnection and test fixtures
 — are answered in advance in `ARCHITECTURE.md`, "The `State` escape hatch",
 rather than left to be improvised the week they bite: reconnection resends a
@@ -200,6 +258,13 @@ iterator inside `sim` breaks R1 without any float appearing in your code.
 `serde` for the view types. Game frameworks are allowed in `client` only. The
 determinism job is the detector, and it must run on every change to `sim`, not
 on a schedule.
+
+In practice `sim` has taken neither of the two allowances: the fixed-point type
+is written out, and the M2 view types encode themselves by hand rather than
+deriving. So the hedge is enforced at its strongest — `cargo tree -p sim --edges
+normal` must print one node, checked in `ci` and exercised against a path
+dependency on `protocol`. The permission to add `serde` for the view types
+stands and is deliberately unused until a transport picks a codec (M3).
 
 ## R10 — Signature of `step`
 

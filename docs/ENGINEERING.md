@@ -48,7 +48,7 @@ required.
 
 | Workflow | Trigger | Jobs | Permissions | Budget |
 | --- | --- | --- | --- | --- |
-| `ci` | PR, push to `main` | `check` (fmt + clippy `-D warnings` + test, matrixed over Linux and Windows, plus a Linux-only grep for a serialization derive in `sim` — `RISKS.md` R5), and from M7 `exploits` (Linux) | `contents: read` | < 5 min wall, warm |
+| `ci` | PR, push to `main` | `check` (fmt + clippy `-D warnings` + test, matrixed over Linux and Windows, plus two Linux-only assertions on the working tree: a grep for a serialization derive in `sim` — `RISKS.md` R5 — and `cargo tree -p sim --edges normal`, which must print `sim` and nothing else), and from M7 `exploits` (Linux) | `contents: read` | < 5 min wall, warm |
 | `pr-hygiene` | PR, push to any branch but `main` | `branch-name` (skipped for pull requests from a fork, whose branch names are the fork's business), `pr-title` (Conventional Commits, every pull request) | `contents: read` | seconds |
 | `determinism` | PR and push touching `sim/`, `replay/`, the fixtures, the lockfile or the toolchain pin | `fixture` (the fixtures on Linux x86-64, Windows x86-64, macOS aarch64, under `--release`, each compared against digests committed in the repository), `properties` (the same three targets with a raised `PROPTEST_CASES`), and `sim-version` (a PR touching `sim/` must raise the crate version — `RISKS.md` R13) | `contents: read` | < 6 min |
 | `supply-chain` | PR (licenses, bans, sources) and weekly cron (advisories) | `cargo-deny` | `contents: read` | < 1 min |

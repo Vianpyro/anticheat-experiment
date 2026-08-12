@@ -69,6 +69,8 @@ pub struct Rules {
     pub champion_radius: Fx,
     /// Ticks between death and respawn.
     pub respawn_ticks: u16,
+    /// How far a living champion lets its team see.
+    pub champion_vision_radius: Fx,
 
     /// Maximum distance at which a basic attack lands.
     pub attack_range: Fx,
@@ -105,6 +107,8 @@ pub struct Rules {
     pub tower_damage: Fx,
     /// Ticks between two tower shots.
     pub tower_cooldown_ticks: u16,
+    /// How far a standing tower lets its team see.
+    pub tower_vision_radius: Fx,
 
     /// Shortest direction vector the rules will normalise.
     ///
@@ -133,6 +137,13 @@ pub const RULES: Rules = Rules {
     champion_radius: Fx::from_ratio(1, 2),
     // 15 seconds.
     respawn_ticks: 450,
+    // Comfortably beyond every range a champion can act at — the targeted
+    // spell reaches 6 and a tower reaches 7 — so that fog is a thing you walk
+    // into rather than a thing that hides what is already hitting you. Well
+    // under the 200 units between the two spawns, so that most of the map is
+    // dark most of the time: a vision radius that covers the lane would make
+    // `docs/MILESTONES.md` M2's exit criterion true without culling anything.
+    champion_vision_radius: Fx::from_int(12),
 
     attack_range: Fx::from_ratio(5, 2),
     attack_damage: Fx::from_int(12),
@@ -159,6 +170,9 @@ pub const RULES: Rules = Rules {
     tower_damage: Fx::from_int(45),
     // 1 second.
     tower_cooldown_ticks: 30,
+    // Wider than the tower's own reach of 7, so that a tower sees what is about
+    // to be in range of it rather than only what already is.
+    tower_vision_radius: Fx::from_int(10),
 
     min_direction_length: Fx::from_ratio(1, 16),
 };

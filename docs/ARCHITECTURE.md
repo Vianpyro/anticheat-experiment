@@ -73,7 +73,7 @@ pub struct EntityId(pub u16);
 pub struct Fx(i32);                 // Q15.16: i32 read as a multiple of 2^-16
 pub struct FxVec2 { pub x: Fx, pub y: Fx }
 
-pub struct State { /* tick, rng, next_projectile_id, [Champion; 6], towers, projectiles, outcome */ }
+pub struct State { /* tick, rng, next_projectile_id, [Champion; 6], towers, projectiles, events, outcome */ }
 
 pub struct Input {
     pub tick: Tick,               // tick this input applies to
@@ -193,6 +193,31 @@ the digest has to produce the same 32 bytes for as long as any replay exists.
 Signatures at M5 are a different matter and will take an audited crate — a
 security portfolio does not hand-roll signature code.
 
+### `State::events` — what happened during the tick
+
+`State` carries the record of the transition that produced it: casts, damage and
+deaths, each with the point it happened at, cleared at the top of every tick.
+Two things follow from putting it there rather than returning it beside the
+state.
+
+The frozen signatures have nowhere else to put it. `SCOPE.md` fixes
+`step(&State, &[Input]) -> State` and `view_for(&State, PlayerId) -> PlayerView`,
+and a tuple-returning `step` would be a second signature for the RL sub-project
+to diverge on (`RISKS.md` R10).
+
+More importantly it is then under `State::digest()`. Events reach clients, so
+two servers that agree on the world and disagree about what their players were
+*told* is a divergence with anti-cheat consequences, and it now fails the
+determinism suite rather than arriving as a player report.
+
+Each event carries the position it happened at, and that position — not the
+entity's identity — is what the projection culls on. The reason is a case that
+would otherwise need an exception: a champion killed this tick is off the map by
+the end of it and has no current position to test, so an identity-based rule
+would need a branch for deaths, and a branch in the culling function is where a
+maphack lives. The arena is a fixed array of 48; beyond that events are dropped,
+identically everywhere, in the same spirit as a full projectile arena.
+
 ### `sim::view` — the visibility projection
 
 Separate module, separate call, computed from the full world state. `step` never
@@ -203,19 +228,89 @@ reads it, and `State` carries no per-player visibility.
 /// flagged. Derived signals (damage events, cast events, sound cues) are culled
 /// on the same rule.
 pub fn view_for(state: &State, player: PlayerId) -> PlayerView;
+pub fn view_for_with_rules(state: &State, player: PlayerId, rules: &Rules) -> PlayerView;
 
-#[derive(Serialize)]                  // the only serializable state type
 pub struct PlayerView {
     pub tick: Tick,
-    pub own: ChampionView,            // full detail, always
+    pub outcome: Outcome,
+    pub own: OwnView,                 // full detail, always
     pub visible: Vec<EntityView>,     // only what this player can see
     pub events: Vec<VisibleEvent>,    // culled on the same rule
 }
+
+impl PlayerView {
+    pub const MAX_ENCODED_BYTES: usize;
+    pub fn encode(&self) -> Vec<u8>;  // hand-written, canonical, no serde
+}
 ```
+
+Vision is a union of discs: a living champion of the player's own team covers
+`champion_vision_radius`, a standing tower covers `tower_vision_radius`. It is
+**team** vision, which is the MOBA model and also the one with no ally-only side
+channel to get wrong. A dead champion and a destroyed tower see nothing, so
+losing a tower costs map control.
 
 `PlayerView` is the sole state type crossing the wire. Because `State`
 implements no serialization anywhere in the workspace, "the server accidentally
 sends the whole world" is a compile error rather than a bug class.
+
+#### What is in `PlayerView`, field by field
+
+This type is the serialization frontier of the project: what enters it is what a
+client can learn, and therefore what an attacker can learn. So the justification
+is per field, and the absences are decisions rather than omissions.
+
+| Field | Why a client may have it |
+| --- | --- |
+| `tick` | Needed to order and reconcile. Public by construction: the server emits one view per player per tick regardless of content, so the number is implied by the message existing |
+| `outcome` | The match ending, and who won, is a global fact the moment it happens. Withholding it hides the end of the game from the loser |
+| `own` — id, position, liveness, cooldowns | The player's own champion. Nothing here is secret *from this player*, and its respawn timer is its own |
+| `visible` — champion: id, position, hp | What an observer standing there would see. Team follows from the handle, which is the seat, and is public |
+| `visible` — tower: id, position, hp | The position is already derivable from the rules; the hit points are not, and are given only while the tower is in vision |
+| `visible` — projectile: id, position, velocity | Velocity is recoverable from two consecutive positions of the same projectile, so it leaks nothing and saves the client an interpolation guess |
+| `events` — cast, damage, death, each with `at` | The derived signals. They exist so that culling them is a real operation; `at` is the culling key |
+
+And what is deliberately **not** in it:
+
+- **No standing order.** `Order::Attack` names an `EntityId` the player may no
+  longer be able to see. The client originated the order and can track it;
+  reconciling a server-side order change is M3's problem and must not be solved
+  by shipping handles.
+- **No enemy cooldowns.** A cooldown tracker is a classic cheat. A protocol that
+  ships enemy cooldowns has implemented one in the server.
+- **No damage source.** The obvious field, and a leak: an attacker within basic
+  attack range of a point you can see need not be at a point you can see, so
+  "seat 4 hit your ally" hands over the identity and rough position of a champion
+  the fog was hiding. The cost is damage attribution in a UI that does not exist
+  yet.
+- **No projectile owner.** A skillshot outlives its caster's visibility, and
+  naming the owner would identify a hidden champion from the projectile alone.
+- **No dead champions, including allies.** A dead champion is not on the map. An
+  ally's respawn timer is information about a player rather than about the world,
+  and carrying it would mean a second visibility rule — a second place for a leak
+  to hide — for an ally panel that does not exist.
+
+#### Serialization, and why `serde` is not here yet
+
+`PlayerView::encode` is written by hand, by exhaustive destructuring, exactly as
+`canonical.rs` is and for the same reason: a field added to a view type and not
+encoded must stop the build rather than quietly never reach a client. `sim`'s
+`[dependencies]` table is still empty.
+
+This document allows `serde` for the view types and that permission stands; it
+is deliberately not taken yet. The transport that would choose a codec arrives at
+M3, and the traffic-shape invariant below wants a byte layout decided here rather
+than by a crate. The CI grep for a serialization derive in `sim` is unaffected —
+it is textual, it excludes `sim/src/view.rs`, and it has been exercised against a
+deliberate `#[derive(Serialize)]` on `State`.
+
+The encoded size is **variable**, and that is not the finished state of the
+system: the traffic-shape invariant requires every `View` message to have the
+same encoded size at a constant cadence, because message length and message
+count leak the number of visible entities as surely as the entities would.
+Padding is the transport's job, the transport is M3, and
+`PlayerView::MAX_ENCODED_BYTES` — 1498, derived from the encoding rather than
+measured from a run — is the bound it will round up to.
 
 ### The `State` escape hatch, decided in advance
 
@@ -414,13 +509,25 @@ Each is a test or a lint, not a convention:
    was recorded under, so the two cannot be confused for one another and neither
    can be silently reinterpreted after a balance change.
 3. No `Serialize` impl exists for `State` or its components; only the view types
-   have one. Checked in CI. Until the view types arrive at M2 the enforcement is
-   stronger still: `sim` has no serialization dependency, so no type in it can
-   derive one.
+   may have one. Checked in CI by a grep over `sim/src` excluding
+   `sim/src/view.rs`, and that grep has been exercised — a `#[derive(Serialize)]`
+   placed on `State` and then removed produced
+   `a serialization derive reached sim outside the view types (docs/RISKS.md R5)`.
+   The enforcement is stronger still today: `sim` has no serialization
+   dependency, so no type in it *can* derive one, and invariant 11 is what keeps
+   that true.
 4. Every field of `State` and of `Rules` reaches the digest, because the
    encoding destructures both exhaustively and a new field stops the build.
-5. For every tick and player of the reference fixture, `view_for` output
-   contains no entity outside that player's vision.
+5. For every tick and player of both reference fixtures, every `EntityId` in
+   `view_for`'s output is accompanied by the position it was seen at, and that
+   position is inside the player's vision — in the entity list and in the
+   events alike. Asserted in `sim/tests/visibility.rs` against a visibility
+   predicate re-derived there, so that the test is not the implementation
+   agreeing with itself, and paired with a completeness assertion so that
+   returning nothing does not pass. The same test reruns the fixture under
+   constants that differ only in the vision radii and requires every state
+   digest to be unchanged, which is how "`step` never reads visibility" is a
+   test rather than a habit.
 6. `cargo tree -p cheat-client` shows no path to `sim`, `client`, or `anticheat`.
 7. `cargo tree -p client` shows no path to `anticheat`.
 8. Every detector in `anticheat` has an exploit in `cheat-client` that fails
@@ -432,6 +539,12 @@ Each is a test or a lint, not a convention:
 10. No `Serialize` impl for `State` exists behind any Cargo feature either — the
    only sanctioned constructors are `#[cfg(test)]`-gated, and no reconnection
    path transports state.
+11. `cargo tree -p sim --edges normal` prints exactly one node: `sim` itself.
+   Checked in CI. This is the dependency rule that matters most — the same
+   `step` runs in the server, in replay verification, in the determinism suite
+   and eventually in the RL environment, and any dependency is a place for
+   `RISKS.md` R9 to enter. `--edges normal` so that `proptest`, which links into
+   the test harness and never into the crate, does not trip it.
 
 ## Deliberate non-abstractions
 

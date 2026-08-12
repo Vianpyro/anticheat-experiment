@@ -50,13 +50,14 @@
 //! `docs/RISKS.md` R9 is about exactly this, and the `clippy.toml` beside this
 //! file is what keeps it true.
 
+use crate::event::{Ability, Event, EventKind};
 use crate::fx::Fx;
 use crate::input::{Action, Input};
 use crate::rules::{RULES, Rules};
 use crate::state::{
     Cooldowns, EntityId, EntityRef, Liveness, MAX_PROJECTILES, Order, Outcome, PLAYER_COUNT,
-    PlayerId, Projectile, State, TOWER_COUNT, Team, Tick, Tower, entity_team, spawn_position,
-    tower_position, tower_team,
+    PlayerId, Projectile, State, TOWER_COUNT, Team, Tick, Tower, champion_entity_id, entity_id,
+    entity_team, spawn_position, tower_position, tower_team,
 };
 use crate::vec2::FxVec2;
 
@@ -77,6 +78,13 @@ pub fn step(state: &State, inputs: &[Input]) -> State {
 #[must_use]
 pub fn step_with_rules(state: &State, inputs: &[Input], rules: &Rules) -> State {
     let mut next = state.clone();
+
+    // The events belong to one transition, not to a history, so the record of
+    // the previous tick is dropped before this one starts. Before the
+    // decided-match return as well: a frozen match announces nothing, and a
+    // client that kept receiving the last tick's kills forever would be reading
+    // an event stream that had stopped meaning anything.
+    next.events.clear();
 
     // A decided match still advances its tick — the server keeps sending views
     // until everyone disconnects — but no rule runs, so the final state is
@@ -99,6 +107,16 @@ pub fn step_with_rules(state: &State, inputs: &[Input], rules: &Rules) -> State 
 
     next.tick = Tick(next.tick.0.saturating_add(1));
     next
+}
+
+/// Records something that happened, at the place it happened.
+///
+/// The position is the culling key the visibility projection uses, so it is a
+/// parameter rather than something derived later: by the end of the tick a
+/// champion that died has been moved back to its spawn point, and the place it
+/// died at exists nowhere but here.
+fn emit(state: &mut State, at: FxVec2, kind: EventKind) {
+    state.events.push(Event { kind, at });
 }
 
 fn tick_cooldowns(state: &mut State) {
@@ -206,8 +224,21 @@ fn cast_skillshot(state: &mut State, seat: usize, direction: FxVec2, rules: &Rul
         velocity: direction.normalize_or_zero().scale(rules.skillshot_speed),
         remaining: rules.skillshot_lifetime_ticks,
     });
-    if placed && let Some(caster) = state.champions.get_mut(seat) {
-        caster.cooldowns.skillshot = rules.skillshot_cooldown_ticks;
+    if placed {
+        if let Some(caster) = state.champions.get_mut(seat) {
+            caster.cooldowns.skillshot = rules.skillshot_cooldown_ticks;
+        }
+        // Announced from where it was cast, not from where the projectile is:
+        // the cue a nearby client gets is the champion's gesture, and the
+        // projectile is a visible entity in its own right from the next tick on.
+        emit(
+            state,
+            champion.position,
+            EventKind::Cast {
+                caster: champion_entity_id(seat),
+                ability: Ability::Skillshot,
+            },
+        );
     }
 }
 
@@ -231,7 +262,15 @@ fn cast_targeted(state: &mut State, seat: usize, target: EntityId, rules: &Rules
         return;
     }
 
-    damage(state, entity, rules.targeted_damage);
+    emit(
+        state,
+        champion.position,
+        EventKind::Cast {
+            caster: champion_entity_id(seat),
+            ability: Ability::Targeted,
+        },
+    );
+    damage(state, entity, rules.targeted_damage, rules);
     if let Some(caster) = state.champions.get_mut(seat) {
         caster.cooldowns.targeted = rules.targeted_cooldown_ticks;
     }
@@ -294,7 +333,7 @@ fn advance_projectiles(state: &mut State, rules: &Rules) {
         projectile.remaining = projectile.remaining.saturating_sub(1);
 
         if let Some(hit) = first_hit(state, &projectile, rules) {
-            damage(state, hit, rules.skillshot_damage);
+            damage(state, hit, rules.skillshot_damage, rules);
             clear_slot(state, slot);
             continue;
         }
@@ -384,7 +423,7 @@ fn fire_towers(state: &mut State, rules: &Rules) {
             continue;
         };
 
-        damage(state, EntityRef::Champion(seat), rules.tower_damage);
+        damage(state, EntityRef::Champion(seat), rules.tower_damage, rules);
         if let Some(tower) = state.towers.get_mut(index) {
             tower.cooldown = rules.tower_cooldown_ticks;
         }
@@ -440,20 +479,34 @@ fn resolve_basic_attacks(state: &mut State, rules: &Rules) {
             continue;
         }
 
-        damage(state, entity, rules.attack_damage);
+        damage(state, entity, rules.attack_damage, rules);
         if let Some(attacker) = state.champions.get_mut(seat) {
             attacker.cooldowns.basic_attack = rules.attack_cooldown_ticks;
         }
     }
 }
 
-/// Applies damage, clamping at zero.
+/// Applies damage, clamping at zero, and records it.
 ///
 /// The clamp is not cosmetic: without it a champion killed by a tower shot and
 /// the same champion killed by a skillshot would sit at different negative hit
 /// points, and two matches that played out identically in every visible respect
 /// would produce different digests.
-fn damage(state: &mut State, target: EntityRef, amount: Fx) {
+///
+/// Every source of damage in the rules goes through here, which is why the
+/// event is emitted here too: a damage path that forgot to announce itself
+/// would be a hit a client never learns about, and the way to make that
+/// impossible is to leave exactly one place where damage can be applied.
+fn damage(state: &mut State, target: EntityRef, amount: Fx, rules: &Rules) {
+    let at = state.entity_position(target, rules);
+    emit(
+        state,
+        at,
+        EventKind::Damage {
+            target: entity_id(target),
+            amount,
+        },
+    );
     match target {
         EntityRef::Champion(seat) => {
             if let Some(champion) = state.champions.get_mut(seat)
@@ -475,6 +528,7 @@ fn damage(state: &mut State, target: EntityRef, amount: Fx) {
 fn resolve_deaths(state: &mut State, rules: &Rules) {
     let now = state.tick;
     let respawn_at = Tick(now.0.saturating_add(u32::from(rules.respawn_ticks)));
+    let mut died = [None; PLAYER_COUNT];
     for (seat, champion) in state.champions.iter_mut().enumerate() {
         let Liveness::Alive { hp } = champion.liveness else {
             continue;
@@ -482,13 +536,30 @@ fn resolve_deaths(state: &mut State, rules: &Rules) {
         if hp.to_raw() > 0 {
             continue;
         }
+        // Where it fell, kept before the body is moved. This is the only place
+        // that position exists, and the visibility projection needs it: a death
+        // is shown to whoever could see the spot it happened at, which is not
+        // the same set as whoever can see the spawn point.
+        died[seat] = Some(champion.position);
         champion.liveness = Liveness::Dead { respawn_at };
         champion.order = Order::Idle;
         // The body returns to the spawn point immediately rather than lying
         // where it fell. A corpse at the place of death is state that no rule
-        // reads but the digest still covers, and at M2 it would be a position
-        // the fog projection has to remember to hide.
+        // reads but the digest still covers, and it would be a position the fog
+        // projection has to remember to hide.
         champion.position = spawn_position(seat, rules);
+    }
+    for (seat, at) in died.iter().enumerate() {
+        let Some(at) = *at else {
+            continue;
+        };
+        emit(
+            state,
+            at,
+            EventKind::Death {
+                entity: champion_entity_id(seat),
+            },
+        );
     }
 }
 

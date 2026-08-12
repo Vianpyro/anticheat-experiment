@@ -42,6 +42,7 @@
 //! rather than self-describing — and it is, because every value's width is a
 //! function of its type alone.
 
+use crate::event::{Ability, Event, EventKind, Events};
 use crate::fx::Fx;
 use crate::input::{Action, Input};
 use crate::rng::Rng;
@@ -288,6 +289,51 @@ impl Canonical for Projectiles {
     }
 }
 
+impl Canonical for Ability {
+    fn hash_into(&self, hasher: &mut Hasher) {
+        match self {
+            Self::Skillshot => 0u8.hash_into(hasher),
+            Self::Targeted => 1u8.hash_into(hasher),
+        }
+    }
+}
+
+impl Canonical for EventKind {
+    fn hash_into(&self, hasher: &mut Hasher) {
+        match self {
+            Self::Cast { caster, ability } => {
+                0u8.hash_into(hasher);
+                caster.hash_into(hasher);
+                ability.hash_into(hasher);
+            }
+            Self::Damage { target, amount } => {
+                1u8.hash_into(hasher);
+                target.hash_into(hasher);
+                amount.hash_into(hasher);
+            }
+            Self::Death { entity } => {
+                2u8.hash_into(hasher);
+                entity.hash_into(hasher);
+            }
+        }
+    }
+}
+
+impl Canonical for Event {
+    fn hash_into(&self, hasher: &mut Hasher) {
+        let Event { kind, at } = self;
+        kind.hash_into(hasher);
+        at.hash_into(hasher);
+    }
+}
+
+impl Canonical for Events {
+    fn hash_into(&self, hasher: &mut Hasher) {
+        let Events { slots } = self;
+        slots.hash_into(hasher);
+    }
+}
+
 impl Canonical for Outcome {
     fn hash_into(&self, hasher: &mut Hasher) {
         match self {
@@ -310,6 +356,7 @@ impl Canonical for State {
             champions,
             towers,
             projectiles,
+            events,
             outcome,
         } = self;
         tick.hash_into(hasher);
@@ -318,6 +365,7 @@ impl Canonical for State {
         champions.hash_into(hasher);
         towers.hash_into(hasher);
         projectiles.hash_into(hasher);
+        events.hash_into(hasher);
         outcome.hash_into(hasher);
     }
 }
@@ -375,6 +423,7 @@ impl Canonical for Rules {
             champion_speed,
             champion_radius,
             respawn_ticks,
+            champion_vision_radius,
             attack_range,
             attack_damage,
             attack_cooldown_ticks,
@@ -391,6 +440,7 @@ impl Canonical for Rules {
             tower_range,
             tower_damage,
             tower_cooldown_ticks,
+            tower_vision_radius,
             min_direction_length,
         } = self;
         frac_bits.hash_into(hasher);
@@ -404,6 +454,7 @@ impl Canonical for Rules {
         champion_speed.hash_into(hasher);
         champion_radius.hash_into(hasher);
         respawn_ticks.hash_into(hasher);
+        champion_vision_radius.hash_into(hasher);
         attack_range.hash_into(hasher);
         attack_damage.hash_into(hasher);
         attack_cooldown_ticks.hash_into(hasher);
@@ -420,6 +471,7 @@ impl Canonical for Rules {
         tower_range.hash_into(hasher);
         tower_damage.hash_into(hasher);
         tower_cooldown_ticks.hash_into(hasher);
+        tower_vision_radius.hash_into(hasher);
         min_direction_length.hash_into(hasher);
     }
 }
