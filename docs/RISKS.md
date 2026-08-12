@@ -229,3 +229,41 @@ automation must be explainable in one sentence and removable in one commit; and
 the count stays small enough to hold in your head. Reaching for five
 automations you understand over fifteen you endure is a maintenance decision,
 not an aesthetic one.
+
+## R12 — Third-party actions pinned by mutable tag
+
+**Cheap now, and it is the one supply-chain surface the project has today.**
+Every third-party action in `.github/workflows/` is referenced by tag —
+`actions/checkout@v5`, `Swatinem/rust-cache@v2`. A tag is a mutable pointer:
+whoever controls the action's repository can move `v5` to any commit, and every
+workflow run afterwards executes that commit with whatever token the job holds.
+This is not hypothetical for the ecosystem — it is the shape of every action
+compromise published so far, `tj-actions/changed-files` in March 2025 being the
+widely reported one, where a moved tag exfiltrated CI secrets from thousands of
+repositories.
+
+What limits the blast radius here is already in place and worth stating, because
+it is why this is R12 and not R1: every workflow declares `permissions:
+contents: read`, no job holds write permissions, and the repository has no
+secrets. A compromised action today can read a public checkout and poison a
+build cache. It cannot push, tag, publish, or steal a credential that does not
+exist. That changes at M9, when `release` becomes the first job to hold
+`contents: write`, `packages: write` and `id-token: write` — at which point a
+moved tag mints signed releases and provenance attestations in this project's
+name, and the risk stops being survivable.
+
+**Decide:** M3. Pinning by commit SHA is the fix, and it is deliberately not
+taken now for the reason already stated in `ci.yml`: a SHA pin with nothing to
+bump it is a pin that rots into an unpatched action, and the project trades one
+silent failure for another. Renovate arrives at M3 and its `helpers:pinGitHubActionDigests`
+preset both rewrites the references to SHAs and keeps them moving, with the
+weekly grouped pull request as the review point. Pinning and the thing that
+updates the pins land together or not at all.
+
+**Hedge until then:** the count of third-party actions stays at two, both from
+widely used publishers; no job gains a write permission before M9; and the M9
+release workflow does not merge unless its actions are SHA-pinned, which is a
+precondition on that milestone rather than a hope. If Renovate is ever deleted
+as noise (`ENGINEERING.md` offers that exit), the SHA pins must be replaced by
+tags in the same commit, so the pins never outlive the automation that maintains
+them.

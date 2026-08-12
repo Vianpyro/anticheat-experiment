@@ -118,6 +118,11 @@ Arrives at M3, when there are dependencies to update. Configuration:
   change to `sim`'s dependencies — no exceptions, since `sim` is where a silent
   behavioral change is most expensive (`RISKS.md` R9).
 - `rangeStrategy: bump`, lockfile maintenance monthly.
+- **`helpers:pinGitHubActionDigests`**, which rewrites every third-party action
+  reference from a mutable tag to a commit SHA and then keeps those SHAs
+  current. This is the second half of `RISKS.md` R12: the pins and the
+  automation that maintains them land in the same milestone, because a SHA pin
+  with nothing to bump it is an unpatched action wearing a security measure.
 
 The lighter alternative, if Renovate ever becomes noise: delete it and run
 `cargo update` by hand once a month, with `cargo-deny` on the schedule to tell
