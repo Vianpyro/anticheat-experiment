@@ -1,18 +1,17 @@
 {
-    "name": "Template Development Container",
-    "image": "mcr.microsoft.com/devcontainers/base:bookworm",
+    // The image provides rustup and a build environment. It does not define the
+    // toolchain: rust-toolchain.toml does, so that a build in the container, on
+    // the host and in CI are the same build.
+    "name": "moba",
+    "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
     "customizations": {
-        "settings": {
-            "terminal.integrated.shell.linux": "/bin/bash"
-        },
         "vscode": {
             "extensions": [
-                "ms-vscode.atom-keybindings",
-                "ms-vscode-remote.remote-containers",
-                "ms-azuretools.vscode-docker",
-                "myriad-dreamin.tinymist"
+                "rust-lang.rust-analyzer",
+                "tamasfe.even-better-toml"
             ]
         }
     },
+    "postCreateCommand": "rustup show active-toolchain",
     "remoteUser": "vscode"
 }
