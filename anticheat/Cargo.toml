@@ -1,0 +1,11 @@
+[package]
+name = "anticheat"
+description = "Detection: feature extraction, detectors, thresholds, evidence bundles."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]

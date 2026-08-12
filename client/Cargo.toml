@@ -1,0 +1,11 @@
+[package]
+name = "client"
+description = "Presentation: rendering, input capture, prediction, reconciliation."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
