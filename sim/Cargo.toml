@@ -6,7 +6,22 @@ license.workspace = true
 publish.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-version.workspace = true
+
+# The one crate that does not inherit the workspace version, and the reason is
+# `docs/RISKS.md` R13. `rules_hash()` covers the constants but not the order of
+# operations in `step`, so two builds can agree on the rules hash and still
+# resimulate a replay differently. This number is what tells them apart, and a
+# number that has to be remembered is a number that will be forgotten — the
+# same class of failure as a field missing from the digest, without a compiler
+# to catch it. So the `sim-version` job in `.github/workflows/determinism.yml`
+# refuses a pull request that touches `sim/` without raising it, and the rest of
+# the workspace keeps inheriting `workspace.package.version`.
+#
+# Bump the patch for a change that cannot alter a single digest (a comment, a
+# test, a doc), the minor for anything that can. When in doubt it is the minor:
+# the cost of an unnecessary bump is a line in a diff, and the cost of a missing
+# one is a replay that verifies against the wrong build.
+version = "0.1.0"
 
 # Empty, and meant to stay empty. `docs/ARCHITECTURE.md` allows a fixed-point
 # crate and `serde` for the view types; this crate takes neither. The

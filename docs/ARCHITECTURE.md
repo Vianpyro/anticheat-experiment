@@ -332,12 +332,26 @@ pub struct Manifest {                  // this is what gets signed, not the log
     pub server_identity: PublicKey,
     pub seed: u64,
     pub rules_hash: [u8; 32],
-    pub sim_version: u16,
+    pub sim_version: [u16; 3],         // the `sim` crate version: major, minor, patch
+    pub sim_commit: SimCommit,         // the commit that build came from, or Unknown
     pub started_at: SystemTime,
     pub participants: Vec<PlayerPseudonym>,
     pub input_log_digest: [u8; 32],
     pub final_state_digest: [u8; 32],
 }
+```
+
+`rules_hash` covers the constants; `sim_version` and `sim_commit` cover the code
+that reads them, which is the gap `RISKS.md` R13 is about — two builds can agree
+on every constant and still resolve a tick differently. The version is enforced
+mechanically: `sim` owns its version rather than inheriting the workspace's, and
+CI refuses a pull request that touches `sim/` without raising it. The commit is
+what makes a mismatch investigable rather than merely reportable, and it is
+allowed to be absent, because a locally built server is a real case and a
+manifest that lies about provenance is worse than one that admits it:
+
+```rust
+pub enum SimCommit { Sha([u8; 20]), Dirty([u8; 20]), Unknown }
 
 pub struct Replay { pub manifest: Manifest, pub signature: Signature, pub inputs: Vec<TimedInput> }
 
@@ -354,7 +368,9 @@ pub fn verify(replay: &Replay, keys: &KeyRegistry) -> Result<Digest, VerifyError
 
 `VerifyError` distinguishes its cases (truncated, reordered, digest mismatch,
 unknown key, version mismatch) because M5's exit criterion is that each tamper
-case is rejected for the right reason.
+case is rejected for the right reason. "This replay is from another build" is
+one of those cases and not a digest mismatch: the two have different answers,
+and a verifier that conflates them teaches its reader to distrust the loud one.
 
 ### `anticheat`
 

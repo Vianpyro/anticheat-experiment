@@ -40,6 +40,8 @@ it is the one that dies.
 parameters, tick rate, and balance constants. Verification refuses a mismatch
 loudly instead of resimulating into garbage. That converts a silent corruption
 into a clean "this replay belongs to another version", which is survivable.
+What `rules_hash` does *not* cover is the code that reads those constants; that
+is R13.
 
 ## R3 — Personal data in the input corpus
 
@@ -267,3 +269,59 @@ precondition on that milestone rather than a hope. If Renovate is ever deleted
 as noise (`ENGINEERING.md` offers that exit), the SHA pins must be replaced by
 tags in the same commit, so the pins never outlive the automation that maintains
 them.
+
+## R13 — Two builds that agree on `rules_hash` and disagree on the match
+
+**Irreversible in the same way R2 is, and less visible.** `rules_hash()` covers
+the constants. It does not cover the code that reads them. Swap steps 5 and 6 of
+`step` — projectiles before towers becomes towers before projectiles — and every
+constant, every hash and every type is unchanged while a champion who survived a
+tick now dies in it. A replay recorded before the change resimulates to a
+different final digest afterwards, and the verifier reports a digest mismatch
+with no way to say which of the two builds was right. The corpus outlives the
+code that produced it, so this is discovered long after the change that caused
+it.
+
+**Decide:** M1 for the mechanism, M5 for what the manifest carries.
+
+**Hedge, in two parts, and the second is the honest one:**
+
+*A version the compiler cannot forget.* `sim` owns its version rather than
+inheriting the workspace's, and the `sim-version` job refuses a pull request that
+changes anything under `sim/` without raising it. A number bumped by convention
+is a number forgotten on the Tuesday it matters — the same failure as a field
+missing from the digest, minus the compiler. The manifest at M5 carries this
+version alongside `rules_hash`, and `verify` rejects a mismatch as its own error
+case rather than as a digest mismatch, because "this replay is from another
+build" and "this replay was tampered with" must not look alike.
+
+*A commit hash, because the version is a claim and the commit is a fact.* The M5
+manifest also records the git commit the server was built from. The version says
+"something changed"; only the commit says *what*, and it is the difference
+between a verification failure you can bisect and one you can only file. It is
+stamped by the release build, so a locally-built server records the commit it was
+built from and an unknown or dirty tree records that it was one.
+
+**The imperfection, stated rather than hidden.** This mechanism is weaker than
+the digest's exhaustive destructuring and it is worth being precise about where:
+
+- It catches a *changed file*, not a changed behaviour. A comment-only edit
+  demands a bump it does not need, and the response to friction like that is
+  usually to weaken the check. Keep it: a spurious patch bump costs a line.
+- A change that perturbs the simulation *without touching `sim/`* — a compiler
+  upgrade, a lockfile change, a profile flag — moves no version at all. That is
+  what the tri-platform fixture and its committed digests are for, and the
+  determinism job's path filter covers exactly those inputs.
+- Nothing forces the *size* of the bump to match the size of the change, so a
+  minor-vs-patch judgement remains a judgement.
+- Recorded in a manifest signed by the server, the version and the commit are
+  only as trustworthy as the server (R4). They order *this project's own*
+  builds. They are not evidence against an attacker who controls the build, and
+  no claim in this repository should read as though they were.
+
+The alternative — hashing the compiled `sim` artifact, or the source tree — was
+considered and rejected: it is defeated by any build-path or debug-info
+difference, which puts it in the reproducible-builds swamp `ENGINEERING.md`
+declines to enter, and it would report a difference between two builds of
+identical source. A version plus a commit is a weaker guarantee that is actually
+true.

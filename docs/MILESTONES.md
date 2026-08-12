@@ -157,6 +157,12 @@ Replay container format with a version stamp and a rules hash, signing, and
 verification. Decide and document what is signed — the input log alone is not
 enough, see `RISKS.md`.
 
+The version stamp is two fields, not one, and `RISKS.md` R13 says why: the
+`sim` crate version — already enforced at M1 by a CI check that refuses a change
+to `sim/` without a bump — and the commit the server was built from. `rules_hash`
+covers the constants, the version and the commit cover the code that reads them,
+and a mismatch on either is its own `VerifyError` rather than a digest mismatch.
+
 **Exit:** a table-driven test covers six tamper cases — truncated log, reordered
 inputs, altered outcome record, altered seed, unknown signing key, version or
 rules-hash mismatch — each rejected with a distinct error, and a genuine replay

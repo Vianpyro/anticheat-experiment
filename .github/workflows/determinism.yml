@@ -47,6 +47,77 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # `rules_hash()` covers the constants. Nothing covers the order of operations
+  # in `step`, so two builds can agree on every rule and still resimulate a
+  # replay differently — which is why the replay manifest carries a `sim`
+  # version at M5 (docs/RISKS.md R13). A version bumped by hand is a version
+  # forgotten by hand, so this is the mechanism: touch `sim/`, raise the number,
+  # or the pull request does not merge.
+  #
+  # It runs on pull requests only. There is no base to compare a push to `main`
+  # against once the pull request that produced it has already been checked.
+  sim-version:
+    name: sim version
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The whole history: the check is a comparison against the base of the
+          # pull request, and a shallow clone does not contain it.
+          fetch-depth: 0
+
+      - name: Require a version bump for a change to sim
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          # This workflow also triggers on `replay/`, the lockfile and the
+          # toolchain pin. Those are changes that can perturb the simulation
+          # without changing `sim`'s own sources, and a version this crate does
+          # not own is not something this check can ask for; the fixture jobs
+          # are what covers them. See R13 for that gap, which is deliberate.
+          if [[ -z "$(git diff --name-only "$BASE"...HEAD -- sim/)" ]]; then
+            echo "ok: this pull request does not touch sim/"
+            exit 0
+          fi
+
+          version_of() {
+            # `sim` declares an explicit `version = "x.y.z"`; every other crate
+            # inherits the workspace's. An empty result means the declaration
+            # was removed, which is a failure of its own below.
+            git show "$1:sim/Cargo.toml" 2>/dev/null \
+              | sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' | head -1
+          }
+
+          head_version=$(version_of HEAD)
+          base_version=$(version_of "$BASE")
+
+          if [[ -z "$head_version" ]]; then
+            echo "::error file=sim/Cargo.toml::sim must declare its own version (docs/RISKS.md R13)"
+            exit 1
+          fi
+          if [[ -z "$base_version" ]]; then
+            echo "ok: sim gained an explicit version ($head_version)"
+            exit 0
+          fi
+          # Strictly greater, not merely different: a version that moves
+          # backwards orders two builds wrongly, which is worse than not
+          # ordering them at all. `sort -V` is the comparison, and the guard is
+          # that the lower of the two is the base and they are not equal.
+          if [[ "$head_version" != "$base_version" ]] \
+            && [[ "$(printf '%s\n%s\n' "$base_version" "$head_version" | sort -V | head -1)" == "$base_version" ]]; then
+            echo "ok: sim $base_version -> $head_version"
+            exit 0
+          fi
+          echo "::error file=sim/Cargo.toml::this pull request changes sim/ but leaves its version at $base_version."
+          echo "Raise it in sim/Cargo.toml: the replay manifest carries this number, and a build that"
+          echo "reorders step without changing rules_hash() is otherwise indistinguishable from its"
+          echo "predecessor (docs/RISKS.md R13). Patch for a change that cannot move a digest, minor otherwise."
+          exit 1
+
   fixture:
     name: fixture (${{ matrix.arch }} ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
