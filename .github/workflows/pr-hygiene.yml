@@ -14,11 +14,25 @@ jobs:
     name: branch name
     runs-on: ubuntu-latest
     steps:
+      # The convention exists to keep this repository's own history legible, so
+      # it is enforced on this repository's own branches. A contributor working
+      # in their fork owns their branch names, and `fork -> main -> pull
+      # request` is the ordinary contribution flow on a public repository:
+      # rejecting it would reject the majority of outside contributions for a
+      # naming rule that buys nothing once the pull request is squashed. The
+      # title check below still applies to every pull request, fork or not,
+      # because the title is what becomes the commit on `main`.
       - name: Validate
         shell: bash
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
         run: |
+          if [[ -n "$HEAD_REPO" && "$HEAD_REPO" != "$BASE_REPO" ]]; then
+            echo "skipped: pull request from fork '$HEAD_REPO'; branch naming is the fork's business"
+            exit 0
+          fi
           pattern='^(feature|bug|fix|chore|docs|test|testing|performance|refactor|ci-cd|build|release|hotfix|experiment|task|security|special|status)/[a-z0-9][a-z0-9_-]{1,48}[a-z0-9]$'
           if [[ "$BRANCH" =~ $pattern ]]; then
             echo "ok: $BRANCH"
