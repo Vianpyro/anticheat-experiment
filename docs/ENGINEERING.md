@@ -223,6 +223,7 @@ in a security project.
 | Pushing the release tag | A human decides that a version exists. Auto-tagging on merge turns every merge into a release |
 | The release notes headline | The changelog is generated; the narrative of what changed is not a thing a tool knows |
 | Approving production-dependency updates | The blast radius is the running server and, for `sim`, the determinism guarantee |
+| Committing a proptest counter-example | The seed is printed into the run summary of the job that found it and pasted into `sim/proptest-regressions/properties.txt`. A bot pushing it would need write permissions on the branch, which is the automation `RISKS.md` R11 exists to refuse; the paste costs seconds and the case is permanent afterwards |
 | Rotating the replay signing key | Rotation without publishing the retired key orphans every replay signed with it (`RISKS.md` R4). Rare, consequential, and better done deliberately |
 | Admitting a participant to the human corpus | Consent is a person-to-person act, and the consent record is what makes the corpus lawfully usable (`RISKS.md` R3) |
 | Acting on a detector finding | By design, permanently. Detectors emit scores and evidence; a ban is a human judgment. This is a scope decision, not a missing feature |

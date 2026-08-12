@@ -165,3 +165,71 @@ jobs:
             grep '^determinism:' determinism.log || echo 'no digest reported: the fixture did not run'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # The property tests, on the same three targets and with a budget CI can
+  # afford and a developer cannot. 256 cases is proptest's default and it is
+  # tuned for the edit-compile-test loop; the interesting counter-examples in a
+  # fixed-point library live in a thin shell near the ends of the domain, and
+  # the difference between sampling it a few hundred times and a few thousand is
+  # the difference between finding them this year and finding them in the
+  # corpus. A case this job discovers is written into
+  # `sim/proptest-regressions/properties.txt`, which is committed, so it becomes
+  # a permanent test rather than one lucky run — see the header of
+  # `sim/tests/properties.rs`.
+  properties:
+    name: properties (${{ matrix.arch }} ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86-64
+          - os: windows-latest
+            arch: x86-64
+          - os: macos-14
+            arch: aarch64
+
+    env:
+      # Sixteen times the default. Chosen so the job stays inside the workflow's
+      # budget on the slowest of the three runners; raise it if it ever stops
+      # finding anything, which is the only honest reason to.
+      PROPTEST_CASES: 4096
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: Swatinem/rust-cache@v2
+
+      # `--release`, for the reason the fixture job runs release: overflow
+      # checks are on in every profile, so this exercises the optimised code
+      # without arithmetic meaning something different than it does under
+      # `cargo test`.
+      - name: Run the property tests
+        run: cargo test -p sim --release --locked --test properties
+
+      # A counter-example is worth nothing if it dies with the runner, and the
+      # runner is where this one was found: proptest appends the failing seed to
+      # the regressions file, and that file is on a machine that is about to be
+      # destroyed. So it is printed into the run summary, from where it is
+      # pasted into the committed file — which is what turns a failure found
+      # here once into a case every future run replays first.
+      #
+      # Printed rather than uploaded as an artifact deliberately: an upload
+      # action would be a third third-party action in this repository, and
+      # `docs/RISKS.md` R12 holds that count at two until Renovate arrives to
+      # keep SHA pins current. Six lines of `cat` are not worth a supply-chain
+      # surface.
+      - name: Report any new regression seeds
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "### new proptest regression seeds (${{ matrix.arch }} ${{ matrix.os }})"
+            echo ''
+            echo 'Paste any `cc` line below into `sim/proptest-regressions/properties.txt`.'
+            echo ''
+            echo '```'
+            grep '^cc ' sim/proptest-regressions/properties.txt || echo 'none: the failure was not a property counter-example'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

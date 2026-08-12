@@ -26,10 +26,48 @@
 #![deny(clippy::float_arithmetic, unsafe_code)]
 
 use proptest::prelude::*;
+use proptest::test_runner::FileFailurePersistence;
 use sim::{
     Action, EntityId, Fx, FxVec2, Input, Liveness, MAX_PROJECTILES, Outcome, PLAYER_COUNT,
     PlayerId, RULES, Rng, State, Tick, new_state, step,
 };
+
+/// Where a counter-example is written down, and why it is written down at all.
+///
+/// A property test that finds a bug once and forgets it is a property test that
+/// finds the same bug again in six months, or — worse — does not, because the
+/// generator happened to sample elsewhere. `proptest-regressions/properties.txt`
+/// is committed to the repository, so a case discovered on one machine, or on
+/// one platform of the determinism matrix, becomes a case every later run
+/// replays first. That is what turns a lucky sample into a permanent test, and
+/// it matters most for the target that is hardest to reproduce locally: an
+/// aarch64 failure that vanished on the next run would be the single most
+/// expensive thing this suite could lose.
+///
+/// The path is stated rather than left to proptest's default, and that is not
+/// tidiness. The default, `SourceParallel`, locates the crate by walking up from
+/// the test source looking for `lib.rs` or `main.rs`; an integration test lives
+/// in `tests/`, where it finds neither, so it prints a warning into the middle
+/// of a failure report and falls back to
+/// `sim/tests/properties.proptest-regressions` — a file beside the source,
+/// under a name nobody greps for, in a directory nobody thinks to commit. The
+/// seeds were being written; they were being written somewhere they would never
+/// be checked in from. `Direct` is relative to the package root, which is where
+/// `cargo` runs a test binary from, and it puts them in the conventional place.
+const REGRESSIONS: &str = "proptest-regressions/properties.txt";
+
+/// The configuration every block below runs under.
+///
+/// `..ProptestConfig::default()` is load bearing twice: it carries the case
+/// count from the `PROPTEST_CASES` environment variable, which is how the CI
+/// job raises the budget above the development default of 256, and it is what
+/// keeps this from silently pinning any other default proptest gains later.
+fn config() -> ProptestConfig {
+    ProptestConfig {
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(REGRESSIONS))),
+        ..ProptestConfig::default()
+    }
+}
 
 /// Half-extent of the legal coordinate domain, in raw Q15.16 units.
 ///
@@ -117,6 +155,8 @@ fn assert_state_is_legal(state: &State) {
 }
 
 proptest! {
+    #![proptest_config(config())]
+
     /// Addition, subtraction and multiplication are closed on the coordinate
     /// domain: the checked form always succeeds, so the saturating form never
     /// silently changed a value.
