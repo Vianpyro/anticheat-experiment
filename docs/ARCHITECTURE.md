@@ -573,6 +573,29 @@ Each is a test or a lint, not a convention:
    every state digest to be unchanged, which is how "`step` never reads
    visibility" is a test rather than a habit.
 
+   **The re-derivation is duplication, it is deliberate, and it stays.** It has
+   diverged once — truncated distances against exact squares, a shell one raw
+   unit thick outside every circle — and it can diverge again, so the tempting
+   move is to have `sim` export its predicate and have the test consume it. That
+   is refused: a test calling `sim::view`'s own predicate asserts that
+   `view_for` agrees with itself, which a projection that leaks everything
+   satisfies as long as it leaks consistently, and the independence is the first
+   of the two grounds on which `MILESTONES.md` records M2 as reached rather than
+   written.
+
+   What guards it is measured rather than asserted, and the measurement is less
+   flattering than the argument. Putting the truncating comparison back turns
+   `everything_inside_vision_is_named` red — the laxer specification admits a
+   champion the view withholds — but **only at the `properties` job's raised
+   case budget**; at proptest's development default of 256 the divergence
+   passes unnoticed. And `vision_flips_exactly_at_the_radius`, the property that
+   looks like it should be the one, does not catch it at any budget: its two
+   champions are separated along `x` alone, so the squared distance is a perfect
+   square and the integer square root is exact on it. The guard is completeness,
+   it lives in CI rather than on a developer's machine, and the obligation
+   stated at the top of that module is the real mechanism: a change to the rule
+   changes the specification in the same commit.
+
    The same criterion holds over states nobody scripted:
    `sim/tests/view_properties.rs` reaches them by simulation from a drawn seed
    and a drawn script — half of it hostile — and asserts soundness,

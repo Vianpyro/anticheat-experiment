@@ -11,6 +11,64 @@
 //! It is deliberately written as the naive double loop it is. This is the
 //! specification, and it is supposed to be boring enough to read as one.
 //!
+//! # The duplication is deliberate, and this is the argument for keeping it
+//!
+//! It has already cost something once. The predicate here compared *truncated*
+//! distances where `sim::view` compares exact squares, so the two disagreed in
+//! a shell one raw unit thick just outside every circle — a real divergence,
+//! found by a property that aims at the boundary, fixed in the commit that
+//! found it. A duplication that diverged once will diverge again, and the
+//! obvious response is to delete it: have `sim` export its predicate and have
+//! this module call it.
+//!
+//! **That is refused, and the reason is what the tests are evidence *of*.**
+//! `docs/MILESTONES.md` records M2 as reached rather than written on exactly
+//! two grounds, and the first is that the culling tests do not call `sim`'s own
+//! predicate — a test that consumed `sim::view::can_see` would assert that
+//! `view_for` agrees with itself, which is true of a projection that leaks
+//! everything as long as it leaks consistently. Sharing the predicate would
+//! convert every culling assertion in this repository into a tautology in order
+//! to remove a divergence the suite already detects.
+//!
+//! And it does detect it, which is the half that makes this a decision rather
+//! than a preference. A disagreement between the two is not a silent drift; it
+//! is a failing test, from either side. If this module is **stricter** than the
+//! rule, `assert_sound` in `sim/tests/view_properties.rs` fails: the view names
+//! something the specification says is out of vision. If it is **laxer**,
+//! `assert_complete` fails: the entitled set holds a handle the view withheld.
+//!
+//! # What that detection actually costs, measured rather than assumed
+//!
+//! The claim above was checked by putting the divergence back — `covered` was
+//! returned to `source.sub(point).length() <= radius`, the truncating form —
+//! and running the suite. Two results, and the second is the one worth writing
+//! down:
+//!
+//! - **`everything_inside_vision_is_named` goes red**, at
+//!   `tick Tick(18), Blue0: the visible set is not the entitled set`. The laxer
+//!   specification admits a champion in the one-raw-unit shell and the view
+//!   does not. That is the guard working.
+//! - **It only goes red at the raised budget.** At proptest's development
+//!   default of 256 cases the whole binary passes with the divergence in place;
+//!   at the `properties` job's `PROPTEST_CASES=16384` it fails. The shell is
+//!   one part in 786 432 of the vision radius, and finding a reachable state
+//!   that lands a champion inside it is a sampling problem.
+//! - **`vision_flips_exactly_at_the_radius` does not catch it at all**, at
+//!   either budget, and the reason is structural rather than a matter of
+//!   budget: `face_off` separates the two champions along `x` alone, so the
+//!   squared distance is a perfect square and the integer square root is exact
+//!   on it. The truncating predicate and the exact one agree at every
+//!   separation that property draws. It is the property that pins the boundary
+//!   *of the rule*; it is not the property that would catch this specification
+//!   drifting from it, and it would be wrong to claim otherwise.
+//!
+//! So the honest statement is: the duplication is guarded, the guard is
+//! completeness rather than the boundary sweep, and it needs CI's case budget
+//! rather than a local `cargo test` to fire. The obligation that follows is
+//! stated rather than assumed: **a change to the visibility rule in
+//! `sim/src/view.rs` changes this module in the same commit.** The suite is the
+//! backstop, not the mechanism.
+//!
 //! # Two things about it that are specification and not implementation detail
 //!
 //! **The boundary is closed, and the comparison is exact.** A point at exactly
