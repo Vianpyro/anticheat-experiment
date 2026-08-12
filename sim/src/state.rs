@@ -40,10 +40,21 @@ pub const TOWER_COUNT: usize = 4;
 pub const MAX_PROJECTILES: usize = 32;
 
 /// First `EntityId` handed to a tower. Champions occupy `0..6`.
-const TOWER_ID_BASE: u16 = 10;
+///
+/// Public because the handle layout is not an implementation detail: a
+/// champion's handle *is* its seat and a tower's handle is derivable from the
+/// rules, which is why `docs/ARCHITECTURE.md` records both as information a
+/// client may have. `protocol` reads these two constants to tell the handles a
+/// recipient may keep from the ones it must be given a private name for.
+pub const TOWER_ID_BASE: u16 = 10;
 
 /// First `EntityId` handed to a projectile.
-const PROJECTILE_ID_BASE: u16 = 1000;
+///
+/// The one handle range that is *not* public information. It comes from a
+/// match-global counter, so a gap between two handles a player was shown counts
+/// the casts that happened out of their sight — which is why `protocol` gives
+/// every recipient a handle space of its own above this base.
+pub const PROJECTILE_ID_BASE: u16 = 1000;
 
 /// A simulation tick. The only notion of time `sim` has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]

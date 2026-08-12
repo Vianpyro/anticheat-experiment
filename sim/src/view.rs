@@ -34,29 +34,33 @@
 //!
 //! # Serialization
 //!
-//! [`PlayerView::encode`] is a hand-written canonical encoding, and `sim` still
-//! has an empty `[dependencies]` table. `docs/ARCHITECTURE.md` allows `serde`
-//! here; it is deliberately not taken yet, and the reason is in that document
-//! under this module's heading — the transport that would choose a codec does
-//! not exist until M3, and the traffic-shape invariant that governs message
-//! size wants an encoding whose byte layout is decided here rather than by a
-//! crate.
+//! [`PlayerView::encode`] and [`PlayerView::decode`] are a hand-written
+//! canonical encoding and its inverse, and `sim` still has an empty
+//! `[dependencies]` table. `docs/ARCHITECTURE.md` allows `serde` here; the
+//! permission was not taken at M3 either, and the reason is now stronger than
+//! it was: the transport pads every `View` message to
+//! [`PlayerView::MAX_ENCODED_BYTES`], and that bound is derived from this byte
+//! layout rather than measured from a run. A codec that chose its own widths
+//! would make the padding budget a number nobody could derive.
 //!
-//! What the encoding is *not*, yet: a constant size. `docs/ARCHITECTURE.md`
-//! requires every `View` message to encode to the same number of bytes and to
-//! be sent at a constant cadence, because message length and message count leak
-//! the number of visible entities as surely as the entities themselves would.
-//! That is a property of the transport, the transport is M3, and padding a
-//! bound into a bucket here would be building half of it in the wrong crate.
-//! [`PlayerView::MAX_ENCODED_BYTES`] is the bound that padding will eventually
-//! round up to.
+//! The two halves live in one file deliberately. A decoder in `protocol` would
+//! be a second copy of the layout, and a drifted decoder does not error — it
+//! produces a plausible view. Here, a field added to a view type has to be
+//! handled twice in the same diff, and the round-trip test below covers both.
+//!
+//! What the encoding is *not* is a constant size, and it is not supposed to be:
+//! the constant size is the frame's, one bucket wide enough for the worst case,
+//! and `protocol::ServerFrame` is where it is imposed. The reason it is imposed
+//! there rather than here is that the other half of the traffic-shape invariant
+//! — one message per player per tick, whatever happened — is a statement about
+//! a server loop and cannot be made by a projection at all.
 
-use crate::event::{Ability, Event, EventKind};
+use crate::event::{Ability, Event, EventKind, MAX_EVENTS};
 use crate::fx::Fx;
 use crate::rules::{RULES, Rules};
 use crate::state::{
-    Cooldowns, EntityId, Liveness, Outcome, Seat, State, TOWER_COUNT, Team, Tick,
-    champion_entity_id, tower_entity_id, tower_position,
+    Cooldowns, EntityId, Liveness, MAX_PROJECTILES, Outcome, PLAYER_COUNT, Seat, State,
+    TOWER_COUNT, Team, Tick, champion_entity_id, tower_entity_id, tower_position,
 };
 use crate::vec2::FxVec2;
 
@@ -657,6 +661,268 @@ impl PlayerView {
         }
         out
     }
+
+    /// Reads a view back, returning it and how many bytes it occupied.
+    ///
+    /// The byte count is the second half of the return value rather than an
+    /// implied "all of them", because the transport pads: a `View` frame is a
+    /// constant number of bytes of which the view is a prefix and the rest is
+    /// zero, and the caller has to know where the view stopped in order to
+    /// check that the remainder is padding rather than a message somebody
+    /// smuggled in behind one.
+    ///
+    /// `None` for any byte string that is not an encoding of a view. Total on
+    /// every input, including truncated and adversarial ones.
+    #[must_use]
+    pub fn decode(bytes: &[u8]) -> Option<(Self, usize)> {
+        let mut cursor = Cursor::new(bytes);
+        let tick = Tick::decode_from(&mut cursor)?;
+        let outcome = Outcome::decode_from(&mut cursor)?;
+        let own = OwnView::decode_from(&mut cursor)?;
+
+        // The two lengths are the only variable-length part of the encoding,
+        // and they are the one place a hostile frame could ask for work
+        // proportional to a number it chose. Bounded against what the *state*
+        // can hold rather than against the buffer: `visible` cannot exceed the
+        // arenas that produce it, and a frame claiming more is malformed, not
+        // large.
+        let visible_len = usize::from(u16::decode_from(&mut cursor)?);
+        if visible_len
+            > PLAYER_COUNT
+                .saturating_add(TOWER_COUNT)
+                .saturating_add(MAX_PROJECTILES)
+        {
+            return None;
+        }
+        let mut visible = Vec::with_capacity(visible_len);
+        for _ in 0..visible_len {
+            visible.push(EntityView::decode_from(&mut cursor)?);
+        }
+
+        let events_len = usize::from(u16::decode_from(&mut cursor)?);
+        if events_len > MAX_EVENTS {
+            return None;
+        }
+        let mut events = Vec::with_capacity(events_len);
+        for _ in 0..events_len {
+            events.push(VisibleEvent::decode_from(&mut cursor)?);
+        }
+
+        Some((
+            Self {
+                tick,
+                outcome,
+                own,
+                visible,
+                events,
+            },
+            cursor.at,
+        ))
+    }
+}
+
+/// Reads a big-endian value out of a cursor, or gives up.
+///
+/// The mirror of [`Encode`], and it lives beside it rather than in `protocol`
+/// on purpose. The encoding is one object with two halves, and a decoder in
+/// another crate is a second copy of the byte layout that can drift from this
+/// one — silently, because a drifted decoder produces a *plausible* view rather
+/// than an error. Keeping the pair in one file means the round-trip test below
+/// covers both, and a field added to a view type has to be handled twice in the
+/// same diff.
+///
+/// Every implementation is total: it returns `None` rather than panicking on
+/// any byte string, because the bytes come off a socket. The one that consumes
+/// them today is the headless client, reading from the server it trusts; that
+/// is not a reason to write a parser that can be made to panic.
+trait Decode: Sized {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self>;
+}
+
+/// A position in a byte string, which never reads past the end.
+struct Cursor<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Cursor<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, at: 0 }
+    }
+
+    fn take(&mut self, count: usize) -> Option<&'a [u8]> {
+        let end = self.at.checked_add(count)?;
+        let slice = self.bytes.get(self.at..end)?;
+        self.at = end;
+        Some(slice)
+    }
+}
+
+impl Decode for u8 {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        cursor.take(1)?.first().copied()
+    }
+}
+
+impl Decode for u16 {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self::from_be_bytes(cursor.take(2)?.try_into().ok()?))
+    }
+}
+
+impl Decode for u32 {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self::from_be_bytes(cursor.take(4)?.try_into().ok()?))
+    }
+}
+
+impl Decode for i32 {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self::from_be_bytes(cursor.take(4)?.try_into().ok()?))
+    }
+}
+
+impl Decode for Fx {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self::from_raw(i32::decode_from(cursor)?))
+    }
+}
+
+impl Decode for FxVec2 {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self::new(
+            Fx::decode_from(cursor)?,
+            Fx::decode_from(cursor)?,
+        ))
+    }
+}
+
+impl Decode for EntityId {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self(u16::decode_from(cursor)?))
+    }
+}
+
+impl Decode for Tick {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self(u32::decode_from(cursor)?))
+    }
+}
+
+impl Decode for Team {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        match u8::decode_from(cursor)? {
+            0 => Some(Self::Blue),
+            1 => Some(Self::Red),
+            _ => None,
+        }
+    }
+}
+
+impl Decode for Ability {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        match u8::decode_from(cursor)? {
+            0 => Some(Self::Skillshot),
+            1 => Some(Self::Targeted),
+            _ => None,
+        }
+    }
+}
+
+impl Decode for Outcome {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        let tag = u8::decode_from(cursor)?;
+        let winner = Team::decode_from(cursor)?;
+        let at = Tick::decode_from(cursor)?;
+        match tag {
+            // The padded variant: both fields are present on the wire and both
+            // are meaningless, which is what keeps "the match ended" out of the
+            // message length.
+            0 => Some(Self::InProgress),
+            1 => Some(Self::Decided { winner, at }),
+            _ => None,
+        }
+    }
+}
+
+impl Decode for Liveness {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        match u8::decode_from(cursor)? {
+            0 => Some(Self::Alive {
+                hp: Fx::decode_from(cursor)?,
+            }),
+            1 => Some(Self::Dead {
+                respawn_at: Tick::decode_from(cursor)?,
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl Decode for Cooldowns {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self {
+            basic_attack: u16::decode_from(cursor)?,
+            skillshot: u16::decode_from(cursor)?,
+            targeted: u16::decode_from(cursor)?,
+        })
+    }
+}
+
+impl Decode for OwnView {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self {
+            id: EntityId::decode_from(cursor)?,
+            position: FxVec2::decode_from(cursor)?,
+            liveness: Liveness::decode_from(cursor)?,
+            cooldowns: Cooldowns::decode_from(cursor)?,
+        })
+    }
+}
+
+impl Decode for EntityView {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        match u8::decode_from(cursor)? {
+            0 => Some(Self::Champion {
+                id: EntityId::decode_from(cursor)?,
+                position: FxVec2::decode_from(cursor)?,
+                hp: Fx::decode_from(cursor)?,
+            }),
+            1 => Some(Self::Tower {
+                id: EntityId::decode_from(cursor)?,
+                position: FxVec2::decode_from(cursor)?,
+                hp: Fx::decode_from(cursor)?,
+            }),
+            2 => Some(Self::Projectile {
+                id: EntityId::decode_from(cursor)?,
+                position: FxVec2::decode_from(cursor)?,
+                velocity: FxVec2::decode_from(cursor)?,
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl Decode for VisibleEvent {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        match u8::decode_from(cursor)? {
+            0 => Some(Self::Cast {
+                caster: EntityId::decode_from(cursor)?,
+                ability: Ability::decode_from(cursor)?,
+                at: FxVec2::decode_from(cursor)?,
+            }),
+            1 => Some(Self::Damage {
+                target: EntityId::decode_from(cursor)?,
+                amount: Fx::decode_from(cursor)?,
+                at: FxVec2::decode_from(cursor)?,
+            }),
+            2 => Some(Self::Death {
+                entity: EntityId::decode_from(cursor)?,
+                at: FxVec2::decode_from(cursor)?,
+            }),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -966,6 +1232,77 @@ mod tests {
 
         let other_team = view_for(&state, Seat::Red0).encode();
         assert_ne!(baseline, other_team);
+    }
+
+    /// The encoding and its inverse agree, on views reached by simulation and
+    /// on the worst case the bound is derived from.
+    ///
+    /// Not a "does the codec work" test: it is the runtime half of keeping the
+    /// two functions in one file. A field added to `encode` and forgotten in
+    /// `decode` reads the next field's bytes as its own, so the round trip
+    /// comes back wrong rather than short, which is precisely the failure a
+    /// length check would miss.
+    #[test]
+    fn a_view_survives_a_round_trip_through_its_own_encoding() {
+        let mut state = new_state(5);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, RULES.champion_max_hp);
+        state.place_champion(
+            Seat::Red0,
+            FxVec2::new(Fx::from_int(2), Fx::ONE),
+            RULES.champion_max_hp,
+        );
+        let mut state = step(
+            &state,
+            &[Input {
+                tick: Tick(0),
+                seq: 0,
+                player: Seat::Blue0,
+                action: Action::Skillshot(FxVec2::new(Fx::ONE, Fx::ZERO)),
+            }],
+        );
+        for _ in 0..3 {
+            state = step(&state, &[]);
+        }
+
+        for seat in Seat::ALL {
+            let view = view_for(&state, seat);
+            let encoded = view.encode();
+            let (decoded, read) =
+                PlayerView::decode(&encoded).expect("a view this crate encoded did not decode");
+            assert_eq!(decoded, view, "{seat:?}");
+            assert_eq!(read, encoded.len(), "{seat:?}: bytes consumed");
+        }
+    }
+
+    /// Decoding is total: no byte string panics it, and a truncated or
+    /// nonsensical one is refused rather than half-read.
+    #[test]
+    fn decoding_refuses_what_it_cannot_read() {
+        let view = view_for(&new_state(5), Seat::Blue0);
+        let encoded = view.encode();
+
+        for cut in 0..encoded.len() {
+            assert!(
+                PlayerView::decode(&encoded[..cut]).is_none(),
+                "a view truncated to {cut} bytes decoded anyway"
+            );
+        }
+        // Trailing bytes are not an error here — the frame is padded and the
+        // caller checks the remainder. What comes back is the view and the
+        // length it occupied, which is how the caller can check it at all.
+        let mut padded = encoded.clone();
+        padded.extend_from_slice(&[0u8; 64]);
+        let (decoded, read) = PlayerView::decode(&padded).expect("padding refused a valid view");
+        assert_eq!(decoded, view);
+        assert_eq!(read, encoded.len());
+
+        // A length prefix claiming more entities than the arenas can hold is
+        // refused without trying to allocate for it.
+        let mut lying = encoded.clone();
+        let visible_len_at = 4 + 6 + 21;
+        lying[visible_len_at] = 0xFF;
+        lying[visible_len_at + 1] = 0xFF;
+        assert!(PlayerView::decode(&lying).is_none());
     }
 
     /// A cast the caster's own team can see, announced with the ability that
