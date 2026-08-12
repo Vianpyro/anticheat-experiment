@@ -230,15 +230,20 @@ fn audit(seed: u64, log: &[Vec<Input>], rules: &Rules) -> Coverage {
                 );
             }
 
-            // 2. The player's own handle is its own, and it is the only handle
-            //    that appears without having to be seen.
+            // 2. The player's own handle is its own, and it is never in the
+            //    entity list: `own` is where it lives, and duplicating it there
+            //    would be a second place for the culling rule to have to apply.
+            //    It *can* appear in an event, and that is correct rather than a
+            //    leak — a death is shown to whoever could see the ground it
+            //    happened on, and the victim's own team is often among them.
             assert_eq!(view.own.id, champion_entity_id(seat));
             assert!(
-                !handles_with_positions(&view)
-                    .iter()
-                    .any(|(id, _)| *id == view.own.id.0
-                        && !matches!(state.champions()[seat].liveness, Liveness::Alive { .. })),
-                "a dead champion appeared on the map"
+                !view.visible.iter().any(|entity| matches!(
+                    entity,
+                    EntityView::Champion { id, .. } if *id == view.own.id
+                )),
+                "tick {:?}, player {seat}: own champion duplicated into the entity list",
+                state.tick()
             );
 
             // 3. Completeness, which is what stops "return nothing" from
