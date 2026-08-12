@@ -62,10 +62,22 @@ const REGRESSIONS: &str = "proptest-regressions/properties.txt";
 /// count from the `PROPTEST_CASES` environment variable, which is how the CI
 /// job raises the budget above the development default of 256, and it is what
 /// keeps this from silently pinning any other default proptest gains later.
+///
+/// `max_global_rejects` has to be scaled by hand, and this was found the
+/// expensive way: proptest's default is 1024 rejects against 256 cases, and the
+/// two numbers are independent, so raising `PROPTEST_CASES` to 4096 turned a
+/// rejection rate that was survivable into three aborted tests. The failure mode
+/// is worth naming because it is the opposite of the one you brace for — the
+/// suite did not report a counter-example, it reported "too many global
+/// rejects", which is a test that stopped running rather than a property that
+/// stopped holding. Keeping the ratio proportional to the case count means
+/// raising the budget raises the work rather than the abort rate.
 fn config() -> ProptestConfig {
+    let default = ProptestConfig::default();
     ProptestConfig {
+        max_global_rejects: default.cases.saturating_mul(4),
         failure_persistence: Some(Box::new(FileFailurePersistence::Direct(REGRESSIONS))),
-        ..ProptestConfig::default()
+        ..default
     }
 }
 
@@ -92,6 +104,29 @@ fn fx_in_domain() -> impl Strategy<Value = Fx> {
 
 fn vec_in_domain() -> impl Strategy<Value = FxVec2> {
     (fx_in_domain(), fx_in_domain()).prop_map(|(x, y)| FxVec2::new(x, y))
+}
+
+/// A non-negative scalar in the domain. Radii and lengths are never negative,
+/// and generating one that is only to throw it away is how a suite spends half
+/// its budget on samples it never tests.
+fn fx_radius_in_domain() -> impl Strategy<Value = Fx> {
+    (0..=DOMAIN_RAW).prop_map(Fx::from_raw)
+}
+
+/// A dividend and a divisor whose quotient is representable: `b != 0` and
+/// `|a| <= |b|`, which is the only shape the rules ever divide in — a vector
+/// component over that vector's own length.
+///
+/// Constructed rather than filtered. `prop_assume!(b != 0 && a.abs() <=
+/// b.abs())` over two independent draws rejects about half of them, and a
+/// rejection rate is a budget: it caps how far the case count can be raised
+/// before the run aborts instead of testing. Drawing the divisor's magnitude
+/// first and the dividend inside it samples the same set with nothing discarded.
+fn division_pair() -> impl Strategy<Value = (Fx, Fx)> {
+    (1..=DOMAIN_RAW, proptest::bool::ANY).prop_flat_map(|(magnitude, negative)| {
+        let divisor = Fx::from_raw(if negative { -magnitude } else { magnitude });
+        (-magnitude..=magnitude).prop_map(move |raw| (Fx::from_raw(raw), divisor))
+    })
 }
 
 /// Any scalar at all, including the two ends of the type. Used where the claim
@@ -172,10 +207,8 @@ proptest! {
     /// `|a| <= |b|`, the condition under which the quotient cannot exceed one.
     #[test]
     fn division_does_not_overflow_when_the_quotient_is_representable(
-        a in fx_in_domain(),
-        b in fx_in_domain(),
+        (a, b) in division_pair(),
     ) {
-        prop_assume!(b != Fx::ZERO && a.abs() <= b.abs());
         prop_assert_eq!(a.checked_div(b), Some(a.div(b)));
         prop_assert!(a.div(b).abs() <= Fx::ONE);
     }
@@ -255,8 +288,11 @@ proptest! {
     /// everywhere except within one raw unit of the boundary, where it is the
     /// exact one and `length` is the rounded one.
     #[test]
-    fn range_checks_agree_with_distance(a in vec_in_domain(), b in vec_in_domain(), r in fx_in_domain()) {
-        prop_assume!(r >= Fx::ZERO);
+    fn range_checks_agree_with_distance(
+        a in vec_in_domain(),
+        b in vec_in_domain(),
+        r in fx_radius_in_domain(),
+    ) {
         let distance = a.distance(b);
         if distance.add(Fx::EPSILON) < r {
             prop_assert!(a.within_range(b, r), "clearly inside");

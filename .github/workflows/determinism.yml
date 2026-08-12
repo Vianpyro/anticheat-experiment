@@ -191,10 +191,12 @@ jobs:
             arch: aarch64
 
     env:
-      # Sixteen times the default. Chosen so the job stays inside the workflow's
-      # budget on the slowest of the three runners; raise it if it ever stops
-      # finding anything, which is the only honest reason to.
-      PROPTEST_CASES: 4096
+      # Sixty-four times proptest's default of 256, which is a number tuned for
+      # an edit-compile-test loop rather than for CI. Measured rather than
+      # guessed: the whole suite runs in about a second and a half under
+      # `--release` at this budget, so the job's cost is its compile, and the
+      # case count is free until it is orders of magnitude larger.
+      PROPTEST_CASES: 16384
 
     steps:
       - uses: actions/checkout@v5
