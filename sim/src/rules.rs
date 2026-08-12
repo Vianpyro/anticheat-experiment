@@ -17,12 +17,16 @@
 //! a projectile, a targeted effect, a range check, death, respawn and a win
 //! condition, and that changing any of them is a visible diff with a new hash.
 //!
-//! Where a number was chosen rather than picked, it was chosen so that the
-//! thirty-three seconds of the determinism fixture reach the rule it governs:
-//! hit points low enough and the respawn delay short enough that death and
-//! respawn happen inside the fixture rather than only inside a unit test. A
-//! path exercised on one platform by a unit test and on three by nothing is a
-//! path the cross-platform claim does not cover.
+//! **No number here was chosen to make a test reach a code path.** That is
+//! worth stating because it was briefly done and then undone: the hit points
+//! and the respawn delay were once lowered so that death and respawn would
+//! happen inside a thirty-second fixture. It works, and in six months it reads
+//! as a design decision about how lethal the game is — a test requirement
+//! wearing the costume of a rule. The fix is the one this module was already
+//! built for: a fixture that needs different constants carries its own
+//! [`Rules`] value and runs through [`crate::step_with_rules`], where
+//! [`Rules::hash`] tells the two apart. Test coverage buys its own constants
+//! instead of spending the game's.
 
 use crate::fx::Fx;
 use crate::sha256::Digest;
@@ -123,12 +127,12 @@ pub const RULES: Rules = Rules {
     tower_outer_x: Fx::from_int(-40),
     tower_inner_x: Fx::from_int(-90),
 
-    champion_max_hp: Fx::from_int(350),
+    champion_max_hp: Fx::from_int(600),
     // 6 units per second.
     champion_speed: Fx::from_ratio(6, TICKS_PER_SECOND),
     champion_radius: Fx::from_ratio(1, 2),
-    // 5 seconds.
-    respawn_ticks: 150,
+    // 15 seconds.
+    respawn_ticks: 450,
 
     attack_range: Fx::from_ratio(5, 2),
     attack_damage: Fx::from_int(12),
@@ -159,14 +163,29 @@ pub const RULES: Rules = Rules {
     min_direction_length: Fx::from_ratio(1, 16),
 };
 
-/// The fingerprint of [`RULES`].
+impl Rules {
+    /// The fingerprint of *these* constants.
+    ///
+    /// Separate from [`crate::State::digest`] on purpose, and that separation is
+    /// what lets a fixture run under constants of its own without either
+    /// contaminating the game's balance or weakening the determinism claim: two
+    /// fixtures with different rules produce two different hashes, so a digest
+    /// is never compared against one recorded under other numbers.
+    ///
+    /// It is stable across platforms for the same reason `State::digest` is:
+    /// one canonical big-endian encoding, hashed with a hand-written SHA-256.
+    #[must_use]
+    pub fn hash(&self) -> Digest {
+        crate::canonical::digest_of_rules(self)
+    }
+}
+
+/// The fingerprint of [`RULES`], the constants this build plays by.
 ///
 /// This is what the replay container will stamp into its manifest at M5 so that
 /// a replay recorded under other numbers is rejected with a distinct error
-/// rather than resimulated into a different match (`docs/RISKS.md` R2, R4). It
-/// is stable across platforms for the same reason [`crate::State::digest`] is:
-/// one canonical big-endian encoding, hashed with a hand-written SHA-256.
+/// rather than resimulated into a different match (`docs/RISKS.md` R2, R4).
 #[must_use]
 pub fn rules_hash() -> Digest {
-    crate::canonical::digest_of_rules(&RULES)
+    RULES.hash()
 }

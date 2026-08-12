@@ -94,6 +94,10 @@ pub enum Action {
 /// (player, seq) by the caller; `step` does not sort and does not deduplicate.
 pub fn step(state: &State, inputs: &[Input]) -> State;
 
+/// The same function with the constants passed in rather than read from
+/// `RULES`. Not a configuration hook: see "Rules a fixture brings with it".
+pub fn step_with_rules(state: &State, inputs: &[Input], rules: &Rules) -> State;
+
 impl State {
     /// The only way to compare states. `State` is deliberately not serializable;
     /// see docs/RISKS.md R5.
@@ -238,6 +242,24 @@ builds and without a feature flag, through the ordinary public API — `new_stat
 then `step` — because a state reached by simulation is the only kind of state
 the game has. No serialization is involved at any point.
 
+**Rules a fixture brings with it.** A fixture is `(seed, Vec<Input>)` *and the
+constants it was recorded under*. `step_with_rules` and `new_state_with_rules`
+take a `Rules` value; `step` and `new_state` are those two applied to `RULES`.
+The reason is a failure this project already committed once and reverted: a
+fixture that has to reach death and respawn cannot afford a fifteen-second
+respawn timer, and the tempting fix is to lower the timer in `RULES` until the
+test fits. Six months later that number reads as a decision about how the game
+plays, and there is nothing in the file to say otherwise. Balance is not a place
+to store test requirements, so the fixture that needs other constants declares
+them, and `rules_hash()` — which covers the constants and is deliberately
+separate from `State::digest()` — is what keeps a digest recorded under one set
+from ever being compared against the other.
+
+This is not a configuration surface. There is one set of rules the game is
+played by, `RULES`, and the server, the replay verifier and the resimulator all
+call `step`. `step_with_rules` exists for fixtures and for the tamper cases M5
+has to reject, and the moment it appears in `server` it is a bug.
+
 **One narrow door beyond that: `#[cfg(test)]` constructors inside `sim`.** A
 unit test that needs a configuration which is awkward to reach by simulation — a
 projectile mid-flight, a tower at one hit point — builds it directly through a
@@ -372,7 +394,9 @@ Each is a test or a lint, not a convention:
    `--release` with overflow checks on, compared against digests committed in
    the repository — which catches disagreement between platforms *and* drift
    over time on one, where comparing the three jobs to each other would catch
-   only the first.
+   only the first. Each fixture also pins the `rules_hash()` of the constants it
+   was recorded under, so the two cannot be confused for one another and neither
+   can be silently reinterpreted after a balance change.
 3. No `Serialize` impl exists for `State` or its components; only the view types
    have one. Checked in CI. Until the view types arrive at M2 the enforcement is
    stronger still: `sim` has no serialization dependency, so no type in it can

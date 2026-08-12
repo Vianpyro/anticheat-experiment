@@ -41,8 +41,8 @@
 
 use sim::{
     Action, Digest, EntityId, Fx, FxVec2, Input, Liveness, Outcome, PLAYER_COUNT, PlayerId, RULES,
-    Rng, State, TOWER_COUNT, Tick, champion_entity_id, input_log_digest, new_state, rules_hash,
-    step, tower_entity_id,
+    Rng, Rules, State, TOWER_COUNT, Tick, champion_entity_id, input_log_digest,
+    new_state_with_rules, rules_hash, step_with_rules, tower_entity_id,
 };
 
 /// The match seed. Arbitrary, and frozen: it is part of the fixture.
@@ -67,30 +67,30 @@ const CHECKPOINT_EVERY: u32 = 100;
 const EXPECTED_INPUT_LOG: &str = "0430e59cfbc35b63ee2289b63bcfa9b054a1f9cfc7f3c427a4860a67daabd54f";
 
 /// The digest of [`RULES`]. A balance change lands here first.
-const EXPECTED_RULES: &str = "aab7e738b4762ccb5cad44bb3fbaea9c8f863e2945be3a40d3e1b6bea1457f2d";
+const EXPECTED_RULES: &str = "f11e6a096d35b8ea7812d2a88c0f5aebd7fdff4c7c5860c439282742bba5b355";
 
 /// `State::digest()` at tick 100, 200, … 1000.
 const EXPECTED_CHECKPOINTS: [&str; 10] = [
     // tick 100
-    "037296e0285eb94e69ae796f934eef0e9761a7532914bf7d61d9fc340c5882dd",
+    "8b5c88313f8020da39d54d01437d6d09494761a2843afd3d94625217f35f7271",
     // tick 200
-    "9c69fb2c3fc0ab7fadb20b2c22da2fe9964278bea967b39c0f28a340e623f1af",
+    "636df555a88ae2377859e956ec0ca4b9621f0ab8c3a7b043f667500aa0d3b52e",
     // tick 300
-    "d688c4381862811582678d609c608e238a6cc046d295908e2b410e60ad8130c8",
+    "dd8069a2ae22335b464773740019b2df6cf835c9c50fe91b249f5da2868ac4e1",
     // tick 400
-    "b5274824ba64b468034361d0f08a4e4f00508104233b765d35c2cecea4ece147",
+    "f93a4bdf45fbc82ac33c540e7316d34ffd34f2db360a53545fe853679f9ad271",
     // tick 500
-    "1155e031e806fa63d714bca76bb67ccfe41d5faf6bad4771faac859ad6ca6647",
+    "a4e1e116b886946c97bebfdbd41c72d3946c18d9a0e4bcfac86caac53339503c",
     // tick 600
-    "3f3843b972f0875238d9577fe9f18232e4eb7a136e7ffee6439ac4c9b08db3b8",
+    "e4267bf4ebfebc7c0df3ee130ce38715a1070e78b2beda4e52d336c5fdcc25aa",
     // tick 700
-    "ec8b9b34cb8856e91ef1d8233c5c9e0672a082c54115e0b14a4f830684d76b99",
+    "d48fab48522ee5d99389e094127e4a99db51a561f743c1f74fc65eba6ae97fe3",
     // tick 800
-    "259f8c6521a23550c4a26911894bcb03ce73d0c19191c43664086152bda3d4d0",
+    "42161d39e8a627d62a5a5d98b6d3c2e39907e36b9d6a4763b1a25548eab90be1",
     // tick 900
-    "6a8c4dc82bf4d11dbc7dd387a31c098ffb0d7f96a6aeb40e810c61ffcfd66b80",
+    "3f37e3937eea3373c6585d9a690fd887391055da05dc74bc91772d3ebdcd5e74",
     // tick 1000
-    "326622a5a4a1ddb5908f6e072233b533e1dd831f3b80f44e34fa7709b28c5677",
+    "ec9a6cde14dc077c5bf04fb698027ae5a0defbc7eb1272ebe30edec93778441a",
 ];
 
 /// A scripted match: six players issuing plausible commands, plus the
@@ -181,13 +181,45 @@ fn script() -> Vec<Vec<Input>> {
 /// off, and death and respawn would then be verified by unit tests on one
 /// platform and by nothing on three.
 ///
-/// Tuning the balance numbers until the random script happened to produce a
-/// kill would be the wrong fix: it hides a coverage gap behind a constant
-/// nobody can later explain. A second fixture that says what it is for is the
-/// honest one. Seat 0 walks alone into the enemy half; the three defenders
-/// focus it and their towers join in.
+/// Seat 0 walks alone into the enemy half; the three defenders focus it and
+/// their towers join in.
+///
+/// # Why this fixture carries its own rules
+///
+/// Under [`RULES`] a champion has 600 hit points and stays dead for fifteen
+/// seconds, so a fixture that has to contain a death *and* the respawn that
+/// follows it would have to run for minutes. The two ways out are to change the
+/// game's constants until the test fits them, or to give the test constants of
+/// its own. The first was tried and reverted: a `champion_max_hp` of 350 chosen
+/// to make a fixture terminate is indistinguishable, six months later, from a
+/// decision about how lethal the game is, and the balance of the game is not a
+/// place to store test requirements.
+///
+/// So the frailty and the short respawn live here, next to the fixture that
+/// needs them, and [`Rules::hash`] keeps the two sets of constants apart: the
+/// digest below is recorded under [`DUEL_RULES`] and `EXPECTED_DUEL_RULES`
+/// pins which constants that was. A change to either fails loudly. Every other
+/// number is inherited from [`RULES`] through the update syntax, so this
+/// fixture keeps testing the real map, the real speeds and the real damage,
+/// and a new constant added to `Rules` reaches it without anyone updating it
+/// here.
 const DUEL_SEED: u64 = 0x0DEA_D0DE_0DEA_D0DE;
 const DUEL_TICKS: u32 = 900;
+
+/// The constants the duel is played under: [`RULES`], made lethal enough to
+/// reach death and respawn inside thirty seconds.
+const DUEL_RULES: Rules = Rules {
+    champion_max_hp: Fx::from_int(350),
+    // 5 seconds, against the game's 15.
+    respawn_ticks: 150,
+    ..RULES
+};
+
+/// The hash of [`DUEL_RULES`]. Distinct from `EXPECTED_RULES` by construction,
+/// which is the point: it is what stops a digest recorded under the fixture's
+/// constants from ever being read as one recorded under the game's.
+const EXPECTED_DUEL_RULES: &str =
+    "aab7e738b4762ccb5cad44bb3fbaea9c8f863e2945be3a40d3e1b6bea1457f2d";
 
 /// `State::digest()` at the end of the duel fixture.
 const EXPECTED_DUEL: &str = "bd7f85a21517f402aceb6b96e5a1582b3a759624ed3e8b5136c3e6434052777f";
@@ -245,13 +277,17 @@ fn duel_script() -> Vec<Vec<Input>> {
     log
 }
 
-/// Runs a fixture from a given seed, returning the final state and one digest
-/// per checkpoint.
-fn run_from(seed: u64, log: &[Vec<Input>]) -> (State, Vec<(u32, Digest)>) {
-    let mut state = new_state(seed);
+/// Runs a fixture from a given seed under given rules, returning the final
+/// state and one digest per checkpoint.
+///
+/// The rules are a parameter here rather than an ambient constant so that no
+/// fixture can record a digest without having said which constants it recorded
+/// it under.
+fn run_from(seed: u64, log: &[Vec<Input>], rules: &Rules) -> (State, Vec<(u32, Digest)>) {
+    let mut state = new_state_with_rules(seed, rules);
     let mut checkpoints = Vec::new();
     for (index, inputs) in log.iter().enumerate() {
-        state = step(&state, inputs);
+        state = step_with_rules(&state, inputs, rules);
         let tick = index as u32 + 1;
         if tick.is_multiple_of(CHECKPOINT_EVERY) {
             checkpoints.push((tick, state.digest()));
@@ -261,7 +297,7 @@ fn run_from(seed: u64, log: &[Vec<Input>]) -> (State, Vec<(u32, Digest)>) {
 }
 
 fn run(log: &[Vec<Input>]) -> (State, Vec<(u32, Digest)>) {
-    run_from(SEED, log)
+    run_from(SEED, log, &RULES)
 }
 
 fn flat(log: &[Vec<Input>]) -> Vec<Input> {
@@ -326,12 +362,33 @@ fn the_fixture_is_still_being_played_at_the_last_tick() {
 /// rules the scripted match never reaches.
 #[test]
 fn the_duel_reaches_its_recorded_digest() {
-    let (state, _) = run_from(DUEL_SEED, &duel_script());
+    assert_eq!(
+        DUEL_RULES.hash().to_string(),
+        EXPECTED_DUEL_RULES,
+        "the duel's own constants changed, so the digest below was recorded \
+         under different rules than the ones being run"
+    );
+    let (state, _) = run_from(DUEL_SEED, &duel_script(), &DUEL_RULES);
     assert_eq!(state.digest().to_string(), EXPECTED_DUEL);
     println!(
         "determinism: seed={DUEL_SEED:#018x} ticks={DUEL_TICKS} digest={}",
         state.digest()
     );
+}
+
+/// The two fixtures are played under two different sets of constants, and the
+/// hash says so.
+///
+/// This is the assertion that makes the arrangement safe. `State::digest()`
+/// covers the state and nothing else, so a state reached under the duel's
+/// frailer champion is indistinguishable, as bytes, from one reached under the
+/// game's — if the constants ever coincided, the fixture would silently stop
+/// being the thing it claims to be. `rules_hash()` is what keeps them apart,
+/// and it is the same value the replay manifest carries at M5 for the same
+/// reason (`docs/RISKS.md` R2).
+#[test]
+fn the_two_fixtures_do_not_share_a_rules_hash() {
+    assert_ne!(rules_hash(), DUEL_RULES.hash());
 }
 
 /// …and it has to actually kill somebody, and put them back on the map.
@@ -344,7 +401,7 @@ fn the_duel_reaches_its_recorded_digest() {
 /// deterministic.
 #[test]
 fn the_duel_kills_and_respawns_its_victim() {
-    let mut state = new_state(DUEL_SEED);
+    let mut state = new_state_with_rules(DUEL_SEED, &DUEL_RULES);
     let mut deaths = 0u32;
     let mut respawns = 0u32;
     let mut was_dead = false;
@@ -352,7 +409,7 @@ fn the_duel_kills_and_respawns_its_victim() {
     let mut moved_after_respawn = false;
 
     for inputs in &duel_script() {
-        state = step(&state, inputs);
+        state = step_with_rules(&state, inputs, &DUEL_RULES);
         let victim = state.champions()[0];
         let dead = matches!(victim.liveness, Liveness::Dead { .. });
         if dead && !was_dead {
@@ -449,6 +506,10 @@ fn regenerate_golden_digests() {
         println!("    \"{digest}\",");
     }
     println!("];");
-    let (duel, _) = run_from(DUEL_SEED, &duel_script());
+    println!(
+        "const EXPECTED_DUEL_RULES: &str = \"{}\";",
+        DUEL_RULES.hash()
+    );
+    let (duel, _) = run_from(DUEL_SEED, &duel_script(), &DUEL_RULES);
     println!("const EXPECTED_DUEL: &str = \"{}\";", duel.digest());
 }

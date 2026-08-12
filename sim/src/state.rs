@@ -17,7 +17,7 @@
 
 use crate::fx::Fx;
 use crate::rng::Rng;
-use crate::rules::RULES;
+use crate::rules::{RULES, Rules};
 use crate::sha256::Digest;
 use crate::vec2::FxVec2;
 
@@ -275,23 +275,34 @@ pub struct State {
     pub(crate) outcome: Outcome,
 }
 
-/// The initial world for a match.
+/// The initial world for a match, under [`crate::RULES`].
 ///
 /// The seed is the only input. Everything else — spawn positions, hit points,
-/// tower placement — comes from [`crate::RULES`], so two servers that agree on
-/// the seed and the rules hash agree on the whole match.
+/// tower placement — comes from the rules, so two servers that agree on the
+/// seed and the rules hash agree on the whole match.
 #[must_use]
 pub fn new_state(seed: u64) -> State {
+    new_state_with_rules(seed, &RULES)
+}
+
+/// The initial world for a match played under constants other than
+/// [`crate::RULES`].
+///
+/// The reason this exists is stated in [`crate::step_with_rules`]: a test that
+/// needs a shorter respawn or a frailer champion says so in its own [`Rules`]
+/// value, instead of moving the number the game is played by.
+#[must_use]
+pub fn new_state_with_rules(seed: u64, rules: &Rules) -> State {
     let mut champions = [Champion {
         position: FxVec2::ZERO,
         liveness: Liveness::Alive {
-            hp: RULES.champion_max_hp,
+            hp: rules.champion_max_hp,
         },
         order: Order::Idle,
         cooldowns: Cooldowns::default(),
     }; PLAYER_COUNT];
     for (index, champion) in champions.iter_mut().enumerate() {
-        champion.position = spawn_position(index);
+        champion.position = spawn_position(index, rules);
     }
 
     State {
@@ -300,7 +311,7 @@ pub fn new_state(seed: u64) -> State {
         next_projectile_id: PROJECTILE_ID_BASE,
         champions,
         towers: [Tower {
-            hp: RULES.tower_max_hp,
+            hp: rules.tower_max_hp,
             cooldown: 0,
         }; TOWER_COUNT],
         projectiles: Projectiles::new(),
@@ -313,27 +324,31 @@ pub fn new_state(seed: u64) -> State {
 /// The three seats of a team are spread along `y` so that they do not begin
 /// stacked on one point, which would make the first tick's collision geometry
 /// degenerate.
-pub(crate) fn spawn_position(index: usize) -> FxVec2 {
+pub(crate) fn spawn_position(index: usize, rules: &Rules) -> FxVec2 {
     let team = Team::of_player(PlayerId(index as u8));
     let seat = index.checked_rem(TEAM_SIZE).unwrap_or(0);
     let offset = Fx::from_int(seat as i32)
         .sub(Fx::ONE)
-        .mul(RULES.spawn_spacing);
+        .mul(rules.spawn_spacing);
     let x = match team {
-        Team::Blue => RULES.spawn_x,
-        Team::Red => RULES.spawn_x.neg(),
+        Team::Blue => rules.spawn_x,
+        Team::Red => rules.spawn_x.neg(),
     };
     FxVec2::new(x, offset)
 }
 
 /// Where the tower in `index` stands. Towers `0..2` are Blue's, outer first.
+///
+/// Takes its rules explicitly rather than reading [`crate::RULES`]: tower
+/// placement is derived from the constants, so a caller simulating under other
+/// constants must be unable to ask this question without saying which ones.
 #[must_use]
-pub fn tower_position(index: usize) -> FxVec2 {
+pub fn tower_position(index: usize, rules: &Rules) -> FxVec2 {
     let x = match index {
-        0 => RULES.tower_outer_x,
-        1 => RULES.tower_inner_x,
-        2 => RULES.tower_outer_x.neg(),
-        _ => RULES.tower_inner_x.neg(),
+        0 => rules.tower_outer_x,
+        1 => rules.tower_inner_x,
+        2 => rules.tower_outer_x.neg(),
+        _ => rules.tower_inner_x.neg(),
     };
     FxVec2::new(x, Fx::ZERO)
 }
@@ -449,13 +464,13 @@ impl State {
     }
 
     /// Where a resolved entity stands.
-    pub(crate) fn entity_position(&self, entity: EntityRef) -> FxVec2 {
+    pub(crate) fn entity_position(&self, entity: EntityRef, rules: &Rules) -> FxVec2 {
         match entity {
             EntityRef::Champion(seat) => self
                 .champions
                 .get(seat)
                 .map_or(FxVec2::ZERO, |champion| champion.position),
-            EntityRef::Tower(index) => tower_position(index),
+            EntityRef::Tower(index) => tower_position(index, rules),
         }
     }
 
