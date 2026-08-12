@@ -65,10 +65,37 @@
     missing_debug_implementations
 )]
 
+mod canonical;
 mod fx;
+mod input;
 mod rng;
+mod rules;
+mod sha256;
+mod state;
+mod step;
 mod vec2;
 
 pub use crate::fx::{FRAC_BITS, Fx};
+pub use crate::input::{Action, Input};
 pub use crate::rng::Rng;
+pub use crate::rules::{RULES, Rules, TICKS_PER_SECOND, rules_hash};
+pub use crate::sha256::Digest;
+pub use crate::state::{
+    Champion, Cooldowns, EntityId, EntityRef, Liveness, MAX_PROJECTILES, Order, Outcome,
+    PLAYER_COUNT, PlayerId, Projectile, Projectiles, State, TEAM_SIZE, TOWER_COUNT, Team, Tick,
+    Tower, champion_entity_id, entity_team, new_state, tower_entity_id, tower_position, tower_team,
+};
+pub use crate::step::step;
 pub use crate::vec2::FxVec2;
+
+/// The digest of an input log, in the order given.
+///
+/// Belongs here rather than in `replay` because the ordering rule it encodes is
+/// a `sim` rule: `step` does not sort and does not deduplicate, so two logs
+/// that differ only in order are two different logs. The replay manifest will
+/// carry this value at M5 (`docs/RISKS.md` R4), and it must be the same
+/// function that produced the log the server resimulated.
+#[must_use]
+pub fn input_log_digest(inputs: &[Input]) -> Digest {
+    crate::canonical::digest_of_inputs(inputs)
+}
