@@ -173,9 +173,16 @@ jobs:
   # the difference between sampling it a few hundred times and a few thousand is
   # the difference between finding them this year and finding them in the
   # corpus. A case this job discovers is written into
-  # `sim/proptest-regressions/properties.txt`, which is committed, so it becomes
-  # a permanent test rather than one lucky run — see the header of
+  # `sim/proptest-regressions/`, which is committed, so it becomes a permanent
+  # test rather than one lucky run — see the header of
   # `sim/tests/properties.rs`.
+  #
+  # Two binaries: `properties` covers the fixed-point arithmetic and `step`,
+  # `view_properties` covers the visibility projection over states reached by
+  # simulation. They run in one job under one budget deliberately — the case
+  # count is the thing that must not drift between them, since a property that
+  # runs at 256 cases while its neighbour runs at 16384 is a property nobody
+  # decided to sample less.
   properties:
     name: properties (${{ matrix.arch }} ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -208,7 +215,7 @@ jobs:
       # without arithmetic meaning something different than it does under
       # `cargo test`.
       - name: Run the property tests
-        run: cargo test -p sim --release --locked --test properties
+        run: cargo test -p sim --release --locked --test properties --test view_properties
 
       # A counter-example is worth nothing if it dies with the runner, and the
       # runner is where this one was found: proptest appends the failing seed to
@@ -229,9 +236,11 @@ jobs:
           {
             echo "### new proptest regression seeds (${{ matrix.arch }} ${{ matrix.os }})"
             echo ''
-            echo 'Paste any `cc` line below into `sim/proptest-regressions/properties.txt`.'
+            echo 'Paste any `cc` line below into the file it is listed under, in'
+            echo '`sim/proptest-regressions/`.'
             echo ''
             echo '```'
-            grep '^cc ' sim/proptest-regressions/properties.txt || echo 'none: the failure was not a property counter-example'
+            grep -H '^cc ' sim/proptest-regressions/*.txt \
+              || echo 'none: the failure was not a property counter-example'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
