@@ -96,9 +96,48 @@ pub fn step_with_rules(state: &State, inputs: &[Input], rules: &Rules) -> State 
     resolve_basic_attacks(&mut next, rules);
     resolve_deaths(&mut next, rules);
     decide_outcome(&mut next);
+    negative_control(&mut next);
 
     next.tick = Tick(next.tick.0.saturating_add(1));
     next
+}
+
+/// **Temporary. This function exists only on the throwaway branch
+/// `experiment/negative-control-aarch64` and must never reach `main`.**
+///
+/// `docs/RISKS.md` R1 puts aarch64 in the determinism matrix to catch what an
+/// x86-only matrix hides. As of M1 the three targets have only ever agreed, so
+/// the job has never demonstrated that it *can* report an architecture
+/// disagreement — and a job that would stay green on a real divergence looks
+/// exactly like a job that has nothing to report. This is the negative control
+/// for that: a deliberate divergence, pushed once, observed, deleted.
+///
+/// The libm transcendentals below are not bit-identical between glibc on
+/// x86-64, the MSVC runtime on Windows, and Apple's libm on aarch64. Their
+/// result is folded into the generator's state, which no rule reads, so every
+/// platform still simulates exactly the same match — only the digest moves.
+/// That isolates the arithmetic from the rules: any disagreement observed is
+/// the floating point and nothing else.
+fn negative_control(state: &mut State) {
+    let mut fold: u64 = 0;
+    for champion in &state.champions {
+        // The one lifted lint, and lifting it is the entire purpose of the
+        // branch: this is the arithmetic the crate forbids *because* it cannot
+        // be made bit-identical across architectures, which is the property
+        // being provoked here on purpose.
+        #[allow(
+            clippy::float_arithmetic,
+            clippy::disallowed_types,
+            reason = "negative control for docs/RISKS.md R1; this branch is never merged"
+        )]
+        let bits = {
+            let x = f64::from(champion.position.x.to_raw()) / 65536.0;
+            let y = f64::from(champion.position.y.to_raw()) / 65536.0;
+            (x.sin() * y.cos() + (x - y).tan() + (x.abs() + 1.0).powf(y)).to_bits()
+        };
+        fold ^= bits;
+    }
+    state.rng.state ^= fold;
 }
 
 fn tick_cooldowns(state: &mut State) {

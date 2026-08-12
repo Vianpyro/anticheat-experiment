@@ -485,6 +485,33 @@ fn entity_handles_are_where_the_fixture_expects_them() {
     assert!(RULES.map_half_extent > Fx::ZERO);
 }
 
+/// **Temporary, `experiment/negative-control-aarch64` only.**
+///
+/// The fixture assertions above report *that* the platforms disagree. This
+/// reports *which operation* disagrees, which is the part worth writing down
+/// next to `docs/RISKS.md` R1 — "the digests differed" is not a finding anyone
+/// can act on six months from now. Prefixed `determinism:` so the workflow's
+/// summary step picks these lines up alongside the digests.
+#[test]
+#[allow(
+    clippy::float_arithmetic,
+    reason = "negative control for docs/RISKS.md R1; this branch is never merged"
+)]
+fn negative_control_libm_bits() {
+    for x in [0.1_f64, 1.5, 12.375, 123.456, 1234.5678, 98765.4321] {
+        println!(
+            "determinism: negative-control x={x} sin={:016x} cos={:016x} tan={:016x} \
+             exp={:016x} ln={:016x} pow={:016x}",
+            x.sin().to_bits(),
+            x.cos().to_bits(),
+            x.tan().to_bits(),
+            x.exp().to_bits(),
+            x.ln().to_bits(),
+            x.powf(1.5).to_bits(),
+        );
+    }
+}
+
 /// Prints the constants at the top of this file, for when a rule legitimately
 /// changes. Ignored by default: it is a tool, not a test.
 #[test]
