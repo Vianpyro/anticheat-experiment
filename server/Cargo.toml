@@ -9,3 +9,11 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+protocol = { path = "../protocol" }
+replay = { path = "../replay" }
+sim = { path = "../sim" }
+
+# The harness that draws the scripts. Same reasoning as `sim`'s and
+# `protocol`'s: its draws choose which matches to run, never what a rule reads.
+[dev-dependencies]
+proptest = "1.11.0"
