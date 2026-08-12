@@ -10,11 +10,17 @@
 //!
 //! Asserting that `view_for` agrees with `sim::view::can_see` would be
 //! asserting that a function agrees with itself. So the visibility predicate is
-//! written out again here, from the rules as `docs/MILESTONES.md` states them —
+//! written out again, from the rules as `docs/MILESTONES.md` states them —
 //! living champions and standing towers of the player's own team, each covering
 //! a disc — and the two implementations are compared over a hundred thousand
 //! (tick, player, entity) triples. A change to one that is not a change to the
 //! other fails here.
+//!
+//! That re-derivation lives in `tests/spec/mod.rs` rather than in this file,
+//! because `sim/tests/view_properties.rs` needs the same second opinion over
+//! states this fixture never reaches. One specification, two consumers: two
+//! copies that had drifted would leave each test green against its own private
+//! idea of the rule.
 //!
 //! # Why it also asserts what *is* present
 //!
@@ -30,157 +36,17 @@
 #![deny(clippy::float_arithmetic, unsafe_code)]
 
 mod fixture;
+mod spec;
 
 use std::collections::BTreeSet;
 
 use fixture::{DUEL_RULES, DUEL_SEED, SEED, duel_script, script};
 use sim::view::{EntityView, PlayerView, VisibleEvent, view_for, view_for_with_rules};
 use sim::{
-    Event, EventKind, Fx, FxVec2, Input, Liveness, PLAYER_COUNT, PlayerId, RULES, Rules, State,
-    TOWER_COUNT, Team, Tick, champion_entity_id, new_state, new_state_with_rules, step_with_rules,
-    tower_entity_id, tower_position,
+    Fx, Input, Liveness, PLAYER_COUNT, PlayerId, RULES, Rules, TOWER_COUNT, Team, Tick,
+    champion_entity_id, new_state, new_state_with_rules, step_with_rules, tower_position,
 };
-
-/// Vision, re-derived from `docs/MILESTONES.md` M2 rather than from `sim`.
-///
-/// Sources are the player's own team: champions that are alive, towers that
-/// still stand. Deliberately written as the naive double loop it is — this is
-/// the specification, and it is supposed to be boring enough to read as one.
-fn team_sees(state: &State, team: Team, point: FxVec2, rules: &Rules) -> bool {
-    for seat in 0..PLAYER_COUNT {
-        if Team::of_player(PlayerId(seat as u8)) != team {
-            continue;
-        }
-        let champion = state.champions()[seat];
-        if !matches!(champion.liveness, Liveness::Alive { .. }) {
-            continue;
-        }
-        if champion
-            .position
-            .distance(point)
-            .to_raw()
-            .saturating_sub(rules.champion_vision_radius.to_raw())
-            <= 0
-        {
-            return true;
-        }
-    }
-    for index in 0..TOWER_COUNT {
-        if sim::tower_team(index) != team {
-            continue;
-        }
-        if !state.towers()[index].is_standing() {
-            continue;
-        }
-        if tower_position(index, rules)
-            .distance(point)
-            .to_raw()
-            .saturating_sub(rules.tower_vision_radius.to_raw())
-            <= 0
-        {
-            return true;
-        }
-    }
-    false
-}
-
-/// Every handle in a view, paired with the position it was reported at.
-///
-/// This pairing is the whole argument: the criterion is that no entity outside
-/// vision is named, and an entity is outside vision exactly when the point it
-/// was seen at is. A handle with no position attached could not be checked, so
-/// the view type does not have one.
-fn handles_with_positions(view: &PlayerView) -> Vec<(u16, FxVec2)> {
-    let mut out = Vec::new();
-    for entity in &view.visible {
-        let (id, position) = match entity {
-            EntityView::Champion { id, position, .. }
-            | EntityView::Tower { id, position, .. }
-            | EntityView::Projectile { id, position, .. } => (*id, *position),
-        };
-        out.push((id.0, position));
-    }
-    for event in &view.events {
-        let (id, at) = match event {
-            VisibleEvent::Cast { caster: id, at, .. }
-            | VisibleEvent::Damage { target: id, at, .. }
-            | VisibleEvent::Death { entity: id, at } => (*id, *at),
-        };
-        out.push((id.0, at));
-    }
-    out
-}
-
-/// The ids of the entities on the map that this player is entitled to see,
-/// computed from the state and the re-derived predicate above. The player's own
-/// champion is excluded: it lives in `own`, never in `visible`.
-fn expected_visible(state: &State, player: PlayerId, rules: &Rules) -> BTreeSet<u16> {
-    let team = Team::of_player(player);
-    let mut expected = BTreeSet::new();
-    for seat in 0..PLAYER_COUNT {
-        if seat == player.0 as usize {
-            continue;
-        }
-        let champion = state.champions()[seat];
-        if !matches!(champion.liveness, Liveness::Alive { .. }) {
-            continue;
-        }
-        if team_sees(state, team, champion.position, rules) {
-            expected.insert(champion_entity_id(seat).0);
-        }
-    }
-    for index in 0..TOWER_COUNT {
-        if team_sees(state, team, tower_position(index, rules), rules) {
-            expected.insert(tower_entity_id(index).0);
-        }
-    }
-    for projectile in state.projectiles().iter() {
-        if team_sees(state, team, projectile.position, rules) {
-            expected.insert(projectile.id.0);
-        }
-    }
-    expected
-}
-
-/// What the events of this tick reduce to for this player.
-fn expected_events(state: &State, player: PlayerId, rules: &Rules) -> Vec<Event> {
-    let team = Team::of_player(player);
-    state
-        .events()
-        .iter()
-        .filter(|event| team_sees(state, team, event.at, rules))
-        .copied()
-        .collect()
-}
-
-fn same_event(state: &Event, view: &VisibleEvent) -> bool {
-    match (state.kind, view) {
-        (
-            EventKind::Cast { caster, ability },
-            VisibleEvent::Cast {
-                caster: seen_caster,
-                ability: seen_ability,
-                at,
-            },
-        ) => caster == *seen_caster && ability == *seen_ability && state.at == *at,
-        (
-            EventKind::Damage { target, amount },
-            VisibleEvent::Damage {
-                target: seen_target,
-                amount: seen_amount,
-                at,
-            },
-        ) => target == *seen_target && amount == *seen_amount && state.at == *at,
-        (
-            EventKind::Death { entity },
-            VisibleEvent::Death {
-                entity: seen_entity,
-                at,
-            },
-        ) => entity == *seen_entity && state.at == *at,
-        _ => false,
-    }
-}
+use spec::{expected_events, expected_ids, handles_with_positions, same_event, team_sees};
 
 /// What one run of a fixture observed, so that the end of the test can assert
 /// the fixture was worth running.
@@ -257,7 +123,7 @@ fn audit(seed: u64, log: &[Vec<Input>], rules: &Rules) -> Coverage {
                     | EntityView::Projectile { id, .. } => id.0,
                 })
                 .collect();
-            let expected = expected_visible(&state, player, rules);
+            let expected = expected_ids(&state, player, rules);
             assert_eq!(
                 reported,
                 expected,
@@ -334,7 +200,7 @@ fn audit(seed: u64, log: &[Vec<Input>], rules: &Rules) -> Coverage {
             if encoded.len() < leaked.len() {
                 coverage.ticks_smaller_than_omniscient += 1;
             }
-            let all_entities = expected_visible(&state, player, &omniscient);
+            let all_entities = expected_ids(&state, player, &omniscient);
             coverage.entities_withheld += (all_entities.len() - expected.len()) as u64;
             coverage.events_withheld += (state.events().count() - entitled.len()) as u64;
             coverage.events_delivered += entitled.len() as u64;
