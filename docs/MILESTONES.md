@@ -146,7 +146,7 @@ input domain.
 
 ## M2 — Visibility projection and fog · 1–2 weeks
 
-`view_for(&State, PlayerId) -> PlayerView` as a separate module, plus the view
+`view_for(&State, Seat) -> PlayerView` as a separate module, plus the view
 types. Vision sources: champions, towers. `step` never reads visibility.
 
 **Exit:** across the M1 fixture, for every tick and every player, no `EntityId`

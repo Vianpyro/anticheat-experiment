@@ -13,7 +13,7 @@
 #![allow(dead_code, reason = "each test binary uses a subset of the fixtures")]
 
 use sim::{
-    Action, EntityId, Fx, FxVec2, Input, PLAYER_COUNT, PlayerId, RULES, Rng, Rules, Tick,
+    Action, EntityId, Fx, FxVec2, Input, PLAYER_COUNT, RULES, Rng, Rules, Seat, Tick,
     champion_entity_id, tower_entity_id,
 };
 
@@ -43,16 +43,17 @@ pub fn script() -> Vec<Vec<Input>> {
 
     for tick in 0..TICKS {
         let mut inputs = Vec::new();
-        for (seat, next_seq) in seq.iter_mut().enumerate() {
+        for seat in Seat::ALL {
+            let index = seat.index();
             let roll = rng.below(1000);
             // Two draws are consumed unconditionally so that the generator's
             // position does not depend on which branch was taken.
             let a = rng.below(1000) as i32;
             let b = rng.below(1000) as i32;
 
-            let toward_enemy = if seat < PLAYER_COUNT / 2 { 1 } else { -1 };
-            let enemy_seat = (seat + PLAYER_COUNT / 2) % PLAYER_COUNT;
-            let enemy_tower = if seat < PLAYER_COUNT / 2 { 2 } else { 0 };
+            let toward_enemy = if index < PLAYER_COUNT / 2 { 1 } else { -1 };
+            let enemy_seat = Seat::ALL[(index + PLAYER_COUNT / 2) % PLAYER_COUNT];
+            let enemy_tower = if index < PLAYER_COUNT / 2 { 2 } else { 0 };
 
             let action = if roll < 950 {
                 // Most ticks carry no new command. Both halves of that matter:
@@ -97,11 +98,11 @@ pub fn script() -> Vec<Vec<Input>> {
 
             inputs.push(Input {
                 tick: Tick(tick),
-                seq: *next_seq,
-                player: PlayerId(seat as u8),
+                seq: seq[index],
+                player: seat,
                 action,
             });
-            *next_seq += 1;
+            seq[index] += 1;
         }
         log.push(inputs);
     }
@@ -156,14 +157,14 @@ pub fn duel_script() -> Vec<Vec<Input>> {
 
     for tick in 0..DUEL_TICKS {
         let mut inputs = Vec::new();
-        let mut issue = |seat: usize, action: Action, inputs: &mut Vec<Input>| {
+        let mut issue = |seat: Seat, action: Action, inputs: &mut Vec<Input>| {
             inputs.push(Input {
                 tick: Tick(tick),
-                seq: seq[seat],
-                player: PlayerId(seat as u8),
+                seq: seq[seat.index()],
+                player: seat,
                 action,
             });
-            seq[seat] += 1;
+            seq[seat.index()] += 1;
         };
 
         // Seat 0 keeps walking into the enemy base, including after it
@@ -171,20 +172,24 @@ pub fn duel_script() -> Vec<Vec<Input>> {
         // respawn timer, part of what this fixture checks.
         if tick.is_multiple_of(60) {
             issue(
-                0,
+                Seat::Blue0,
                 Action::Move(FxVec2::new(Fx::from_int(88), Fx::ZERO)),
                 &mut inputs,
             );
         }
         // The three defenders hold their ground and attack it on sight.
         if tick == 0 {
-            for seat in PLAYER_COUNT / 2..PLAYER_COUNT {
-                issue(seat, Action::Attack(champion_entity_id(0)), &mut inputs);
+            for seat in [Seat::Red0, Seat::Red1, Seat::Red2] {
+                issue(
+                    seat,
+                    Action::Attack(champion_entity_id(Seat::Blue0)),
+                    &mut inputs,
+                );
             }
         }
         // Everything else they have, on cooldown.
         if tick % 240 == 30 {
-            for seat in PLAYER_COUNT / 2..PLAYER_COUNT {
+            for seat in [Seat::Red0, Seat::Red1, Seat::Red2] {
                 issue(
                     seat,
                     Action::Skillshot(FxVec2::new(Fx::from_int(-10), Fx::ZERO)),
@@ -193,8 +198,12 @@ pub fn duel_script() -> Vec<Vec<Input>> {
             }
         }
         if tick % 360 == 60 {
-            for seat in PLAYER_COUNT / 2..PLAYER_COUNT {
-                issue(seat, Action::Targeted(champion_entity_id(0)), &mut inputs);
+            for seat in [Seat::Red0, Seat::Red1, Seat::Red2] {
+                issue(
+                    seat,
+                    Action::Targeted(champion_entity_id(Seat::Blue0)),
+                    &mut inputs,
+                );
             }
         }
 

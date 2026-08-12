@@ -43,9 +43,9 @@ mod fixture;
 
 use fixture::{DUEL_RULES, DUEL_SEED, DUEL_TICKS, SEED, TICKS, duel_script, script};
 use sim::{
-    Action, Digest, EntityId, Fx, FxVec2, Input, Liveness, Outcome, PLAYER_COUNT, PlayerId, RULES,
-    Rules, State, TOWER_COUNT, Tick, champion_entity_id, input_log_digest, new_state_with_rules,
-    rules_hash, step_with_rules, tower_entity_id,
+    Action, Digest, EntityId, Fx, FxVec2, Input, Liveness, Outcome, RULES, Rules, Seat, State,
+    TOWER_COUNT, Tick, champion_entity_id, input_log_digest, new_state_with_rules, rules_hash,
+    step_with_rules, tower_entity_id,
 };
 
 /// Ticks between two recorded checkpoints.
@@ -284,7 +284,7 @@ fn the_fixture_actually_depends_on_its_inputs() {
     tampered[0].push(Input {
         tick: Tick(0),
         seq: u32::MAX,
-        player: PlayerId(0),
+        player: Seat::Blue0,
         action: Action::Move(FxVec2::new(Fx::from_int(40), Fx::from_int(7))),
     });
     assert_ne!(run(&tampered).0.digest(), baseline);
@@ -293,8 +293,8 @@ fn the_fixture_actually_depends_on_its_inputs() {
 /// Entity handles are laid out as the rest of the workspace will assume.
 #[test]
 fn entity_handles_are_where_the_fixture_expects_them() {
-    for seat in 0..PLAYER_COUNT {
-        assert_eq!(champion_entity_id(seat), EntityId(seat as u16));
+    for seat in Seat::ALL {
+        assert_eq!(champion_entity_id(seat), EntityId(seat.index() as u16));
     }
     for index in 0..TOWER_COUNT {
         assert_eq!(tower_entity_id(index), EntityId(10 + index as u16));

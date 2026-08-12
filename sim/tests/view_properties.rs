@@ -51,17 +51,20 @@
 //!
 //! - *A malformed input.* `Input` is a struct of integers with no invalid
 //!   bit patterns, so there is no "corrupt input" below the type. Malformed
-//!   *frames* are the protocol's problem and arrive with M3.
+//!   *frames* are the protocol's problem, and `protocol/tests/wire.rs` is where
+//!   they are refused.
 //! - *An input attributed to a seat the sender does not own.* Expressible here
 //!   — `player` is whatever the caller writes — but it is a claim the server
 //!   overwrites from the session, so at this layer it is only a test that a
 //!   seat drives its own champion and nobody else's, which
 //!   `sim/tests/properties.rs` already makes.
-//! - *A player asking for another player's view.* `view_for` takes the seat
-//!   from its caller, and the caller is the server. Nothing a client sends
-//!   selects it. The one adjacent case that *is* reachable — a seat outside the
-//!   match, should a server ever pass an unvalidated handle — is drawn, and the
-//!   projection is total for it.
+//! - *A player asking for another player's view, or for a seat outside the
+//!   match.* `view_for` takes the seat from its caller, and the caller is the
+//!   server. Until M3 the adjacent case — a server passing an unvalidated
+//!   handle — was reachable and was drawn here, and the projection was total
+//!   for it. It is now unrepresentable: [`Seat`] has six values, the byte that
+//!   would have carried a seventh is refused by `protocol`'s decoder, and this
+//!   file stopped drawing a case the type no longer admits.
 
 // The crate under test denies these at its root; repeated here because
 // crate-level attributes do not reach an integration test.
@@ -77,9 +80,9 @@ use proptest::test_runner::{FileFailurePersistence, TestRunner};
 
 use sim::view::{EntityView, PlayerView, view_for, view_for_with_rules};
 use sim::{
-    Action, EntityId, Fx, FxVec2, Input, Liveness, MAX_PROJECTILES, Outcome, PLAYER_COUNT,
-    PlayerId, RULES, Rules, State, TOWER_COUNT, Team, Tick, champion_entity_id,
-    new_state_with_rules, step_with_rules, tower_entity_id, tower_position,
+    Action, EntityId, Fx, FxVec2, Input, Liveness, MAX_PROJECTILES, Outcome, PLAYER_COUNT, RULES,
+    Rules, Seat, State, TOWER_COUNT, Team, Tick, champion_entity_id, new_state_with_rules,
+    step_with_rules, tower_entity_id, tower_position,
 };
 use spec::{
     Entitled, entitled, expected_events, expected_ids, handles_with_positions, reported_ids,
@@ -220,7 +223,7 @@ enum When {
 struct Command {
     when: When,
     seq: u32,
-    player: PlayerId,
+    player: Seat,
     action: Action,
 }
 
@@ -339,12 +342,10 @@ fn handle() -> impl Strategy<Value = EntityId> {
     ]
 }
 
-/// A seat: mostly one that exists, sometimes one that does not.
-fn seat() -> impl Strategy<Value = PlayerId> {
-    prop_oneof![
-        8 => (0u8..PLAYER_COUNT as u8).prop_map(PlayerId),
-        1 => proptest::num::u8::ANY.prop_map(PlayerId),
-    ]
+/// A seat. Every one of them exists; see the module documentation on the
+/// seventh, which used to be drawn here and is now a value nobody can build.
+fn seat() -> impl Strategy<Value = Seat> {
+    (0usize..PLAYER_COUNT).prop_map(|index| Seat::ALL[index])
 }
 
 fn action() -> impl Strategy<Value = Action> {
@@ -414,7 +415,7 @@ fn sprint() -> impl Strategy<Value = Recipe> {
                 .map(|(index, destination)| Command {
                     when: When::Now,
                     seq: 0,
-                    player: PlayerId(index as u8),
+                    player: Seat::ALL[index],
                     action: Action::Move(destination),
                 })
                 .collect();
@@ -430,13 +431,17 @@ fn sprint() -> impl Strategy<Value = Recipe> {
 /// One team walks into the other's towers and knocks both down.
 fn endgame() -> impl Strategy<Value = Recipe> {
     (proptest::num::u64::ANY, proptest::bool::ANY).prop_map(|(seed, blue_attacks)| {
-        let (first_seat, first_tower) = if blue_attacks { (0u8, 2usize) } else { (3, 0) };
-        let orders = (0..3u8)
+        let (first_seat, first_tower) = if blue_attacks {
+            (0usize, 2usize)
+        } else {
+            (3, 0)
+        };
+        let orders = (0..3usize)
             .map(|offset| Command {
                 when: When::Now,
                 seq: 0,
-                player: PlayerId(first_seat + offset),
-                action: Action::Attack(tower_entity_id(first_tower + usize::from(offset.min(1)))),
+                player: Seat::ALL[first_seat + offset],
+                action: Action::Attack(tower_entity_id(first_tower + offset.min(1))),
             })
             .collect();
         Recipe {
@@ -468,16 +473,15 @@ fn reachable() -> impl Strategy<Value = Recipe> {
 
 /// **Soundness.** Nothing in the view was seen at a point outside the vision of
 /// this player's team. Its violation is a maphack.
-fn assert_sound(state: &State, player: PlayerId, rules: &Rules) {
-    let team = Team::of_player(player);
+fn assert_sound(state: &State, player: Seat, rules: &Rules) {
+    let team = player.team();
     let view = view_for_with_rules(state, player, rules);
     for (id, position) in handles_with_positions(&view) {
         assert!(
             team_sees(state, team, position, rules),
-            "tick {:?}, player {}: entity {id} named at {position:?}, which is outside \
+            "tick {:?}, {player:?}: entity {id} named at {position:?}, which is outside \
              this team's vision",
-            state.tick(),
-            player.0
+            state.tick()
         );
     }
 }
@@ -489,16 +493,15 @@ fn assert_sound(state: &State, player: PlayerId, rules: &Rules) {
 /// here because without it the degenerate projection that returns nothing
 /// satisfies soundness, and "true by vacuity" is a failure mode this project
 /// has already caught itself in once.
-fn assert_complete(state: &State, player: PlayerId, rules: &Rules) {
+fn assert_complete(state: &State, player: Seat, rules: &Rules) {
     let view = view_for_with_rules(state, player, rules);
 
     let reported: BTreeSet<u16> = reported_ids(&view).into_iter().collect();
     assert_eq!(
         reported,
         expected_ids(state, player, rules),
-        "tick {:?}, player {}: the visible set is not the entitled set",
-        state.tick(),
-        player.0
+        "tick {:?}, {player:?}: the visible set is not the entitled set",
+        state.tick()
     );
 
     for entity in &view.visible {
@@ -533,25 +536,26 @@ fn assert_complete(state: &State, player: PlayerId, rules: &Rules) {
     assert_eq!(
         view.events.len(),
         entitled.len(),
-        "tick {:?}, player {}: event count",
-        state.tick(),
-        player.0
+        "tick {:?}, {player:?}: event count",
+        state.tick()
     );
     for (expected, seen) in entitled.iter().zip(&view.events) {
         assert!(
             same_event(expected, seen),
-            "tick {:?}, player {}: {seen:?} is not {expected:?}",
-            state.tick(),
-            player.0
+            "tick {:?}, {player:?}: {seen:?} is not {expected:?}",
+            state.tick()
         );
     }
 }
 
-/// Every seat a server could ask about, plus two it should not be able to.
-fn every_player() -> impl Iterator<Item = PlayerId> {
-    (0..PLAYER_COUNT as u8)
-        .chain([PLAYER_COUNT as u8, 200])
-        .map(PlayerId)
+/// Every seat a server could ask about, which since M3 is every seat there is.
+///
+/// It used to append two seats a server should not have been able to ask about
+/// — `PlayerId(6)` and `PlayerId(200)` — because the type admitted them. They
+/// are gone from the domain rather than from the coverage: `Seat::ALL` is the
+/// whole of it now.
+fn every_player() -> impl Iterator<Item = Seat> {
+    Seat::ALL.into_iter()
 }
 
 /// Vision wide enough to cover the map's diagonal from anywhere: the
@@ -632,17 +636,16 @@ proptest! {
         let left = fork(&first);
         let right = fork(&second);
 
-        for seat in 0..PLAYER_COUNT {
-            let player = PlayerId(seat as u8);
+        for player in Seat::ALL {
             let left_entitled: Entitled = entitled(&left, player, &rules);
             let right_entitled: Entitled = entitled(&right, player, &rules);
             if left_entitled == right_entitled {
                 prop_assert_eq!(
                     view_for_with_rules(&left, player, &rules),
                     view_for_with_rules(&right, player, &rules),
-                    "player {} was told two different things about two states it \
+                    "{:?} was told two different things about two states it \
                      cannot tell apart",
-                    seat
+                    player
                 );
             }
         }
@@ -669,10 +672,10 @@ proptest! {
                 prop_assert_eq!(
                     &ids,
                     &ascending,
-                    "tick {:?}, player {}: the entity list is ordered by something \
+                    "tick {:?}, {:?}: the entity list is ordered by something \
                      other than the handle",
                     state.tick(),
-                    player.0
+                    player
                 );
             }
         }
@@ -711,28 +714,31 @@ proptest! {
     fn vision_flips_exactly_at_the_radius(separation in separations(), y in -10i32..=10) {
         let rules = SPRINT_RULES;
         let state = face_off(separation, Fx::from_int(y));
-        let watcher = PlayerId(0);
-        let watched = PlayerId(3);
+        let watcher = Seat::Blue0;
+        let watched = Seat::Red0;
 
         // The construction is only worth anything if the pair is alone: any
         // other source in range would decide the question instead of the
         // separation.
-        let (near, far) = (state.champions()[0].position, state.champions()[3].position);
+        let (near, far) = (
+            state.champion(Seat::Blue0).position,
+            state.champion(Seat::Red0).position,
+        );
         prop_assert_eq!(near.sub(far).length_squared_wide(),
                         i64::from(separation.to_raw()) * i64::from(separation.to_raw()),
                         "the two champions did not end up exactly {:?} apart", separation);
-        for other in [1usize, 2, 4, 5] {
-            let source = state.champions()[other].position;
-            let target = if other < 3 { far } else { near };
+        for other in [Seat::Blue1, Seat::Blue2, Seat::Red1, Seat::Red2] {
+            let source = state.champion(other).position;
+            let target = if other.team() == Team::Blue { far } else { near };
             prop_assert!(
                 !source.within_range(target, rules.champion_vision_radius),
-                "seat {} is close enough to decide the question by itself", other
+                "{:?} is close enough to decide the question by itself", other
             );
         }
 
         let inside = separation.to_raw() <= rules.champion_vision_radius.to_raw();
         let seen = reported_ids(&view_for_with_rules(&state, watcher, &rules))
-            .contains(&champion_entity_id(3).0);
+            .contains(&champion_entity_id(Seat::Red0).0);
         prop_assert_eq!(
             seen,
             inside,
@@ -743,7 +749,7 @@ proptest! {
         // Vision is a team property and both sides are symmetric, so the same
         // answer has to come back the other way round.
         let mirrored = reported_ids(&view_for_with_rules(&state, watched, &rules))
-            .contains(&champion_entity_id(0).0);
+            .contains(&champion_entity_id(Seat::Blue0).0);
         prop_assert_eq!(mirrored, inside, "the two sides disagree about one distance");
     }
 
@@ -802,14 +808,14 @@ proptest! {
     fn the_seats_of_a_team_are_told_the_same_world(recipe in reachable()) {
         let rules = recipe.rules();
         let state = recipe.state();
-        for team in [0usize, 3] {
-            for first in team..team + 3 {
-                for second in team..team + 3 {
+        for team in [Team::Blue, Team::Red] {
+            for first in Seat::ALL.into_iter().filter(|seat| seat.team() == team) {
+                for second in Seat::ALL.into_iter().filter(|seat| seat.team() == team) {
                     if first == second {
                         continue;
                     }
-                    let left = view_for_with_rules(&state, PlayerId(first as u8), &rules);
-                    let right = view_for_with_rules(&state, PlayerId(second as u8), &rules);
+                    let left = view_for_with_rules(&state, first, &rules);
+                    let right = view_for_with_rules(&state, second, &rules);
                     let ours = [champion_entity_id(first), champion_entity_id(second)];
                     let strip = |view: &PlayerView| -> Vec<EntityView> {
                         view.visible
@@ -820,7 +826,7 @@ proptest! {
                             .collect()
                     };
                     prop_assert_eq!(strip(&left), strip(&right),
-                        "seats {} and {} of one team see different worlds", first, second);
+                        "{:?} and {:?} of one team see different worlds", first, second);
                     prop_assert_eq!(&left.events, &right.events);
                     prop_assert_eq!(left.outcome, right.outcome);
                     prop_assert_eq!(left.tick, right.tick);
@@ -923,7 +929,7 @@ fn face_off(separation: Fx, y: Fx) -> State {
         .map(|(seat, destination)| Input {
             tick: Tick(0),
             seq: 0,
-            player: PlayerId(seat as u8),
+            player: Seat::ALL[seat],
             action: Action::Move(*destination),
         })
         .collect();
@@ -1009,8 +1015,7 @@ fn the_generators_reach_the_states_these_properties_are_about() {
                 }
             }
 
-            for seat in 0..PLAYER_COUNT {
-                let player = PlayerId(seat as u8);
+            for player in Seat::ALL {
                 let view = view_for_with_rules(state, player, &rules);
                 let all = view_for_with_rules(state, player, &leaky);
                 if view.visible.len() < all.visible.len() {
@@ -1045,8 +1050,7 @@ fn the_generators_reach_the_states_these_properties_are_about() {
         let left = step_of(&batches[0]);
         let right = step_of(&batches[1]);
         if left.digest() != right.digest() {
-            for seat in 0..PLAYER_COUNT {
-                let player = PlayerId(seat as u8);
+            for player in Seat::ALL {
                 if entitled(&left, player, &rules) == entitled(&right, player, &rules) {
                     reach.forks_hidden_from_somebody += 1;
                     break;

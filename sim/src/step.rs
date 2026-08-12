@@ -56,7 +56,7 @@ use crate::input::{Action, Input};
 use crate::rules::{RULES, Rules};
 use crate::state::{
     Cooldowns, EntityId, EntityRef, Liveness, MAX_PROJECTILES, Order, Outcome, PLAYER_COUNT,
-    PlayerId, Projectile, State, TOWER_COUNT, Team, Tick, Tower, champion_entity_id, entity_id,
+    Projectile, Seat, State, TOWER_COUNT, Team, Tick, Tower, champion_entity_id, entity_id,
     entity_team, spawn_position, tower_position, tower_team,
 };
 use crate::vec2::FxVec2;
@@ -132,7 +132,8 @@ fn tick_cooldowns(state: &mut State) {
 
 fn grant_respawns(state: &mut State, rules: &Rules) {
     let now = state.tick;
-    for (index, champion) in state.champions.iter_mut().enumerate() {
+    for seat in Seat::ALL {
+        let champion = state.champion_mut(seat);
         let Liveness::Dead { respawn_at } = champion.liveness else {
             continue;
         };
@@ -142,7 +143,7 @@ fn grant_respawns(state: &mut State, rules: &Rules) {
         champion.liveness = Liveness::Alive {
             hp: rules.champion_max_hp,
         };
-        champion.position = spawn_position(index, rules);
+        champion.position = spawn_position(seat, rules);
         champion.order = Order::Idle;
         // Cooldowns are cleared on respawn. Fifteen seconds of death is longer
         // than every cooldown in the game except the skillshot's, so the rule
@@ -158,13 +159,8 @@ fn apply_inputs(state: &mut State, inputs: &[Input], rules: &Rules) {
         if input.tick != now {
             continue;
         }
-        let Some(seat) = seat_index(input.player) else {
-            continue;
-        };
-        let Some(champion) = state.champions.get(seat).copied() else {
-            continue;
-        };
-        if !matches!(champion.liveness, Liveness::Alive { .. }) {
+        let seat = input.player;
+        if !matches!(state.champion(seat).liveness, Liveness::Alive { .. }) {
             continue;
         }
 
@@ -181,7 +177,7 @@ fn apply_inputs(state: &mut State, inputs: &[Input], rules: &Rules) {
                 // order in place. Storing it and resolving it later would let
                 // an attacker write arbitrary handles into the state.
                 if let Some(entity) = state.resolve(target)
-                    && entity_team(entity) != Team::of_player(input.player)
+                    && entity_team(entity) != seat.team()
                 {
                     set_order(state, seat, Order::Attack(target));
                 }
@@ -192,16 +188,12 @@ fn apply_inputs(state: &mut State, inputs: &[Input], rules: &Rules) {
     }
 }
 
-fn set_order(state: &mut State, seat: usize, order: Order) {
-    if let Some(champion) = state.champions.get_mut(seat) {
-        champion.order = order;
-    }
+fn set_order(state: &mut State, seat: Seat, order: Order) {
+    state.champion_mut(seat).order = order;
 }
 
-fn cast_skillshot(state: &mut State, seat: usize, direction: FxVec2, rules: &Rules) {
-    let Some(champion) = state.champions.get(seat).copied() else {
-        return;
-    };
+fn cast_skillshot(state: &mut State, seat: Seat, direction: FxVec2, rules: &Rules) {
+    let champion = *state.champion(seat);
     if champion.cooldowns.skillshot != 0 {
         return;
     }
@@ -219,15 +211,13 @@ fn cast_skillshot(state: &mut State, seat: usize, direction: FxVec2, rules: &Rul
     let id = state.allocate_projectile_id();
     let placed = state.projectiles.insert(Projectile {
         id,
-        owner: PlayerId(seat as u8),
+        owner: seat,
         position: champion.position,
         velocity: direction.normalize_or_zero().scale(rules.skillshot_speed),
         remaining: rules.skillshot_lifetime_ticks,
     });
     if placed {
-        if let Some(caster) = state.champions.get_mut(seat) {
-            caster.cooldowns.skillshot = rules.skillshot_cooldown_ticks;
-        }
+        state.champion_mut(seat).cooldowns.skillshot = rules.skillshot_cooldown_ticks;
         // Announced from where it was cast, not from where the projectile is:
         // the cue a nearby client gets is the champion's gesture, and the
         // projectile is a visible entity in its own right from the next tick on.
@@ -242,17 +232,15 @@ fn cast_skillshot(state: &mut State, seat: usize, direction: FxVec2, rules: &Rul
     }
 }
 
-fn cast_targeted(state: &mut State, seat: usize, target: EntityId, rules: &Rules) {
-    let Some(champion) = state.champions.get(seat).copied() else {
-        return;
-    };
+fn cast_targeted(state: &mut State, seat: Seat, target: EntityId, rules: &Rules) {
+    let champion = *state.champion(seat);
     if champion.cooldowns.targeted != 0 {
         return;
     }
     let Some(entity) = state.resolve(target) else {
         return;
     };
-    if entity_team(entity) == Team::of_player(PlayerId(seat as u8)) {
+    if entity_team(entity) == seat.team() {
         return;
     }
     if !champion
@@ -271,16 +259,12 @@ fn cast_targeted(state: &mut State, seat: usize, target: EntityId, rules: &Rules
         },
     );
     damage(state, entity, rules.targeted_damage, rules);
-    if let Some(caster) = state.champions.get_mut(seat) {
-        caster.cooldowns.targeted = rules.targeted_cooldown_ticks;
-    }
+    state.champion_mut(seat).cooldowns.targeted = rules.targeted_cooldown_ticks;
 }
 
 fn move_champions(state: &mut State, rules: &Rules) {
-    for seat in 0..PLAYER_COUNT {
-        let Some(champion) = state.champions.get(seat).copied() else {
-            continue;
-        };
+    for seat in Seat::ALL {
+        let champion = *state.champion(seat);
         if !matches!(champion.liveness, Liveness::Alive { .. }) {
             continue;
         }
@@ -314,9 +298,7 @@ fn move_champions(state: &mut State, rules: &Rules) {
             .step_toward(destination, rules.champion_speed)
             .clamp_components(rules.map_half_extent);
 
-        let Some(champion) = state.champions.get_mut(seat) else {
-            continue;
-        };
+        let champion = state.champion_mut(seat);
         champion.position = moved;
         if matches!(champion.order, Order::MoveTo(point) if point == moved) {
             champion.order = Order::Idle;
@@ -355,15 +337,13 @@ fn advance_projectiles(state: &mut State, rules: &Rules) {
 /// get identical on three platforms; index order already is a total order and
 /// costs nothing to agree on.
 fn first_hit(state: &State, projectile: &Projectile, rules: &Rules) -> Option<EntityRef> {
-    let owner_team = Team::of_player(projectile.owner);
+    let owner_team = projectile.owner.team();
 
-    for seat in 0..PLAYER_COUNT {
-        if Team::of_player(PlayerId(seat as u8)) == owner_team {
+    for seat in Seat::ALL {
+        if seat.team() == owner_team {
             continue;
         }
-        let Some(champion) = state.champions.get(seat) else {
-            continue;
-        };
+        let champion = state.champion(seat);
         if !matches!(champion.liveness, Liveness::Alive { .. }) {
             continue;
         }
@@ -435,14 +415,12 @@ fn fire_towers(state: &mut State, rules: &Rules) {
 /// Lowest seat rather than nearest, lowest health, or most recent aggressor.
 /// All four are defensible game design and this one is a fixture, so the
 /// tie-break that needs no second rule wins.
-fn lowest_enemy_in_range(state: &State, team: Team, origin: FxVec2, radius: Fx) -> Option<usize> {
-    for seat in 0..PLAYER_COUNT {
-        if Team::of_player(PlayerId(seat as u8)) != team {
+fn lowest_enemy_in_range(state: &State, team: Team, origin: FxVec2, radius: Fx) -> Option<Seat> {
+    for seat in Seat::ALL {
+        if seat.team() != team {
             continue;
         }
-        let Some(champion) = state.champions.get(seat) else {
-            continue;
-        };
+        let champion = state.champion(seat);
         if !matches!(champion.liveness, Liveness::Alive { .. }) {
             continue;
         }
@@ -454,10 +432,8 @@ fn lowest_enemy_in_range(state: &State, team: Team, origin: FxVec2, radius: Fx) 
 }
 
 fn resolve_basic_attacks(state: &mut State, rules: &Rules) {
-    for seat in 0..PLAYER_COUNT {
-        let Some(champion) = state.champions.get(seat).copied() else {
-            continue;
-        };
+    for seat in Seat::ALL {
+        let champion = *state.champion(seat);
         if !matches!(champion.liveness, Liveness::Alive { .. })
             || champion.cooldowns.basic_attack != 0
         {
@@ -469,7 +445,7 @@ fn resolve_basic_attacks(state: &mut State, rules: &Rules) {
         let Some(entity) = state.resolve(target) else {
             continue;
         };
-        if entity_team(entity) == Team::of_player(PlayerId(seat as u8)) {
+        if entity_team(entity) == seat.team() {
             continue;
         }
         if !champion
@@ -480,9 +456,7 @@ fn resolve_basic_attacks(state: &mut State, rules: &Rules) {
         }
 
         damage(state, entity, rules.attack_damage, rules);
-        if let Some(attacker) = state.champions.get_mut(seat) {
-            attacker.cooldowns.basic_attack = rules.attack_cooldown_ticks;
-        }
+        state.champion_mut(seat).cooldowns.basic_attack = rules.attack_cooldown_ticks;
     }
 }
 
@@ -509,9 +483,8 @@ fn damage(state: &mut State, target: EntityRef, amount: Fx, rules: &Rules) {
     );
     match target {
         EntityRef::Champion(seat) => {
-            if let Some(champion) = state.champions.get_mut(seat)
-                && let Liveness::Alive { hp } = champion.liveness
-            {
+            let champion = state.champion_mut(seat);
+            if let Liveness::Alive { hp } = champion.liveness {
                 champion.liveness = Liveness::Alive {
                     hp: hp.sub(amount).max(Fx::ZERO),
                 };
@@ -529,7 +502,8 @@ fn resolve_deaths(state: &mut State, rules: &Rules) {
     let now = state.tick;
     let respawn_at = Tick(now.0.saturating_add(u32::from(rules.respawn_ticks)));
     let mut died = [None; PLAYER_COUNT];
-    for (seat, champion) in state.champions.iter_mut().enumerate() {
+    for seat in Seat::ALL {
+        let champion = state.champion_mut(seat);
         let Liveness::Alive { hp } = champion.liveness else {
             continue;
         };
@@ -540,7 +514,7 @@ fn resolve_deaths(state: &mut State, rules: &Rules) {
         // that position exists, and the visibility projection needs it: a death
         // is shown to whoever could see the spot it happened at, which is not
         // the same set as whoever can see the spawn point.
-        died[seat] = Some(champion.position);
+        died[seat.index()] = Some(champion.position);
         champion.liveness = Liveness::Dead { respawn_at };
         champion.order = Order::Idle;
         // The body returns to the spawn point immediately rather than lying
@@ -549,8 +523,8 @@ fn resolve_deaths(state: &mut State, rules: &Rules) {
         // projection has to remember to hide.
         champion.position = spawn_position(seat, rules);
     }
-    for (seat, at) in died.iter().enumerate() {
-        let Some(at) = *at else {
+    for seat in Seat::ALL {
+        let Some(at) = died[seat.index()] else {
             continue;
         };
         emit(
@@ -596,15 +570,6 @@ fn decide_outcome(state: &mut State) {
     };
 }
 
-const fn seat_index(player: PlayerId) -> Option<usize> {
-    let seat = player.0 as usize;
-    if seat < PLAYER_COUNT {
-        Some(seat)
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::step;
@@ -612,15 +577,15 @@ mod tests {
     use crate::input::{Action, Input};
     use crate::rules::RULES;
     use crate::state::{
-        EntityId, Liveness, Order, Outcome, PlayerId, State, Team, Tick, new_state, tower_position,
+        EntityId, Liveness, Order, Outcome, Seat, State, Team, Tick, new_state, tower_position,
     };
     use crate::vec2::FxVec2;
 
-    fn input(tick: u32, player: u8, action: Action) -> Input {
+    fn input(tick: u32, player: Seat, action: Action) -> Input {
         Input {
             tick: Tick(tick),
             seq: 0,
-            player: PlayerId(player),
+            player,
             action,
         }
     }
@@ -632,8 +597,8 @@ mod tests {
         state
     }
 
-    fn hp_of(state: &State, seat: usize) -> Fx {
-        match state.champions[seat].liveness {
+    fn hp_of(state: &State, seat: Seat) -> Fx {
+        match state.champion(seat).liveness {
             Liveness::Alive { hp } => hp,
             Liveness::Dead { .. } => Fx::ZERO,
         }
@@ -649,39 +614,39 @@ mod tests {
     fn step_does_not_mutate_its_argument() {
         let state = new_state(7);
         let before = state.digest();
-        let _ = step(&state, &[input(0, 0, Action::Move(FxVec2::ZERO))]);
+        let _ = step(&state, &[input(0, Seat::Blue0, Action::Move(FxVec2::ZERO))]);
         assert_eq!(state.digest(), before);
     }
 
     #[test]
     fn an_input_for_another_tick_is_ignored() {
         let state = new_state(7);
-        let applied = step(&state, &[input(0, 0, Action::Move(FxVec2::ZERO))]);
-        let ignored = step(&state, &[input(9, 0, Action::Move(FxVec2::ZERO))]);
+        let applied = step(&state, &[input(0, Seat::Blue0, Action::Move(FxVec2::ZERO))]);
+        let ignored = step(&state, &[input(9, Seat::Blue0, Action::Move(FxVec2::ZERO))]);
         assert_ne!(applied.digest(), ignored.digest());
-        assert_eq!(ignored.champions[0].order, Order::Idle);
+        assert_eq!(ignored.champion(Seat::Blue0).order, Order::Idle);
     }
 
     #[test]
     fn a_move_order_walks_and_then_stops() {
         let state = new_state(7);
-        let start = state.champions[0].position;
+        let start = state.champion(Seat::Blue0).position;
         let destination = start.add(FxVec2::new(Fx::from_int(1), Fx::ZERO));
-        let state = step(&state, &[input(0, 0, Action::Move(destination))]);
-        assert!(state.champions[0].position.x > start.x);
+        let state = step(&state, &[input(0, Seat::Blue0, Action::Move(destination))]);
+        assert!(state.champion(Seat::Blue0).position.x > start.x);
 
         // One unit at 6 units per second is 5 ticks, plus slack for truncation.
         let state = run(state, 10, &[]);
-        assert_eq!(state.champions[0].position, destination);
-        assert_eq!(state.champions[0].order, Order::Idle);
+        assert_eq!(state.champion(Seat::Blue0).position, destination);
+        assert_eq!(state.champion(Seat::Blue0).order, Order::Idle);
     }
 
     #[test]
     fn a_destination_outside_the_map_is_clamped_not_rejected() {
         let state = new_state(7);
         let far = FxVec2::new(Fx::from_int(30_000), Fx::from_int(-30_000));
-        let state = step(&state, &[input(0, 0, Action::Move(far))]);
-        let Order::MoveTo(point) = state.champions[0].order else {
+        let state = step(&state, &[input(0, Seat::Blue0, Action::Move(far))]);
+        let Order::MoveTo(point) = state.champion(Seat::Blue0).order else {
             panic!("expected a move order");
         };
         assert_eq!(point.x, RULES.map_half_extent);
@@ -691,36 +656,50 @@ mod tests {
     #[test]
     fn attacking_an_ally_or_a_ghost_leaves_the_order_alone() {
         let state = new_state(7);
-        let state = step(&state, &[input(0, 0, Action::Attack(EntityId(1)))]);
-        assert_eq!(state.champions[0].order, Order::Idle, "ally");
-        let state = step(&state, &[input(1, 0, Action::Attack(EntityId(9999)))]);
-        assert_eq!(state.champions[0].order, Order::Idle, "unknown handle");
+        let state = step(
+            &state,
+            &[input(0, Seat::Blue0, Action::Attack(EntityId(1)))],
+        );
+        assert_eq!(state.champion(Seat::Blue0).order, Order::Idle, "ally");
+        let state = step(
+            &state,
+            &[input(1, Seat::Blue0, Action::Attack(EntityId(9999)))],
+        );
+        assert_eq!(
+            state.champion(Seat::Blue0).order,
+            Order::Idle,
+            "unknown handle"
+        );
     }
 
     #[test]
     fn a_basic_attack_needs_range_and_respects_its_cooldown() {
         let mut state = new_state(7);
-        state.place_champion(0, FxVec2::ZERO, RULES.champion_max_hp);
-        state.place_champion(3, FxVec2::new(Fx::ONE, Fx::ZERO), RULES.champion_max_hp);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, RULES.champion_max_hp);
+        state.place_champion(
+            Seat::Red0,
+            FxVec2::new(Fx::ONE, Fx::ZERO),
+            RULES.champion_max_hp,
+        );
 
-        let orders = [input(0, 0, Action::Attack(EntityId(3)))];
+        let orders = [input(0, Seat::Blue0, Action::Attack(EntityId(3)))];
         let state = step(&state, &orders);
         assert_eq!(
-            hp_of(&state, 3),
+            hp_of(&state, Seat::Red0),
             RULES.champion_max_hp.sub(RULES.attack_damage)
         );
 
         // The next tick is inside the cooldown, so nothing further lands.
         let state = step(&state, &[]);
         assert_eq!(
-            hp_of(&state, 3),
+            hp_of(&state, Seat::Red0),
             RULES.champion_max_hp.sub(RULES.attack_damage)
         );
 
         // And after it expires, exactly one more attack lands.
         let state = run(state, u32::from(RULES.attack_cooldown_ticks), &[]);
         assert_eq!(
-            hp_of(&state, 3),
+            hp_of(&state, Seat::Red0),
             RULES
                 .champion_max_hp
                 .sub(RULES.attack_damage)
@@ -731,22 +710,22 @@ mod tests {
     #[test]
     fn a_skillshot_flies_and_hits_the_first_enemy_in_its_path() {
         let mut state = new_state(7);
-        state.place_champion(0, FxVec2::ZERO, RULES.champion_max_hp);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, RULES.champion_max_hp);
         state.place_champion(
-            3,
+            Seat::Red0,
             FxVec2::new(Fx::from_int(5), Fx::ZERO),
             RULES.champion_max_hp,
         );
 
         let cast = [input(
             0,
-            0,
+            Seat::Blue0,
             Action::Skillshot(FxVec2::new(Fx::ONE, Fx::ZERO)),
         )];
         let state = step(&state, &cast);
         assert_eq!(state.projectiles().count(), 1);
         assert_eq!(
-            state.champions[0].cooldowns.skillshot,
+            state.champion(Seat::Blue0).cooldowns.skillshot,
             RULES.skillshot_cooldown_ticks
         );
 
@@ -754,7 +733,7 @@ mod tests {
         let state = run(state, 12, &[]);
         assert_eq!(state.projectiles().count(), 0, "consumed on hit");
         assert_eq!(
-            hp_of(&state, 3),
+            hp_of(&state, Seat::Red0),
             RULES.champion_max_hp.sub(RULES.skillshot_damage)
         );
     }
@@ -763,53 +742,61 @@ mod tests {
     fn a_skillshot_too_short_to_aim_is_discarded_without_cost() {
         let state = new_state(7);
         let nudge = FxVec2::new(Fx::EPSILON, Fx::ZERO);
-        let state = step(&state, &[input(0, 0, Action::Skillshot(nudge))]);
+        let state = step(&state, &[input(0, Seat::Blue0, Action::Skillshot(nudge))]);
         assert_eq!(state.projectiles().count(), 0);
-        assert_eq!(state.champions[0].cooldowns.skillshot, 0, "cooldown intact");
+        assert_eq!(
+            state.champion(Seat::Blue0).cooldowns.skillshot,
+            0,
+            "cooldown intact"
+        );
     }
 
     #[test]
     fn a_skillshot_does_not_hit_the_caster_or_their_team() {
         let mut state = new_state(7);
-        state.place_champion(0, FxVec2::ZERO, RULES.champion_max_hp);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, RULES.champion_max_hp);
         state.place_champion(
-            1,
+            Seat::Blue1,
             FxVec2::new(Fx::from_int(3), Fx::ZERO),
             RULES.champion_max_hp,
         );
         let cast = [input(
             0,
-            0,
+            Seat::Blue0,
             Action::Skillshot(FxVec2::new(Fx::ONE, Fx::ZERO)),
         )];
         let state = run(step(&state, &cast), 12, &[]);
-        assert_eq!(hp_of(&state, 0), RULES.champion_max_hp);
-        assert_eq!(hp_of(&state, 1), RULES.champion_max_hp);
+        assert_eq!(hp_of(&state, Seat::Blue0), RULES.champion_max_hp);
+        assert_eq!(hp_of(&state, Seat::Blue1), RULES.champion_max_hp);
     }
 
     #[test]
     fn the_targeted_spell_needs_range() {
         let mut state = new_state(7);
-        state.place_champion(0, FxVec2::ZERO, RULES.champion_max_hp);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, RULES.champion_max_hp);
         state.place_champion(
-            3,
+            Seat::Red0,
             FxVec2::new(RULES.targeted_range.add(Fx::ONE), Fx::ZERO),
             RULES.champion_max_hp,
         );
 
-        let cast = [input(0, 0, Action::Targeted(EntityId(3)))];
+        let cast = [input(0, Seat::Blue0, Action::Targeted(EntityId(3)))];
         let out_of_range = step(&state, &cast);
-        assert_eq!(hp_of(&out_of_range, 3), RULES.champion_max_hp);
-        assert_eq!(out_of_range.champions[0].cooldowns.targeted, 0);
+        assert_eq!(hp_of(&out_of_range, Seat::Red0), RULES.champion_max_hp);
+        assert_eq!(out_of_range.champion(Seat::Blue0).cooldowns.targeted, 0);
 
-        state.place_champion(3, FxVec2::new(Fx::ONE, Fx::ZERO), RULES.champion_max_hp);
+        state.place_champion(
+            Seat::Red0,
+            FxVec2::new(Fx::ONE, Fx::ZERO),
+            RULES.champion_max_hp,
+        );
         let in_range = step(&state, &cast);
         assert_eq!(
-            hp_of(&in_range, 3),
+            hp_of(&in_range, Seat::Red0),
             RULES.champion_max_hp.sub(RULES.targeted_damage)
         );
         assert_eq!(
-            in_range.champions[0].cooldowns.targeted,
+            in_range.champion(Seat::Blue0).cooldowns.targeted,
             RULES.targeted_cooldown_ticks
         );
     }
@@ -819,23 +806,31 @@ mod tests {
         let mut state = new_state(7);
         // Red seats 3 and 4 both stand on Blue's outer tower; seat 3 is shot.
         let under_tower = tower_position(0, &RULES);
-        state.place_champion(3, under_tower, RULES.tower_damage);
-        state.place_champion(4, under_tower, RULES.champion_max_hp);
+        state.place_champion(Seat::Red0, under_tower, RULES.tower_damage);
+        state.place_champion(Seat::Red1, under_tower, RULES.champion_max_hp);
 
         let state = step(&state, &[]);
         assert!(
-            matches!(state.champions[3].liveness, Liveness::Dead { .. }),
+            matches!(state.champion(Seat::Red0).liveness, Liveness::Dead { .. }),
             "seat 3 took the shot"
         );
-        assert_eq!(hp_of(&state, 4), RULES.champion_max_hp, "seat 4 untouched");
         assert_eq!(
-            state.champions[3].position,
-            crate::state::spawn_position(3, &RULES),
+            hp_of(&state, Seat::Red1),
+            RULES.champion_max_hp,
+            "seat 4 untouched"
+        );
+        assert_eq!(
+            state.champion(Seat::Red0).position,
+            crate::state::spawn_position(Seat::Red0, &RULES),
             "the body returns to spawn"
         );
 
         let state = run(state, u32::from(RULES.respawn_ticks), &[]);
-        assert_eq!(hp_of(&state, 3), RULES.champion_max_hp, "respawned");
+        assert_eq!(
+            hp_of(&state, Seat::Red0),
+            RULES.champion_max_hp,
+            "respawned"
+        );
     }
 
     #[test]
@@ -853,7 +848,7 @@ mod tests {
         );
 
         // Once decided, only the tick moves.
-        let frozen = step(&state, &[input(1, 0, Action::Move(FxVec2::ZERO))]);
+        let frozen = step(&state, &[input(1, Seat::Blue0, Action::Move(FxVec2::ZERO))]);
         assert_eq!(frozen.tick(), Tick(2));
         assert_eq!(frozen.champions, state.champions);
     }
@@ -861,16 +856,27 @@ mod tests {
     #[test]
     fn a_dead_champion_takes_no_orders() {
         let mut state = new_state(7);
-        state.place_champion(0, FxVec2::ZERO, Fx::EPSILON);
-        state.place_champion(3, FxVec2::new(Fx::ONE, Fx::ZERO), RULES.champion_max_hp);
-        let state = step(&state, &[input(0, 3, Action::Attack(EntityId(0)))]);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, Fx::EPSILON);
+        state.place_champion(
+            Seat::Red0,
+            FxVec2::new(Fx::ONE, Fx::ZERO),
+            RULES.champion_max_hp,
+        );
+        let state = step(&state, &[input(0, Seat::Red0, Action::Attack(EntityId(0)))]);
         let state = run(state, 2, &[]);
-        assert!(matches!(state.champions[0].liveness, Liveness::Dead { .. }));
+        assert!(matches!(
+            state.champion(Seat::Blue0).liveness,
+            Liveness::Dead { .. }
+        ));
 
         let ignored = step(
             &state,
-            &[input(state.tick().0, 0, Action::Move(FxVec2::ZERO))],
+            &[input(
+                state.tick().0,
+                Seat::Blue0,
+                Action::Move(FxVec2::ZERO),
+            )],
         );
-        assert_eq!(ignored.champions[0].order, Order::Idle);
+        assert_eq!(ignored.champion(Seat::Blue0).order, Order::Idle);
     }
 }

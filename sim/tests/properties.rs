@@ -28,8 +28,8 @@
 use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 use sim::{
-    Action, EntityId, Fx, FxVec2, Input, Liveness, MAX_PROJECTILES, Outcome, PLAYER_COUNT,
-    PlayerId, RULES, Rng, State, Tick, new_state, step,
+    Action, EntityId, Fx, FxVec2, Input, Liveness, MAX_PROJECTILES, Outcome, PLAYER_COUNT, RULES,
+    Rng, Seat, State, Tick, new_state, step,
 };
 
 /// Where a counter-example is written down, and why it is written down at all.
@@ -144,11 +144,11 @@ fn hostile_input(tick: u32) -> impl Strategy<Value = Input> {
         proptest::num::u16::ANY.prop_map(|id| Action::Targeted(EntityId(id))),
         proptest::num::u16::ANY.prop_map(|id| Action::Attack(EntityId(id))),
     ];
-    (proptest::num::u8::ANY, proptest::num::u32::ANY, action).prop_map(
+    (0usize..PLAYER_COUNT, proptest::num::u32::ANY, action).prop_map(
         move |(player, seq, action)| Input {
             tick: Tick(tick),
             seq,
-            player: PlayerId(player),
+            player: Seat::ALL[player],
             action,
         },
     )
@@ -448,44 +448,41 @@ proptest! {
 #[test]
 fn each_seat_responds_to_its_own_input_only() {
     let state = new_state(11);
-    for seat in 0..PLAYER_COUNT {
+    for seat in Seat::ALL {
         let destination = FxVec2::new(Fx::ZERO, Fx::ZERO);
         let next = step(
             &state,
             &[Input {
                 tick: Tick(0),
                 seq: 0,
-                player: PlayerId(seat as u8),
+                player: seat,
                 action: Action::Move(destination),
             }],
         );
-        for other in 0..PLAYER_COUNT {
-            let moved = next.champions()[other].position != state.champions()[other].position;
-            assert_eq!(
-                moved,
-                other == seat,
-                "seat {other} moved on seat {seat}'s input"
-            );
+        for other in Seat::ALL {
+            let moved = next.champion(other).position != state.champion(other).position;
+            assert_eq!(moved, other == seat, "{other:?} moved on {seat:?}'s input");
         }
     }
 }
 
-/// A seat number outside the match is ignored rather than folded back into the
-/// match by a modulo — the obvious wrong fix, and one that would let a client
-/// drive somebody else's champion.
+/// A seat number outside the match cannot be built, which is what replaced the
+/// test that used to live here.
+///
+/// It asserted that `PlayerId(200)` was ignored rather than folded back into
+/// the match by a modulo. That assertion was worth making while the type
+/// allowed the value; since M3 it does not, so the claim moved down a level —
+/// from "the rules ignore it" to "it does not exist" — and the six variants
+/// below are the whole domain. The byte that would have carried a
+/// two-hundredth seat is refused by `protocol`'s decoder, and that is where
+/// the test for it now lives.
 #[test]
-fn a_seat_that_does_not_exist_is_ignored() {
-    let state = new_state(11);
-    for player in [6u8, 7, 100, u8::MAX] {
-        let next = step(
-            &state,
-            &[Input {
-                tick: Tick(0),
-                seq: 0,
-                player: PlayerId(player),
-                action: Action::Move(FxVec2::ZERO),
-            }],
-        );
-        assert_eq!(next.champions(), state.champions(), "seat {player}");
+fn the_seats_are_exactly_six_and_they_map_to_their_indices() {
+    for (index, seat) in Seat::ALL.iter().enumerate() {
+        assert_eq!(seat.index(), index);
+        assert_eq!(Seat::from_index(index as u8), Some(*seat));
+    }
+    for outside in [PLAYER_COUNT as u8, 7, 100, u8::MAX] {
+        assert_eq!(Seat::from_index(outside), None, "{outside} named a seat");
     }
 }

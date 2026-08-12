@@ -51,9 +51,12 @@ These are not features, they are properties the codebase must never lose:
 
 1. `step(&State, &[Input]) -> State` is pure: no clock, no I/O, no async, no
    floating point, explicit seed, fixed-point arithmetic.
-2. Per-player visibility is a projection, `view_for(&State, PlayerId) ->
+2. Per-player visibility is a projection, `view_for(&State, Seat) ->
    PlayerView`, computed server-side and applied before serialization. An entity
-   outside vision is **absent from the message**, not flagged invisible.
+   outside vision is **absent from the message**, not flagged invisible. The
+   seat is a six-valued type rather than an integer, so "whose vision is this"
+   has no answer outside the match to get wrong; the byte that names it is
+   validated at the protocol boundary or refused there.
 3. `State` is not serializable anywhere in the workspace. Only `PlayerView`
    crosses the wire. This makes the maphack defense a compile-time property
    rather than a code-review habit.

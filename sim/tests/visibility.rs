@@ -43,8 +43,8 @@ use std::collections::BTreeSet;
 use fixture::{DUEL_RULES, DUEL_SEED, SEED, duel_script, script};
 use sim::view::{EntityView, PlayerView, VisibleEvent, view_for, view_for_with_rules};
 use sim::{
-    Fx, Input, Liveness, PLAYER_COUNT, PlayerId, RULES, Rules, TOWER_COUNT, Team, Tick,
-    champion_entity_id, new_state, new_state_with_rules, step_with_rules, tower_position,
+    Fx, Input, Liveness, PLAYER_COUNT, RULES, Rules, Seat, TOWER_COUNT, Tick, champion_entity_id,
+    new_state, new_state_with_rules, step_with_rules, tower_position,
 };
 use spec::{expected_events, expected_ids, handles_with_positions, same_event, team_sees};
 
@@ -79,9 +79,8 @@ fn audit(seed: u64, log: &[Vec<Input>], rules: &Rules) -> Coverage {
     for inputs in log {
         state = step_with_rules(&state, inputs, rules);
 
-        for seat in 0..PLAYER_COUNT {
-            let player = PlayerId(seat as u8);
-            let team = Team::of_player(player);
+        for player in Seat::ALL {
+            let team = player.team();
             let view = view_for_with_rules(&state, player, rules);
             coverage.views += 1;
 
@@ -90,7 +89,7 @@ fn audit(seed: u64, log: &[Vec<Input>], rules: &Rules) -> Coverage {
             for (id, position) in handles_with_positions(&view) {
                 assert!(
                     team_sees(&state, team, position, rules),
-                    "tick {:?}, player {seat}: entity {id} reported at {position:?}, \
+                    "tick {:?}, player {player:?}: entity {id} reported at {position:?}, \
                      which is outside this team's vision",
                     state.tick()
                 );
@@ -102,13 +101,13 @@ fn audit(seed: u64, log: &[Vec<Input>], rules: &Rules) -> Coverage {
             //    It *can* appear in an event, and that is correct rather than a
             //    leak — a death is shown to whoever could see the ground it
             //    happened on, and the victim's own team is often among them.
-            assert_eq!(view.own.id, champion_entity_id(seat));
+            assert_eq!(view.own.id, champion_entity_id(player));
             assert!(
                 !view.visible.iter().any(|entity| matches!(
                     entity,
                     EntityView::Champion { id, .. } if *id == view.own.id
                 )),
-                "tick {:?}, player {seat}: own champion duplicated into the entity list",
+                "tick {:?}, player {player:?}: own champion duplicated into the entity list",
                 state.tick()
             );
 
@@ -127,7 +126,7 @@ fn audit(seed: u64, log: &[Vec<Input>], rules: &Rules) -> Coverage {
             assert_eq!(
                 reported,
                 expected,
-                "tick {:?}, player {seat}: the visible set is not the entitled set",
+                "tick {:?}, player {player:?}: the visible set is not the entitled set",
                 state.tick()
             );
 
@@ -170,13 +169,13 @@ fn audit(seed: u64, log: &[Vec<Input>], rules: &Rules) -> Coverage {
             assert_eq!(
                 view.events.len(),
                 entitled.len(),
-                "tick {:?}, player {seat}: event count",
+                "tick {:?}, player {player:?}: event count",
                 state.tick()
             );
             for (expected, seen) in entitled.iter().zip(&view.events) {
                 assert!(
                     same_event(expected, seen),
-                    "tick {:?}, player {seat}: {seen:?} is not {expected:?}",
+                    "tick {:?}, player {player:?}: {seen:?} is not {expected:?}",
                     state.tick()
                 );
             }
@@ -185,7 +184,7 @@ fn audit(seed: u64, log: &[Vec<Input>], rules: &Rules) -> Coverage {
             let encoded = view.encode();
             assert!(
                 encoded.len() <= PlayerView::MAX_ENCODED_BYTES,
-                "tick {:?}, player {seat}: {} bytes exceeds the bound of {}",
+                "tick {:?}, player {player:?}: {} bytes exceeds the bound of {}",
                 state.tick(),
                 encoded.len(),
                 PlayerView::MAX_ENCODED_BYTES
@@ -278,8 +277,8 @@ fn the_duel_is_culled_correctly_through_its_deaths_and_respawns() {
     let mut deaths_seen = 0u32;
     for inputs in &duel_script() {
         state = step_with_rules(&state, inputs, &DUEL_RULES);
-        for seat in 0..PLAYER_COUNT {
-            deaths_seen += view_for_with_rules(&state, PlayerId(seat as u8), &DUEL_RULES)
+        for seat in Seat::ALL {
+            deaths_seen += view_for_with_rules(&state, seat, &DUEL_RULES)
                 .events
                 .iter()
                 .filter(|event| matches!(event, VisibleEvent::Death { .. }))
@@ -336,8 +335,8 @@ fn the_two_teams_are_told_different_things() {
     for _ in 0..30 {
         state = sim::step(&state, &[]);
     }
-    let blue = view_for(&state, PlayerId(0));
-    let red = view_for(&state, PlayerId(3));
+    let blue = view_for(&state, Seat::Blue0);
+    let red = view_for(&state, Seat::Red0);
     assert_ne!(blue.encode(), red.encode());
 
     let everything = PLAYER_COUNT + TOWER_COUNT - 1;
@@ -354,13 +353,12 @@ fn the_projection_is_a_function_of_its_arguments() {
     for inputs in script().iter().take(120) {
         state = sim::step(&state, inputs);
     }
-    for seat in 0..PLAYER_COUNT {
-        let player = PlayerId(seat as u8);
+    for player in Seat::ALL {
         assert_eq!(
             view_for(&state, player).encode(),
             view_for(&state, player).encode()
         );
     }
-    assert_eq!(view_for(&state, PlayerId(0)).tick, state.tick());
+    assert_eq!(view_for(&state, Seat::Blue0).tick, state.tick());
     assert_eq!(state.tick(), Tick(120));
 }

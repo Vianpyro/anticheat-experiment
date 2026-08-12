@@ -93,9 +93,9 @@ pub use crate::rules::{RULES, Rules, TICKS_PER_SECOND, rules_hash};
 pub use crate::sha256::Digest;
 pub use crate::state::{
     Champion, Cooldowns, EntityId, EntityRef, Liveness, MAX_PROJECTILES, Order, Outcome,
-    PLAYER_COUNT, PlayerId, Projectile, Projectiles, State, TEAM_SIZE, TOWER_COUNT, Team, Tick,
-    Tower, champion_entity_id, entity_id, entity_team, new_state, new_state_with_rules,
-    tower_entity_id, tower_position, tower_team,
+    PLAYER_COUNT, Projectile, Projectiles, Seat, State, TEAM_SIZE, TOWER_COUNT, Team, Tick, Tower,
+    champion_entity_id, entity_id, entity_team, new_state, new_state_with_rules, tower_entity_id,
+    tower_position, tower_team,
 };
 pub use crate::step::{step, step_with_rules};
 pub use crate::vec2::FxVec2;

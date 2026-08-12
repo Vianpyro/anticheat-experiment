@@ -55,7 +55,7 @@ use crate::event::{Ability, Event, EventKind};
 use crate::fx::Fx;
 use crate::rules::{RULES, Rules};
 use crate::state::{
-    Cooldowns, EntityId, Liveness, Outcome, PLAYER_COUNT, PlayerId, State, TOWER_COUNT, Team, Tick,
+    Cooldowns, EntityId, Liveness, Outcome, Seat, State, TOWER_COUNT, Team, Tick,
     champion_entity_id, tower_entity_id, tower_position,
 };
 use crate::vec2::FxVec2;
@@ -206,8 +206,14 @@ pub enum VisibleEvent {
 }
 
 /// What one player may know about one tick, under [`RULES`].
+///
+/// The seat is a [`Seat`], which has no value outside the match. That is the
+/// whole of the argument that this function cannot be asked for the vision of a
+/// player who is not playing: there is no such request to make. The byte that
+/// arrived over the network became a seat at the protocol boundary or it was
+/// refused there — see [`Seat::from_index`].
 #[must_use]
-pub fn view_for(state: &State, player: PlayerId) -> PlayerView {
+pub fn view_for(state: &State, player: Seat) -> PlayerView {
     view_for_with_rules(state, player, &RULES)
 }
 
@@ -217,18 +223,15 @@ pub fn view_for(state: &State, player: PlayerId) -> PlayerView {
 /// recorded under its own [`Rules`] must be projected under those rules too,
 /// and a caller that has to name the constants cannot silently mix two sets.
 #[must_use]
-pub fn view_for_with_rules(state: &State, player: PlayerId, rules: &Rules) -> PlayerView {
-    let team = Team::of_player(player);
-    let own_seat = player.0 as usize;
+pub fn view_for_with_rules(state: &State, player: Seat, rules: &Rules) -> PlayerView {
+    let team = player.team();
 
     let mut visible = Vec::new();
-    for seat in 0..PLAYER_COUNT {
-        if seat == own_seat {
+    for seat in Seat::ALL {
+        if seat == player {
             continue;
         }
-        let Some(champion) = state.champions().get(seat) else {
-            continue;
-        };
+        let champion = state.champion(seat);
         // A dead champion is not on the map. It is therefore not in anybody's
         // view, including its own team's — the fact that a teammate is waiting
         // to respawn is information about a player rather than about the world,
@@ -307,7 +310,7 @@ pub fn view_for_with_rules(state: &State, player: PlayerId, rules: &Rules) -> Pl
     PlayerView {
         tick: state.tick(),
         outcome: state.outcome(),
-        own: own_view(state, own_seat, rules),
+        own: own_view(state, player),
         visible,
         events,
     }
@@ -320,13 +323,11 @@ pub fn view_for_with_rules(state: &State, player: PlayerId, rules: &Rules) -> Pl
 /// which is what makes losing a tower cost map control rather than only hit
 /// points.
 fn can_see(state: &State, team: Team, point: FxVec2, rules: &Rules) -> bool {
-    for seat in 0..PLAYER_COUNT {
-        if Team::of_player(PlayerId(seat as u8)) != team {
+    for seat in Seat::ALL {
+        if seat.team() != team {
             continue;
         }
-        let Some(champion) = state.champions().get(seat) else {
-            continue;
-        };
+        let champion = state.champion(seat);
         if !matches!(champion.liveness, Liveness::Alive { .. }) {
             continue;
         }
@@ -359,26 +360,19 @@ fn can_see(state: &State, team: Team, point: FxVec2, rules: &Rules) -> bool {
 /// The player's own champion. Always present, alive or dead: a player is never
 /// hidden from itself, so this needs no visibility test and is not an exception
 /// to the culling rule.
-fn own_view(state: &State, seat: usize, rules: &Rules) -> OwnView {
-    let id = champion_entity_id(seat);
-    match state.champions().get(seat) {
-        Some(champion) => OwnView {
-            id,
-            position: champion.position,
-            liveness: champion.liveness,
-            cooldowns: champion.cooldowns,
-        },
-        // A seat outside the match. `view_for` is total for the same reason
-        // `step` is: the caller is the server, and a server that panics on a
-        // bad seat is a match everybody loses.
-        None => OwnView {
-            id,
-            position: crate::state::spawn_position(seat, rules),
-            liveness: Liveness::Alive {
-                hp: rules.champion_max_hp,
-            },
-            cooldowns: Cooldowns::default(),
-        },
+///
+/// It had a second arm until M3 — the seat that named nobody, answered with an
+/// invented champion standing on a spawn point. That arm was the reason a
+/// server passing an unvalidated handle would have got a plausible view back
+/// instead of a refusal. [`Seat`] removed the case rather than the branch's
+/// contents, which is the difference the debt was about.
+fn own_view(state: &State, seat: Seat) -> OwnView {
+    let champion = state.champion(seat);
+    OwnView {
+        id: champion_entity_id(seat),
+        position: champion.position,
+        liveness: champion.liveness,
+        cooldowns: champion.cooldowns,
     }
 }
 
@@ -673,8 +667,8 @@ mod tests {
     use crate::input::{Action, Input};
     use crate::rules::{RULES, Rules};
     use crate::state::{
-        Cooldowns, EntityId, Liveness, MAX_PROJECTILES, Outcome, PlayerId, Tick,
-        champion_entity_id, new_state, tower_entity_id, tower_position,
+        Cooldowns, EntityId, Liveness, MAX_PROJECTILES, Outcome, Seat, Tick, champion_entity_id,
+        new_state, tower_entity_id, tower_position,
     };
     use crate::step::step;
     use crate::vec2::FxVec2;
@@ -694,51 +688,55 @@ mod tests {
     #[test]
     fn an_enemy_across_the_map_is_absent_rather_than_flagged() {
         let state = new_state(3);
-        let view = view_for(&state, PlayerId(0));
-        for seat in 3..6 {
+        let view = view_for(&state, Seat::Blue0);
+        for seat in [Seat::Red0, Seat::Red1, Seat::Red2] {
             assert!(
                 !ids(&view).contains(&champion_entity_id(seat)),
-                "seat {seat} is two hundred units away and still in the view"
+                "{seat:?} is two hundred units away and still in the view"
             );
         }
         // …and the culling is not "return nothing": the allies at spawn are
         // there, which is what makes the assertion above mean something.
-        assert!(ids(&view).contains(&champion_entity_id(1)));
-        assert!(ids(&view).contains(&champion_entity_id(2)));
+        assert!(ids(&view).contains(&champion_entity_id(Seat::Blue1)));
+        assert!(ids(&view).contains(&champion_entity_id(Seat::Blue2)));
     }
 
     #[test]
     fn an_enemy_that_walks_into_range_appears() {
         let mut state = new_state(3);
         let meeting_point = FxVec2::new(Fx::ZERO, Fx::ZERO);
-        state.place_champion(0, meeting_point, RULES.champion_max_hp);
+        state.place_champion(Seat::Blue0, meeting_point, RULES.champion_max_hp);
         state.place_champion(
-            3,
+            Seat::Red0,
             FxVec2::new(RULES.champion_vision_radius.add(Fx::ONE), Fx::ZERO),
             RULES.champion_max_hp,
         );
-        assert!(!ids(&view_for(&state, PlayerId(0))).contains(&champion_entity_id(3)));
+        assert!(!ids(&view_for(&state, Seat::Blue0)).contains(&champion_entity_id(Seat::Red0)));
 
         state.place_champion(
-            3,
+            Seat::Red0,
             FxVec2::new(RULES.champion_vision_radius.sub(Fx::ONE), Fx::ZERO),
             RULES.champion_max_hp,
         );
-        assert!(ids(&view_for(&state, PlayerId(0))).contains(&champion_entity_id(3)));
+        assert!(ids(&view_for(&state, Seat::Blue0)).contains(&champion_entity_id(Seat::Red0)));
     }
 
     #[test]
     fn a_players_own_champion_is_in_the_view_while_it_is_dead() {
         let mut state = new_state(3);
-        state.place_champion(0, FxVec2::ZERO, Fx::EPSILON);
-        state.place_champion(3, FxVec2::new(Fx::ONE, Fx::ZERO), RULES.champion_max_hp);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, Fx::EPSILON);
+        state.place_champion(
+            Seat::Red0,
+            FxVec2::new(Fx::ONE, Fx::ZERO),
+            RULES.champion_max_hp,
+        );
         let state = step(&state, &[]);
         let state = step(
             &state,
             &[Input {
                 tick: state.tick(),
                 seq: 0,
-                player: PlayerId(3),
+                player: Seat::Red0,
                 action: Action::Attack(EntityId(0)),
             }],
         );
@@ -748,37 +746,37 @@ mod tests {
             Liveness::Dead { .. }
         ));
 
-        let view = view_for(&state, PlayerId(0));
+        let view = view_for(&state, Seat::Blue0);
         assert!(matches!(view.own.liveness, Liveness::Dead { .. }));
         // And it is not in `visible`, which is the list of things on the map.
-        assert!(!ids(&view).contains(&champion_entity_id(0)));
+        assert!(!ids(&view).contains(&champion_entity_id(Seat::Blue0)));
     }
 
     #[test]
     fn a_cast_out_of_vision_is_not_announced() {
         let mut state = new_state(3);
         // Blue seat 0 at the origin; Red seat 3 well beyond its vision.
-        state.place_champion(0, FxVec2::ZERO, RULES.champion_max_hp);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, RULES.champion_max_hp);
         state.place_champion(
-            3,
+            Seat::Red0,
             FxVec2::new(Fx::from_int(60), Fx::ZERO),
             RULES.champion_max_hp,
         );
         let cast = [Input {
             tick: Tick(0),
             seq: 0,
-            player: PlayerId(3),
+            player: Seat::Red0,
             action: Action::Skillshot(FxVec2::new(Fx::NEG_ONE, Fx::ZERO)),
         }];
         let state = step(&state, &cast);
 
         assert_eq!(state.events().count(), 1, "the cast happened");
         assert!(
-            view_for(&state, PlayerId(0)).events.is_empty(),
+            view_for(&state, Seat::Blue0).events.is_empty(),
             "and seat 0 was told about it"
         );
         assert_eq!(
-            view_for(&state, PlayerId(3)).events.len(),
+            view_for(&state, Seat::Red0).events.len(),
             1,
             "while the caster's own team saw it"
         );
@@ -789,15 +787,15 @@ mod tests {
         let mut state = new_state(3);
         // Seat 3 dies at the origin, where seat 0 is standing. Seat 4 and 5 are
         // left at their spawn, far away.
-        state.place_champion(0, FxVec2::ZERO, RULES.champion_max_hp);
-        state.place_champion(3, FxVec2::new(Fx::ONE, Fx::ZERO), Fx::EPSILON);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, RULES.champion_max_hp);
+        state.place_champion(Seat::Red0, FxVec2::new(Fx::ONE, Fx::ZERO), Fx::EPSILON);
         let state = step(
             &state,
             &[Input {
                 tick: Tick(0),
                 seq: 0,
-                player: PlayerId(0),
-                action: Action::Attack(champion_entity_id(3)),
+                player: Seat::Blue0,
+                action: Action::Attack(champion_entity_id(Seat::Red0)),
             }],
         );
         assert!(matches!(
@@ -805,18 +803,18 @@ mod tests {
             Liveness::Dead { .. }
         ));
 
-        let killer = view_for(&state, PlayerId(0));
+        let killer = view_for(&state, Seat::Blue0);
         assert!(
             killer
                 .events
                 .iter()
                 .any(|event| matches!(event, VisibleEvent::Death { entity, .. }
-                    if *entity == champion_entity_id(3))),
+                    if *entity == champion_entity_id(Seat::Red0))),
             "the killer saw the kill"
         );
         // The victim's own team-mates were at their spawn and saw nothing, but
         // seat 3's own view still says it is dead, through `own`.
-        let distant_ally = view_for(&state, PlayerId(4));
+        let distant_ally = view_for(&state, Seat::Red1);
         assert!(distant_ally.events.is_empty());
     }
 
@@ -826,12 +824,12 @@ mod tests {
         // Nobody is near Blue's outer tower, so it is the only thing that can
         // see the point beside it.
         let beside_the_tower = tower_position(0, &RULES).add(FxVec2::new(Fx::ONE, Fx::ZERO));
-        state.place_champion(3, beside_the_tower, RULES.champion_max_hp);
-        assert!(ids(&view_for(&state, PlayerId(0))).contains(&champion_entity_id(3)));
+        state.place_champion(Seat::Red0, beside_the_tower, RULES.champion_max_hp);
+        assert!(ids(&view_for(&state, Seat::Blue0)).contains(&champion_entity_id(Seat::Red0)));
 
         state.set_tower_hp(0, Fx::ZERO);
         assert!(
-            !ids(&view_for(&state, PlayerId(0))).contains(&champion_entity_id(3)),
+            !ids(&view_for(&state, Seat::Blue0)).contains(&champion_entity_id(Seat::Red0)),
             "rubble sees nothing"
         );
     }
@@ -839,36 +837,46 @@ mod tests {
     #[test]
     fn the_two_seats_of_a_team_see_the_same_world() {
         let mut state = new_state(3);
-        state.place_champion(0, FxVec2::ZERO, RULES.champion_max_hp);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, RULES.champion_max_hp);
         state.place_champion(
-            3,
+            Seat::Red0,
             FxVec2::new(Fx::from_int(5), Fx::ZERO),
             RULES.champion_max_hp,
         );
-        let first = view_for(&state, PlayerId(1));
-        let second = view_for(&state, PlayerId(2));
+        let first = view_for(&state, Seat::Blue1);
+        let second = view_for(&state, Seat::Blue2);
         assert_eq!(
             first
                 .visible
                 .iter()
                 .filter(|entity| !matches!(entity, EntityView::Champion { id, .. }
-                    if *id == champion_entity_id(1) || *id == champion_entity_id(2)))
+                    if *id == champion_entity_id(Seat::Blue1) || *id == champion_entity_id(Seat::Blue2)))
                 .count(),
             second
                 .visible
                 .iter()
                 .filter(|entity| !matches!(entity, EntityView::Champion { id, .. }
-                    if *id == champion_entity_id(1) || *id == champion_entity_id(2)))
+                    if *id == champion_entity_id(Seat::Blue1) || *id == champion_entity_id(Seat::Blue2)))
                 .count()
         );
         assert_eq!(first.events, second.events);
     }
 
+    /// There is no seat outside the match to test, and that is the point.
+    ///
+    /// This used to assert that `view_for(&state, PlayerId(200))` returned a
+    /// view rather than panicking, which was the best a `u8` allowed. The
+    /// replacement is not another assertion: it is [`Seat`], which has six
+    /// values, so the call this test used to make no longer type-checks. What
+    /// remains to be tested is the frontier that turns a byte into a seat, and
+    /// that lives in `protocol` with the rest of the decoder.
     #[test]
-    fn a_seat_outside_the_match_gets_a_view_rather_than_a_panic() {
+    fn every_seat_that_exists_gets_a_view() {
         let state = new_state(3);
-        let view = view_for(&state, PlayerId(200));
-        assert_eq!(view.tick, Tick(0));
+        for seat in Seat::ALL {
+            assert_eq!(view_for(&state, seat).tick, Tick(0));
+            assert_eq!(view_for(&state, seat).own.id, champion_entity_id(seat));
+        }
     }
 
     /// The projection reads the constants it is handed, so a fixture recorded
@@ -876,21 +884,21 @@ mod tests {
     #[test]
     fn the_vision_radius_comes_from_the_rules_it_is_given() {
         let mut state = new_state(3);
-        state.place_champion(0, FxVec2::ZERO, RULES.champion_max_hp);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, RULES.champion_max_hp);
         state.place_champion(
-            3,
+            Seat::Red0,
             FxVec2::new(Fx::from_int(40), Fx::ZERO),
             RULES.champion_max_hp,
         );
-        assert!(!ids(&view_for(&state, PlayerId(0))).contains(&champion_entity_id(3)));
+        assert!(!ids(&view_for(&state, Seat::Blue0)).contains(&champion_entity_id(Seat::Red0)));
 
         let far_sighted = Rules {
             champion_vision_radius: Fx::from_int(64),
             ..RULES
         };
         assert!(
-            ids(&view_for_with_rules(&state, PlayerId(0), &far_sighted))
-                .contains(&champion_entity_id(3))
+            ids(&view_for_with_rules(&state, Seat::Blue0, &far_sighted))
+                .contains(&champion_entity_id(Seat::Red0))
         );
     }
 
@@ -900,7 +908,7 @@ mod tests {
     #[test]
     fn the_worst_case_view_encodes_to_exactly_the_bound() {
         let mut visible = Vec::new();
-        for seat in 1..6 {
+        for seat in [Seat::Blue1, Seat::Blue2, Seat::Red0, Seat::Red1, Seat::Red2] {
             visible.push(EntityView::Champion {
                 id: champion_entity_id(seat),
                 position: FxVec2::ZERO,
@@ -936,7 +944,7 @@ mod tests {
                 at: Tick(1),
             },
             own: OwnView {
-                id: champion_entity_id(0),
+                id: champion_entity_id(Seat::Blue0),
                 position: FxVec2::ZERO,
                 liveness: Liveness::Alive { hp: Fx::ONE },
                 cooldowns: Cooldowns::default(),
@@ -952,11 +960,11 @@ mod tests {
     #[test]
     fn the_encoding_follows_the_view() {
         let state = new_state(3);
-        let baseline = view_for(&state, PlayerId(0)).encode();
-        let stepped = view_for(&step(&state, &[]), PlayerId(0)).encode();
+        let baseline = view_for(&state, Seat::Blue0).encode();
+        let stepped = view_for(&step(&state, &[]), Seat::Blue0).encode();
         assert_ne!(baseline, stepped, "the tick alone must move the bytes");
 
-        let other_team = view_for(&state, PlayerId(3)).encode();
+        let other_team = view_for(&state, Seat::Red0).encode();
         assert_ne!(baseline, other_team);
     }
 
@@ -970,11 +978,11 @@ mod tests {
             &[Input {
                 tick: Tick(0),
                 seq: 0,
-                player: PlayerId(0),
+                player: Seat::Blue0,
                 action: Action::Skillshot(FxVec2::new(Fx::ONE, Fx::ZERO)),
             }],
         );
-        let view = view_for(&state, PlayerId(0));
+        let view = view_for(&state, Seat::Blue0);
         assert!(view.events.iter().any(|event| matches!(
             event,
             VisibleEvent::Cast {

@@ -49,8 +49,8 @@ use crate::rng::Rng;
 use crate::rules::Rules;
 use crate::sha256::{Digest, Hasher};
 use crate::state::{
-    Champion, Cooldowns, EntityId, Liveness, Order, Outcome, PlayerId, Projectile, Projectiles,
-    State, Team, Tick, Tower,
+    Champion, Cooldowns, EntityId, Liveness, Order, Outcome, Projectile, Projectiles, Seat, State,
+    Team, Tick, Tower,
 };
 use crate::vec2::FxVec2;
 
@@ -168,10 +168,14 @@ impl Canonical for Tick {
     }
 }
 
-impl Canonical for PlayerId {
+impl Canonical for Seat {
+    /// The seat's index, one byte, which is byte-for-byte what `PlayerId(u8)`
+    /// encoded to before M3 turned the seat into an enum. Deliberately: every
+    /// digest committed in this repository was recorded under that encoding,
+    /// and a type change that moved them would be indistinguishable from a
+    /// change to the rules.
     fn hash_into(&self, hasher: &mut Hasher) {
-        let PlayerId(value) = self;
-        value.hash_into(hasher);
+        (*self as u8).hash_into(hasher);
     }
 }
 

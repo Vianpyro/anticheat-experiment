@@ -40,9 +40,8 @@ use std::collections::BTreeSet;
 
 use sim::view::{EntityView, PlayerView, VisibleEvent};
 use sim::{
-    Cooldowns, EntityId, Event, EventKind, Fx, FxVec2, Liveness, Outcome, PLAYER_COUNT, PlayerId,
-    Rules, State, TOWER_COUNT, Team, Tick, champion_entity_id, tower_entity_id, tower_position,
-    tower_team,
+    Cooldowns, EntityId, Event, EventKind, Fx, FxVec2, Liveness, Outcome, Rules, Seat, State,
+    TOWER_COUNT, Team, Tick, champion_entity_id, tower_entity_id, tower_position, tower_team,
 };
 
 /// Whether `team` sees `point`, under `rules`.
@@ -59,11 +58,11 @@ pub fn team_sees(state: &State, team: Team, point: FxVec2, rules: &Rules) -> boo
         source.sub(point).length_squared_wide() <= reach.saturating_mul(reach)
     };
 
-    for seat in 0..PLAYER_COUNT {
-        if Team::of_player(PlayerId(seat as u8)) != team {
+    for seat in Seat::ALL {
+        if seat.team() != team {
             continue;
         }
-        let champion = state.champions()[seat];
+        let champion = *state.champion(seat);
         if !matches!(champion.liveness, Liveness::Alive { .. }) {
             continue;
         }
@@ -155,10 +154,10 @@ pub struct Entitled {
     pub tick: Tick,
     /// The outcome, which is global the moment it happens.
     pub outcome: Outcome,
-    /// The player's own champion, or `None` for a seat outside the match — the
-    /// specification declines to say what a champion that does not exist looks
-    /// like, and no server can ask.
-    pub own: Option<Own>,
+    /// The player's own champion. Not an `Option` since M3: a [`Seat`] names a
+    /// champion that exists, so the case the specification used to decline to
+    /// describe is one nobody can construct.
+    pub own: Own,
     /// Everything else in vision, keyed by handle and ordered by it. Ordered by
     /// handle rather than by anything about the state, because the order a
     /// player is told things in must be a function of what they were told.
@@ -170,16 +169,15 @@ pub struct Entitled {
 
 /// What `player` may learn from `state`, under `rules`.
 #[must_use]
-pub fn entitled(state: &State, player: PlayerId, rules: &Rules) -> Entitled {
-    let team = Team::of_player(player);
-    let own_seat = player.0 as usize;
+pub fn entitled(state: &State, player: Seat, rules: &Rules) -> Entitled {
+    let team = player.team();
 
     let mut visible = Vec::new();
-    for seat in 0..PLAYER_COUNT {
-        if seat == own_seat {
+    for seat in Seat::ALL {
+        if seat == player {
             continue;
         }
-        let champion = state.champions()[seat];
+        let champion = *state.champion(seat);
         // A dead champion is not on the map, for its own team either.
         let Liveness::Alive { hp } = champion.liveness else {
             continue;
@@ -219,12 +217,12 @@ pub fn entitled(state: &State, player: PlayerId, rules: &Rules) -> Entitled {
     }
     visible.sort_by_key(|(id, _)| id.0);
 
-    let own = state.champions().get(own_seat).map(|champion| Own {
-        id: champion_entity_id(own_seat),
-        position: champion.position,
-        liveness: champion.liveness,
-        cooldowns: champion.cooldowns,
-    });
+    let own = Own {
+        id: champion_entity_id(player),
+        position: state.champion(player).position,
+        liveness: state.champion(player).liveness,
+        cooldowns: state.champion(player).cooldowns,
+    };
 
     Entitled {
         tick: state.tick(),
@@ -237,7 +235,7 @@ pub fn entitled(state: &State, player: PlayerId, rules: &Rules) -> Entitled {
 
 /// The handles `player` is entitled to see.
 #[must_use]
-pub fn expected_ids(state: &State, player: PlayerId, rules: &Rules) -> BTreeSet<u16> {
+pub fn expected_ids(state: &State, player: Seat, rules: &Rules) -> BTreeSet<u16> {
     entitled(state, player, rules)
         .visible
         .iter()
@@ -247,8 +245,8 @@ pub fn expected_ids(state: &State, player: PlayerId, rules: &Rules) -> BTreeSet<
 
 /// The events of this tick that happened somewhere `player` can see.
 #[must_use]
-pub fn expected_events(state: &State, player: PlayerId, rules: &Rules) -> Vec<Event> {
-    let team = Team::of_player(player);
+pub fn expected_events(state: &State, player: Seat, rules: &Rules) -> Vec<Event> {
+    let team = player.team();
     state
         .events()
         .iter()

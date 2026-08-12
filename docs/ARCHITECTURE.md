@@ -68,7 +68,7 @@ boundary.
 #![deny(clippy::float_arithmetic, clippy::arithmetic_side_effects)]
 
 pub struct Tick(pub u32);
-pub struct PlayerId(pub u8);        // 0..6
+pub enum Seat { Blue0, Blue1, Blue2, Red0, Red1, Red2 }   // and there is no seventh
 pub struct EntityId(pub u16);
 pub struct Fx(i32);                 // Q15.16: i32 read as a multiple of 2^-16
 pub struct FxVec2 { pub x: Fx, pub y: Fx }
@@ -78,7 +78,7 @@ pub struct State { /* tick, rng, next_projectile_id, [Champion; 6], towers, proj
 pub struct Input {
     pub tick: Tick,               // tick this input applies to
     pub seq: u32,                 // per-player, monotonic; protocol-level identity
-    pub player: PlayerId,
+    pub player: Seat,             // written by the server from the session, never by the sender
     pub action: Action,
 }
 
@@ -201,7 +201,7 @@ Two things follow from putting it there rather than returning it beside the
 state.
 
 The frozen signatures have nowhere else to put it. `SCOPE.md` fixes
-`step(&State, &[Input]) -> State` and `view_for(&State, PlayerId) -> PlayerView`,
+`step(&State, &[Input]) -> State` and `view_for(&State, Seat) -> PlayerView`,
 and a tuple-returning `step` would be a second signature for the RL sub-project
 to diverge on (`RISKS.md` R10).
 
@@ -227,8 +227,8 @@ reads it, and `State` carries no per-player visibility.
 /// Strict culling: an entity outside vision is absent from the result, not
 /// flagged. Derived signals (damage events, cast events, sound cues) are culled
 /// on the same rule.
-pub fn view_for(state: &State, player: PlayerId) -> PlayerView;
-pub fn view_for_with_rules(state: &State, player: PlayerId, rules: &Rules) -> PlayerView;
+pub fn view_for(state: &State, player: Seat) -> PlayerView;
+pub fn view_for_with_rules(state: &State, player: Seat, rules: &Rules) -> PlayerView;
 
 pub struct PlayerView {
     pub tick: Tick,
@@ -243,6 +243,27 @@ impl PlayerView {
     pub fn encode(&self) -> Vec<u8>;  // hand-written, canonical, no serde
 }
 ```
+
+#### The seat is a type, not a number
+
+`view_for` takes a `Seat`, which has exactly six values. Until M3 it took
+`PlayerId(pub u8)` with a comment saying `0..6`: `Team::of_player(PlayerId(200))`
+answered `Red`, and the projection answered a seat nobody was sitting in with a
+view built around an invented champion. Inert while the only caller was a test
+that wrote the number itself; from M3 the seat comes from a session and the
+session comes from the network, and the function that would have handed a team's
+vision to an unvalidated handle is the most sensitive one in the repository.
+
+The fix is the type rather than a check inside the projection, and that
+distinction is the whole of it. A check would be a branch, a branch in the
+culling function is where a maphack lives, and the branch that existed —
+"a seat outside the match gets a plausible view" — is exactly the one an
+attacker wants to reach. `Seat` deletes the case instead of handling it. What
+remains is `Seat::from_index(u8) -> Option<Seat>`, whose only caller is
+`protocol`'s decoder: an untrusted byte becomes a seat at the frontier or the
+frame is refused there. `Input::player` is the same type and is written by the
+server from the session, never from the message, so "a client drove somebody
+else's champion" is not a rule that has to reject it either.
 
 Vision is a union of discs: a living champion of the player's own team covers
 `champion_vision_radius`, a standing tower covers `tower_vision_radius`. It is

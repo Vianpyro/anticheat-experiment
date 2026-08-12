@@ -14,7 +14,7 @@
 //! outside the legal domain. That is a property the property tests assert
 //! directly, because it is the one an attacker will test first.
 
-use crate::state::{EntityId, PlayerId, Tick};
+use crate::state::{EntityId, Seat, Tick};
 use crate::vec2::FxVec2;
 
 /// One command from one player.
@@ -32,8 +32,15 @@ pub struct Input {
     /// protocol's identity for the input and it is carried here so that the
     /// replay log and the simulation speak about the same object.
     pub seq: u32,
-    /// Who issued it.
-    pub player: PlayerId,
+    /// Which seat issued it.
+    ///
+    /// A [`Seat`] rather than a number, so an input attributed to a player who
+    /// is not in the match is not a case `step` has to absorb — it is a value
+    /// that cannot be built. The server writes this field from the session the
+    /// message arrived on and never from the message itself, which is what
+    /// makes "a client drove somebody else's champion" unreachable rather than
+    /// merely rejected.
+    pub player: Seat,
     /// What they asked for.
     pub action: Action,
 }

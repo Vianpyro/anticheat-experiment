@@ -49,9 +49,113 @@ const PROJECTILE_ID_BASE: u16 = 1000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct Tick(pub u32);
 
-/// A seat in the match, `0..6`. Seats `0..3` are [`Team::Blue`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PlayerId(pub u8);
+/// A seat in the match. There are exactly six, and there is no seventh.
+///
+/// # Why this is an enum and not an integer
+///
+/// It was `PlayerId(pub u8)` until M3, with a comment saying `0..6` and nothing
+/// enforcing it. `Team::of_player(PlayerId(200))` answered `Red`, and
+/// [`crate::view::view_for`] handed that seat a view — a total function over a
+/// domain that included seats nobody is sitting in. While the only caller was a
+/// test that constructed the number itself, that was inert. From M3 the seat
+/// arrives from a session, the session arrives from the network, and the
+/// function that would have distributed a team's vision to an unvalidated
+/// handle is the most sensitive one in the project.
+///
+/// So the impossibility is carried by the type rather than by a check inside
+/// the projection. There is no `Seat` value outside the match, which means
+/// there is no branch in `view_for` deciding what to do about one — and a
+/// branch in the culling function is where a maphack lives. The validation that
+/// remains is [`Seat::from_index`], and it belongs at the frontier where an
+/// untrusted byte becomes a seat: `protocol`'s decoder, and nowhere else.
+///
+/// Seats `Blue0..Blue2` are [`Team::Blue`]; the discriminants are the indices
+/// into every per-seat array in this crate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum Seat {
+    /// Blue's first seat.
+    Blue0 = 0,
+    /// Blue's second seat.
+    Blue1 = 1,
+    /// Blue's third seat.
+    Blue2 = 2,
+    /// Red's first seat.
+    Red0 = 3,
+    /// Red's second seat.
+    Red1 = 4,
+    /// Red's third seat.
+    Red2 = 5,
+}
+
+impl Seat {
+    /// Every seat, in index order.
+    pub const ALL: [Self; PLAYER_COUNT] = [
+        Self::Blue0,
+        Self::Blue1,
+        Self::Blue2,
+        Self::Red0,
+        Self::Red1,
+        Self::Red2,
+    ];
+
+    /// The index this seat occupies in every per-seat array.
+    ///
+    /// Total and always in bounds: the assertion below ties the number of
+    /// variants to [`PLAYER_COUNT`], so indexing a `[T; PLAYER_COUNT]` with
+    /// this value cannot panic and no accessor needs an `unwrap` or a fallback
+    /// that would have to invent a champion.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// Which side this seat plays for.
+    ///
+    /// Exhaustive rather than arithmetic on the index: a seventh variant would
+    /// stop this compiling instead of quietly joining Red.
+    #[must_use]
+    pub const fn team(self) -> Team {
+        match self {
+            Self::Blue0 | Self::Blue1 | Self::Blue2 => Team::Blue,
+            Self::Red0 | Self::Red1 | Self::Red2 => Team::Red,
+        }
+    }
+
+    /// The seat at `index`, or `None`.
+    ///
+    /// **This is the only door into the type, and it exists for exactly one
+    /// caller: the code that turns a byte off the wire into a seat.** Anything
+    /// else already has a `Seat` or has [`Seat::ALL`] to iterate. A `None` here
+    /// is a protocol violation and must be answered as one — never by
+    /// substituting a seat.
+    #[must_use]
+    pub const fn from_index(index: u8) -> Option<Self> {
+        match index {
+            0 => Some(Self::Blue0),
+            1 => Some(Self::Blue1),
+            2 => Some(Self::Blue2),
+            3 => Some(Self::Red0),
+            4 => Some(Self::Red1),
+            5 => Some(Self::Red2),
+            _ => None,
+        }
+    }
+
+    /// This seat's position within its own team, `0..3`.
+    #[must_use]
+    pub const fn within_team(self) -> usize {
+        match self {
+            Self::Blue0 | Self::Red0 => 0,
+            Self::Blue1 | Self::Red1 => 1,
+            Self::Blue2 | Self::Red2 => 2,
+        }
+    }
+}
+
+/// What makes [`Seat::index`] a total index rather than a hopeful one. A
+/// variant added without growing the arrays stops the build here.
+const _: () = assert!(Seat::ALL.len() == PLAYER_COUNT);
 
 /// A stable handle to something that can be targeted or hit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -73,17 +177,6 @@ impl Team {
         match self {
             Self::Blue => Self::Red,
             Self::Red => Self::Blue,
-        }
-    }
-
-    /// The team a seat belongs to. Seats outside `0..6` are reported as
-    /// [`Team::Blue`]; the callers that matter reject the seat before asking.
-    #[must_use]
-    pub const fn of_player(player: PlayerId) -> Self {
-        if (player.0 as usize) < TEAM_SIZE {
-            Self::Blue
-        } else {
-            Self::Red
         }
     }
 }
@@ -174,7 +267,7 @@ pub struct Projectile {
     /// visible-event stream can refer to it.
     pub id: EntityId,
     /// Who cast it. Determines what it can hit.
-    pub owner: PlayerId,
+    pub owner: Seat,
     /// Current position.
     pub position: FxVec2,
     /// Displacement applied each tick. Constant for the projectile's life.
@@ -306,8 +399,8 @@ pub fn new_state_with_rules(seed: u64, rules: &Rules) -> State {
         order: Order::Idle,
         cooldowns: Cooldowns::default(),
     }; PLAYER_COUNT];
-    for (index, champion) in champions.iter_mut().enumerate() {
-        champion.position = spawn_position(index, rules);
+    for seat in Seat::ALL {
+        champions[seat.index()].position = spawn_position(seat, rules);
     }
 
     State {
@@ -325,18 +418,16 @@ pub fn new_state_with_rules(seed: u64, rules: &Rules) -> State {
     }
 }
 
-/// Where the champion in `index` starts, and returns to on respawn.
+/// Where the champion in `seat` starts, and returns to on respawn.
 ///
 /// The three seats of a team are spread along `y` so that they do not begin
 /// stacked on one point, which would make the first tick's collision geometry
 /// degenerate.
-pub(crate) fn spawn_position(index: usize, rules: &Rules) -> FxVec2 {
-    let team = Team::of_player(PlayerId(index as u8));
-    let seat = index.checked_rem(TEAM_SIZE).unwrap_or(0);
-    let offset = Fx::from_int(seat as i32)
+pub(crate) fn spawn_position(seat: Seat, rules: &Rules) -> FxVec2 {
+    let offset = Fx::from_int(seat.within_team() as i32)
         .sub(Fx::ONE)
         .mul(rules.spawn_spacing);
-    let x = match team {
+    let x = match seat.team() {
         Team::Blue => rules.spawn_x,
         Team::Red => rules.spawn_x.neg(),
     };
@@ -367,7 +458,7 @@ pub fn tower_position(index: usize, rules: &Rules) -> FxVec2 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntityRef {
     /// The champion in this seat.
-    Champion(usize),
+    Champion(Seat),
     /// The tower at this index.
     Tower(usize),
 }
@@ -376,7 +467,7 @@ pub enum EntityRef {
 #[must_use]
 pub const fn entity_team(entity: EntityRef) -> Team {
     match entity {
-        EntityRef::Champion(seat) => Team::of_player(PlayerId(seat as u8)),
+        EntityRef::Champion(seat) => seat.team(),
         EntityRef::Tower(index) => tower_team(index),
     }
 }
@@ -387,10 +478,13 @@ pub const fn tower_team(index: usize) -> Team {
     if index < 2 { Team::Blue } else { Team::Red }
 }
 
-/// The handle of the champion in `index`.
+/// The handle of the champion in `seat`.
+///
+/// The handle *is* the seat, which is why `docs/ARCHITECTURE.md` records a
+/// champion's team as public information: it follows from the number.
 #[must_use]
-pub const fn champion_entity_id(index: usize) -> EntityId {
-    EntityId(index as u16)
+pub const fn champion_entity_id(seat: Seat) -> EntityId {
+    EntityId(seat as u16)
 }
 
 /// The handle of the tower in `index`.
@@ -428,6 +522,19 @@ impl State {
         &self.champions
     }
 
+    /// The champion in `seat`.
+    ///
+    /// Total, and not because of a fallback: [`Seat`] has exactly
+    /// [`PLAYER_COUNT`] values and the array has exactly that many slots, which
+    /// is asserted at compile time beside [`Seat::index`]. Every caller that
+    /// used to write `champions().get(seat)` and invent something for `None`
+    /// calls this instead — the invented champion was the shape of bug the
+    /// seat type exists to remove.
+    #[must_use]
+    pub const fn champion(&self, seat: Seat) -> &Champion {
+        &self.champions[seat.index()]
+    }
+
     /// The towers, in the order given by [`tower_position`].
     #[must_use]
     pub const fn towers(&self) -> &[Tower; TOWER_COUNT] {
@@ -438,6 +545,12 @@ impl State {
     #[must_use]
     pub const fn projectiles(&self) -> &Projectiles {
         &self.projectiles
+    }
+
+    /// The champion in `seat`, for the rules to write to. Total for the reason
+    /// [`State::champion`] is.
+    pub(crate) const fn champion_mut(&mut self, seat: Seat) -> &mut Champion {
+        &mut self.champions[seat.index()]
     }
 
     /// What happened during the tick that produced this state.
@@ -471,9 +584,9 @@ impl State {
     pub(crate) fn resolve(&self, id: EntityId) -> Option<EntityRef> {
         let handle = id.0 as usize;
         if handle < PLAYER_COUNT {
-            let champion = self.champions.get(handle)?;
-            return match champion.liveness {
-                Liveness::Alive { .. } => Some(EntityRef::Champion(handle)),
+            let seat = Seat::from_index(u8::try_from(handle).ok()?)?;
+            return match self.champion(seat).liveness {
+                Liveness::Alive { .. } => Some(EntityRef::Champion(seat)),
                 Liveness::Dead { .. } => None,
             };
         }
@@ -491,10 +604,7 @@ impl State {
     /// Where a resolved entity stands.
     pub(crate) fn entity_position(&self, entity: EntityRef, rules: &Rules) -> FxVec2 {
         match entity {
-            EntityRef::Champion(seat) => self
-                .champions
-                .get(seat)
-                .map_or(FxVec2::ZERO, |champion| champion.position),
+            EntityRef::Champion(seat) => self.champion(seat).position,
             EntityRef::Tower(index) => tower_position(index, rules),
         }
     }
@@ -525,11 +635,10 @@ impl State {
 #[cfg(test)]
 impl State {
     /// Places a champion, alive, at a chosen point with chosen hit points.
-    pub(crate) fn place_champion(&mut self, index: usize, position: FxVec2, hp: Fx) {
-        if let Some(champion) = self.champions.get_mut(index) {
-            champion.position = position;
-            champion.liveness = Liveness::Alive { hp };
-        }
+    pub(crate) fn place_champion(&mut self, seat: Seat, position: FxVec2, hp: Fx) {
+        let champion = &mut self.champions[seat.index()];
+        champion.position = position;
+        champion.liveness = Liveness::Alive { hp };
     }
 
     /// Sets a tower's remaining hit points.
