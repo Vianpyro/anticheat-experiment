@@ -61,6 +61,23 @@ against a projection that returns nothing: the run reports 24 822 sightings
 withheld, 30 events withheld and 228 delivered, and fails if those numbers
 collapse.
 
+**And the fixtures have since been backed by properties.** Two scripted matches
+prove the projection right about the world they walk through and say nothing
+about the world they do not, so `sim/tests/view_properties.rs` states the same
+criterion over states reached by simulation from a drawn seed and a drawn
+script: soundness, completeness, that a view is a function of what its player is
+entitled to, that the order of the entity list is a function of its content,
+that the projection is pure, that vision flips exactly at the radius and nowhere
+else, and that widening a radius can only add. Every one of them was checked by
+breaking `view_for` on purpose; the one that could not be made to fail — the
+encoded-size bound — says so in its own comment rather than passing for
+evidence.
+
+They found something on the first run, which is the argument for having written
+them: the entity list was ordered by the projectile arena, and the arena
+remembers casts the recipient never saw. The fix and the channel it does not
+close are in `ARCHITECTURE.md` under the ordering rule.
+
 Two guards that had never rejected anything were exercised rather than trusted.
 The `Serialize` grep, given a deliberate `#[derive(Serialize)]` on `State`,
 reported `a serialization derive reached sim outside the view types`. `sim`'s

@@ -290,6 +290,29 @@ And what is deliberately **not** in it:
   and carrying it would mean a second visibility rule — a second place for a leak
   to hide — for an ally panel that does not exist.
 
+#### The order of `visible` is the handle, and that is a culling rule
+
+`visible` is emitted in ascending `EntityId` order. Champions, towers and
+projectiles occupy ascending handle ranges, so the first two fall out of
+iterating them; the projectiles are sorted.
+
+They were not, until the property suite said so. The arena allocates the lowest
+free slot, so which slot a projectile occupies is a function of every cast that
+came before it, and emitting them in arena order made the *order* of two
+perfectly legitimate sightings depend on casts the recipient was never shown.
+Two skillshots from one seat, the first expiring before the second is cast,
+produce a view listing the newer projectile first — and a client that knows the
+rules reads a freed slot out of that. It is a thin channel and it is exactly the
+kind this project counts: `SCOPE.md`'s adversary model puts packet sizes and
+arrival times in the same category, and this is smaller than either.
+
+What the sort does **not** close, and what is therefore still open: projectile
+handles come from a match-global counter, so a gap between two visible handles
+says how many casts happened out of sight. Closing that needs a per-recipient
+handle space, which is a protocol decision with reconciliation consequences and
+belongs to M3 rather than to a test-coverage change. It is recorded here so that
+the sort is not mistaken for a complete answer.
+
 #### Serialization, and why `serde` is not here yet
 
 `PlayerView::encode` is written by hand, by exhaustive destructuring, exactly as
@@ -522,12 +545,24 @@ Each is a test or a lint, not a convention:
    `view_for`'s output is accompanied by the position it was seen at, and that
    position is inside the player's vision — in the entity list and in the
    events alike. Asserted in `sim/tests/visibility.rs` against a visibility
-   predicate re-derived there, so that the test is not the implementation
-   agreeing with itself, and paired with a completeness assertion so that
-   returning nothing does not pass. The same test reruns the fixture under
-   constants that differ only in the vision radii and requires every state
-   digest to be unchanged, which is how "`step` never reads visibility" is a
-   test rather than a habit.
+   predicate re-derived in `sim/tests/spec/mod.rs`, so that the test is not the
+   implementation agreeing with itself, and paired with a completeness
+   assertion so that returning nothing does not pass. The same test reruns the
+   fixture under constants that differ only in the vision radii and requires
+   every state digest to be unchanged, which is how "`step` never reads
+   visibility" is a test rather than a habit.
+
+   The same criterion holds over states nobody scripted:
+   `sim/tests/view_properties.rs` reaches them by simulation from a drawn seed
+   and a drawn script — half of it hostile — and asserts soundness,
+   completeness, that the view is a function of what its player is entitled to,
+   and that the projection is pure. Each of those was checked by breaking
+   `view_for` on purpose and watching it go red; the one that could not be made
+   to go red says so in its own comment. They are not a delivered defence:
+   `SCOPE.md` reserves that word for a class with a matching exploit failing
+   against it in CI, which is M7. They are coverage of the state space a
+   fixture cannot reach, and they found a leak on their first run — see the
+   ordering rule below.
 6. `cargo tree -p cheat-client` shows no path to `sim`, `client`, or `anticheat`.
 7. `cargo tree -p client` shows no path to `anticheat`.
 8. Every detector in `anticheat` has an exploit in `cheat-client` that fails
