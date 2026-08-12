@@ -64,6 +64,34 @@ const FRAC_MASK: u32 = ONE_RAW as u32 - 1;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct Fx(i32);
 
+/// `Fx` holds exactly one `i32`, and nothing else.
+///
+/// This is the one hole in the digest's compile-time guarantee, closed. Every
+/// other type reaching [`crate::State::digest`] is destructured exhaustively in
+/// `crate::canonical`, so a field added and not hashed stops the build. `Fx`
+/// cannot be: its field is private to this module, so `canonical` encodes it
+/// through [`Fx::to_raw`] instead, and `to_raw` is a canonical encoding only as
+/// long as there is nothing else in the type to encode. A second field would
+/// have been hashed by nobody and noticed by nothing — the determinism suite
+/// would have stayed green over a digest that no longer covered the whole
+/// value, which is the exact failure mode `crate::canonical` exists to make
+/// impossible.
+///
+/// The assertion is on the size rather than on the field count, because the
+/// field count is not something a `const` expression can ask about. That leaves
+/// one residual gap, stated rather than papered over: **a zero-sized second
+/// field would pass this check.** A `PhantomData`, a `()`, or a unit struct
+/// changes no size and would slip through. It is tolerable for the reason that
+/// makes it possible: a zero-sized field holds no value, so there is nothing in
+/// it that the digest could fail to cover. Anything carrying an actual bit —
+/// a flag, a second scalar, a wider representation — changes the size and stops
+/// the build here, with this comment as the explanation.
+const _: () = assert!(
+    size_of::<Fx>() == size_of::<i32>(),
+    "Fx must hold exactly one i32: `to_raw` is its canonical encoding for the \
+     digest, and a second field would be silently left out of it"
+);
+
 impl Fx {
     /// `0.0`.
     pub const ZERO: Self = Self(0);

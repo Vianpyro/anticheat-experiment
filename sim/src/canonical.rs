@@ -24,8 +24,13 @@
 //! a project revisited every few months.
 //!
 //! The one type not destructured here is [`Fx`], whose single field is private
-//! to its module; [`Fx::to_raw`] is its documented canonical encoding and a
-//! second field could not be added to it without rewriting that method.
+//! to its module, so [`Fx::to_raw`] is its documented canonical encoding
+//! instead. That leaves the exhaustiveness argument resting on a convention —
+//! "nobody will add a second field" — which is precisely the kind of claim this
+//! module refuses to make anywhere else, so `sim/src/fx.rs` carries a
+//! compile-time assertion on the size of the type: a second field of any
+//! non-zero size stops the build. The residual case, a zero-sized field, is
+//! documented beside that assertion.
 //!
 //! # The encoding
 //!
