@@ -1,0 +1,17 @@
+{
+    "editor.formatOnSave": true,
+    "editor.insertSpaces": true,
+    "editor.tabSize": 4,
+    "files.insertFinalNewline": true,
+    "files.trimFinalNewlines": true,
+    "files.trimTrailingWhitespace": true,
+    "[yaml]": {
+        "editor.tabSize": 2
+    },
+    "github.copilot.chat.commitMessageGeneration.instructions": [
+        {
+            "file": ".copilot/commit-message-instructions.md"
+        }
+    ]
+
+}

@@ -1,0 +1,81 @@
+name: Branch Name Validation
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+jobs:
+  check-branch-name:
+    name: Check Branch Name
+    runs-on: ubuntu-latest
+
+    outputs:
+      branch_valid: ${{ steps.validate.outputs.branch_valid }}
+
+    steps:
+      - name: Branch Name Validation
+        id: validate
+        shell: bash
+        run: |
+          BRANCH_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-${GITHUB_REF#refs/heads/}}}"
+          echo "Checking branch: $BRANCH_NAME"
+
+          # Allow main explicitly
+          if [[ "$BRANCH_NAME" == "main" ]]; then
+            echo "Branch is main. OK."
+            echo "branch_valid=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # New pattern: category/slug
+          # - category: one of the common branch prefixes (see allowed list below)
+          # - slug: 3-50 chars, lowercase letters or digits, may include '-' or '_' inside
+          #   but MUST start and end with an alphanumeric character (no leading/trailing -/_)
+          # Examples: feature/add_something, bug/fix-login-issue, docs/update-readme
+          PATTERN='^(feature|bug|fix|chore|docs|test|testing|performance|refactor|ci\-cd|build|release|hotfix|experiment|task|security|special|status)\/[a-z0-9][a-z0-9_-]{1,48}[a-z0-9]$'
+
+          if [[ "$BRANCH_NAME" =~ $PATTERN ]]; then
+            echo "✅ Branch name is valid: $BRANCH_NAME"
+            echo "branch_valid=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            echo ""
+            echo "❌ Invalid branch name: $BRANCH_NAME"
+            echo "-------------------------------------------------------------------"
+            echo "Expected format: <category>/<slug>"
+            echo "  - category: a short lowercase prefix that indicates intent (examples below)."
+            echo "  - slug: human-readable identifier (3-50 chars), lowercase letters/digits, may"
+            echo "    include '-' or '_' inside, but MUST NOT start or end with '-' or '_'"
+            echo ""
+            echo "Allowed category examples (map to your repo labels):"
+            echo "  feature, bug, fix, chore, docs, test/testing, performance, refactor, ci-cd,"
+            echo "  build, release, hotfix, experiment, task, security, special, status"
+            echo ""
+            echo "Branch naming rules summary:"
+            echo "  - Lowercase only (a-z), numbers (0-9), '-' and '_' allowed inside the slug"
+            echo "  - Exactly one '/' separating category and slug (no extra path segments)"
+            echo "  - Slug must start/end with alphanumeric (no leading/trailing '-' or '_')"
+            echo "  - Slug length: 3 to 50 characters"
+            echo ""
+            echo "Examples of valid branch names:"
+            echo "  feature/add_something"
+            echo "  bug/fix-login-issue"
+            echo "  docs/update-readme"
+            echo "  hotfix/urgent-db-fix"
+            echo "  chore/cleanup-config"
+            echo "  security/fix-vulnerability"
+            echo ""
+            echo "Labels guidance (informational): map your category to the appropriate label group."
+            echo "  e.g. 'feature' -> type: feature, 'bug' -> type: bug, 'docs' -> docs:update needed"
+            echo "  Use labels after creating the PR; this check only enforces branch naming."
+            echo "-------------------------------------------------------------------"
+            echo ""
+            echo "branch_valid=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
