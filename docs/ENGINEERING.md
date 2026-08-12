@@ -128,6 +128,44 @@ The lighter alternative, if Renovate ever becomes noise: delete it and run
 `cargo update` by hand once a month, with `cargo-deny` on the schedule to tell
 you when that is urgent. Say so explicitly rather than letting it rot.
 
+### Licensing
+
+**MIT alone, not the `MIT OR Apache-2.0` dual license that is the Rust
+ecosystem's default.** The holder is Vianney Veremme; the year is the year of
+first publication and does not get bumped annually.
+
+The dual license is a convention with two specific purposes, and neither one
+reaches this repository:
+
+- *License compatibility for downstream crates.* This is the real reason the
+  convention exists — a crate published to crates.io is linked into other
+  people's dependency trees, and offering Apache-2.0 lets Apache-licensed
+  projects consume it under their own terms. Every crate here is
+  `publish = false`, permanently and for stated reasons (`MILESTONES.md` M9).
+  Nothing in this workspace will ever appear in someone else's dependency tree.
+- *Apache-2.0's explicit patent grant and its contributor patent-retaliation
+  clause.* These matter when contributions arrive from parties who hold patents,
+  which is to say from companies. This is a solo portfolio project about
+  anti-cheat engineering, there is no patentable subject matter here, and MIT's
+  broad "deal in the Software without restriction" grant is not seriously argued
+  to withhold patent rights for a project of this shape.
+
+Against that, the dual license costs two license files, an SPDX expression
+every reader has to parse, a per-file header convention, and a paragraph in the
+README explaining a choice that changes nothing for anyone. One license is one
+fewer thing to be correct about.
+
+This is a decision that is expensive to reverse in exactly one direction:
+relicensing later requires the agreement of every copyright holder, so it gets
+harder with each outside contribution. Adding Apache-2.0 as an *option* is not
+a relicensing and stays available — the current holder can offer additional
+terms at any time. Removing MIT would not be. The asymmetry runs the safe way,
+which is why the choice is recorded here rather than escalated to `RISKS.md`.
+
+`cargo-deny`'s license allow-list at M3 governs *dependency* licenses and is a
+separate question from this one; it will need to admit the ecosystem's usual
+`MIT`, `Apache-2.0` and `Unicode-3.0` at minimum.
+
 ### Supply chain
 
 `cargo-deny` covers licenses (allow-list), security advisories, duplicate
