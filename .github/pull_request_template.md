@@ -1,37 +1,21 @@
-## Description
+## What and why
 
-- A clear and concise description of the changes introduced in this pull request.
+<!-- What changes, and what made it worth changing. The title is squashed onto
+     main and consumed by the changelog, so make it a Conventional Commit. -->
 
-## Related Issues
+## Verification
 
-- Closes #ISSUE_NUMBER (if applicable)
+<!-- What you ran, and what proves the change works. For a defense: name the
+     exploit in cheat-client/ that fails against it. -->
 
-## Changes Made
+## Scope
 
-- List the main changes made in this PR:
-  - [ ] Change 1
-  - [ ] Change 2
-  - [ ] Change 3
+- [ ] Milestone this belongs to: M_
+- [ ] Touches `sim/` (determinism, dependency policy, `State` serializability)
+- [ ] Adds or changes a dependency — why a few lines of code would not do:
+- [ ] Adds or changes an automation — explain it in one sentence:
 
-## Screenshots (if applicable)
+## Documents
 
-- If applicable, add screenshots to help visualize the changes.
-
-## How to Test
-
-- Steps to test the changes:
-
-1. Go to '...'
-2. Click on '....'
-3. Observe '....'
-
-## Checklist
-
-- [ ] My code follows the project's coding style.
-- [ ] I have performed a self-review of my code.
-- [ ] I have added necessary tests (if applicable).
-- [ ] I have documented my changes (if necessary).
-
-## Additional Context
-
-- Add any other relevant context or notes for reviewers.
+<!-- Does this change contradict docs/? Update the document in the same pull
+     request, or say why it does not need one. -->
