@@ -43,22 +43,53 @@ into a clean "this replay belongs to another version", which is survivable.
 
 ## R3 — Personal data in the input corpus
 
-**Irreversible because:** high-resolution input telemetry is behavioral
-biometrics. Under GDPR it is personal data, and once it is collected without a
-consent record you cannot lawfully publish or redistribute it. Worse, a public
-repository makes publication irreversible in the literal sense: git history and
-forks. Retroactive consent from people who played six months ago is, in
-practice, not obtainable.
+**Irreversible because:** high-resolution input telemetry tied to an account is
+behavioral biometrics, and it is personal information. The project is operated
+from Quebec, so **Quebec's Law 25** is the governing regime (the GDPR would
+reach the same conclusion for a participant in the EU). Once the data is
+collected without a lawful consent record you cannot afterwards publish or
+redistribute it, and a public repository makes publication irreversible in the
+literal sense: git history and forks. Retroactive consent from people who played
+six months ago is, in practice, not obtainable.
+
+**Pseudonymisation is not the answer.** Law 25 draws the line at anonymisation,
+which must be irreversible and performed according to generally accepted best
+practices; pseudonymised data — data that can be re-associated with a person
+using information held separately, which is exactly what a pseudonym mapping is
+— remains personal information and carries every obligation attached to it.
+Replacing a name with an opaque identifier is a security measure, not a change
+of legal category, and input timing distributions are themselves distinctive
+enough that "the mapping is in another file" is a thin claim.
+
+Whether the private-sector Act formally binds a non-commercial hobby project is
+genuinely unsettled, and the honest position is that it does not matter: the
+project holds itself to the regime regardless, because the cost is a page of
+text and the alternative is a security portfolio that collects behavioral
+biometrics from friends with no stated rules. This document is engineering, not
+legal advice.
 
 **Decide:** before the first recording session, i.e. during M4, not at M6.
+M4's own exit criterion — three humans playing a match — is already a recording
+session, so the regime must exist before that criterion is run.
 
-**Hedge:** pseudonymous player identifiers with the mapping held outside the
-repository; written consent text covering the specific uses (detector
-calibration, publication of derived statistics, and — separately opted into —
-publication of the raw corpus); the corpus distributed as a release asset or a
-separate repository, never committed to git history, because deleting a
-committed file does not delete it. Default to publishing derived statistics
-only, and treat raw-corpus publication as a separate opt-in decision.
+**Hedge:** a written consent text stating four things, which is where the
+substance lives (`MILESTONES.md` M4): the declared purpose, the retention
+period, how consent is withdrawn, and what withdrawal actually destroys.
+Consent is requested per purpose, so publication of the raw corpus is a separate
+opt-in that can be refused without refusing detector calibration. Pseudonymous
+identifiers with the mapping held outside the repository. The corpus distributed
+as a release asset or a separate repository, never committed to git history,
+because deleting a committed file does not delete it. Default to publishing
+derived statistics only.
+
+One distinction worth recording, because it changes what is owed: this corpus is
+collected to calibrate detectors, never to verify or confirm anyone's identity.
+That is what keeps it outside the biometric-database regime of the *Act to
+establish a legal framework for information technology* (arts. 44–45), which
+would otherwise require disclosure to the Commission d'accès à l'information
+before the database is brought into service. If the project ever uses input
+biometrics to authenticate a player — for account-sharing detection, say — that
+obligation attaches and this risk is reopened.
 
 ## R4 — What the replay signature actually covers
 
