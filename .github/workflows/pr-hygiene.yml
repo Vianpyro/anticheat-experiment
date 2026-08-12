@@ -1,0 +1,52 @@
+name: pr-hygiene
+
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+    types: [opened, reopened, edited, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  branch-name:
+    name: branch name
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate
+        shell: bash
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          pattern='^(feature|bug|fix|chore|docs|test|testing|performance|refactor|ci-cd|build|release|hotfix|experiment|task|security|special|status)/[a-z0-9][a-z0-9_-]{1,48}[a-z0-9]$'
+          if [[ "$BRANCH" =~ $pattern ]]; then
+            echo "ok: $BRANCH"
+          else
+            echo "::error::invalid branch name '$BRANCH'; expected <category>/<slug>, e.g. security/pad-view-messages"
+            echo "categories: feature bug fix chore docs test testing performance refactor ci-cd build release hotfix experiment task security special status"
+            echo "slug: 3-50 chars, lowercase alphanumerics plus '-' or '_' inside, starting and ending alphanumeric"
+            exit 1
+          fi
+
+  pr-title:
+    name: pr title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      # Squash merge only, so the PR title is the commit message that reaches
+      # main and the one the generated changelog consumes. Individual commits
+      # are squashed away and are deliberately not checked.
+      - name: Validate
+        shell: bash
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._-]+\))?!?: [a-z].{2,70}[^.]$'
+          if [[ "$TITLE" =~ $pattern ]]; then
+            echo "ok: $TITLE"
+          else
+            echo "::error::PR title must follow Conventional Commits: <type>(<scope>): <imperative subject>"
+            echo "see .copilot/commit-message-instructions.md"
+            exit 1
+          fi
