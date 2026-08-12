@@ -1,46 +1,37 @@
 ---
 name: Bug report
-about: Create a report to help us improve
+about: Something behaves differently from what the documents say it should
 title: ''
 labels: 'type: bug'
 assignees: ''
 ---
 
-## Describe the bug
+<!-- If this is a way for a client to see or obtain something it should not,
+     do not open an issue. See SECURITY.md for private reporting. -->
 
-- A clear and concise description of what the bug is.
+## What happened
 
-## To Reproduce
+-
 
-- Steps to reproduce the behavior:
+## What should have happened
 
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+<!-- Where possible, point at the document or the invariant that says so. -->
 
-## Expected behavior
+-
 
-- A clear and concise description of what you expected to
-  happen.
+## Reproduction
 
-## Screenshots
+<!-- A failing test is the best form of this. Otherwise: seed, input log, and
+     the command you ran. -->
 
-- If applicable, add screenshots to help explain your problem.
+-
 
-## Desktop (please complete the following information)
+## Environment
 
-- OS: [e.g. iOS]
-- Browser [e.g. chrome, safari]
-- Version [e.g. 22]
-
-## Mobile (please complete the following information)
-
-- Device: [e.g. iPhone6]
-- OS: [e.g. iOS8.1]
-- Browser [e.g. stock browser, safari]
-- Version [e.g. 22]
+- Commit:
+- OS and architecture:
+- `rustc --version` (should match `rust-toolchain.toml`):
 
 ## Additional context
 
-- Add any other context about the problem here.
+-

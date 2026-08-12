@@ -1,23 +1,36 @@
 ---
-name: Feature request
-about: Suggest an idea for this project
+name: Proposal
+about: Something the project should do that it does not do
 title: ''
 labels: 'special: community feedback'
 assignees: ''
 ---
 
-## Is your feature request related to a problem? Please describe
+<!-- The scope is deliberately closed. Read docs/SCOPE.md first: game features,
+     client-side anti-tamper, automatic bans, ML classifiers, rollback netcode
+     and plugin systems are excluded, each with a reason. Arguing against one of
+     those reasons is a fair proposal; ignoring it is not. -->
 
-- A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]
+## What is missing
 
-## Describe the solution you'd like
+-
 
-- A clear and concise description of what you want to happen.
+## Which part of the subject it serves
 
-## Describe alternatives you've considered
+<!-- Anti-cheat, determinism, or the honesty of a claim. "It would be nice to
+     play" is not one of them — the game is a test fixture. -->
 
-- A clear and concise description of any alternative solutions or features you've considered.
+-
 
-## Additional context
+## Which milestone it belongs to
 
-- Add any other context or screenshots about the feature request here.
+<!-- See docs/MILESTONES.md. If it belongs to none of them, say why it should
+     exist anyway. -->
+
+-
+
+## What it would cost
+
+<!-- New dependency? New automation? A change to sim? Say so here. -->
+
+-
