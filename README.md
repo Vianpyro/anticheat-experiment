@@ -1,52 +1,77 @@
 # moba
 
-Welcome to the **moba** repository! This repository was generated from a template to get you started quickly.
+A minimal MOBA used as a substrate for anti-cheat engineering. The game is the
+test fixture; the anti-cheat is the subject. Both the attack and the defense
+live in this repository.
 
-## 🚀 Getting Started
+The starting axiom is that **the client is compromised and lying**. Every
+defense here must hold when the attacker controls the client binary, its memory,
+its clock and its input stack — so there is no obfuscation, no anti-tamper and
+no kernel driver, and their absence is a design decision rather than an omission
+(`docs/SCOPE.md`).
 
-To get started with this project:
+A defense is only considered delivered once the matching exploit exists in this
+repository and fails against it in CI.
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/Vianpyro/moba.git
-   cd moba
-   ```
-2. Install any dependencies (if applicable).
-3. Follow the instructions in the relevant documentation or project files to start working.
+## Status
 
-## 📁 Project Structure
+**M0 — toolchain floor and repository hygiene.** The workspace exists and is
+empty: no simulation, no protocol, no server, no exploits. See
+`docs/MILESTONES.md` for what lands when.
 
-The repository contains the following directories and files:
+## Workspace
 
-- `.devcontainer/` - Development container configuration for VS Code
-  - `devcontainer.json` - Dev container settings
-  - `Dockerfile` - Container image definition
-- `.github/` - GitHub-specific configurations
-  - `ISSUE_TEMPLATE/` - Issue templates (bug reports, feature requests)
-  - `pull_request_template.md` - Pull request template
-  - `workflows/` - GitHub Actions workflow files
-- `.vscode/` - VS Code workspace settings and tasks
-- `.dockerignore` - Docker build exclusions
-- `.gitattributes` - Git attributes configuration
-- `.gitignore` - Git ignore patterns
-- `README.md` - This file
+Seven crates, whose boundaries make two security properties structural rather
+than procedural: the client cannot receive information it should not see, and
+the detection logic never ships to the attacker.
 
-## 🛠 Features
+| Crate | Owns |
+| --- | --- |
+| `sim` | The rules. `State`, `Input`, `step`, `view_for`, fixed-point math. Depends on nothing in the workspace |
+| `protocol` | The wire, and the only trust boundary |
+| `replay` | Replay container, signing, verification, resimulation |
+| `server` | Authority: tick loop, the clock, sessions, fog application, telemetry |
+| `client` | Presentation. Never links `anticheat` |
+| `anticheat` | Detection. A pure function from telemetry to scores and evidence |
+| `cheat-client` | The attacker, and the exploit suite. Speaks `protocol` and nothing else |
 
-- Initialized from a reusable template for quick setup.
-- Pre-configured workflows for automation and CI/CD.
-- Placeholder sections for documentation, testing, and development.
+`docs/ARCHITECTURE.md` has the dependency rules and the reason for each.
 
-## 📖 Documentation
+## Building
 
-Check the project files and comments for guidance. You can expand this section as your project grows.
+The toolchain is pinned in `rust-toolchain.toml` and `rustup` installs it on the
+first `cargo` invocation. Nothing else is required.
 
-## 🤝 Contributing
+```sh
+cargo fmt --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+```
 
-Contributions are welcome! Feel free to open issues, submit pull requests, or suggest improvements.
+Those three commands are exactly what CI runs, on Linux and on Windows.
 
-## 📝 License
+## Documents
 
-Specify your license here (if any). For example: MIT, Apache 2.0, etc.
+The documents in `docs/` are the specification. They are meant to be read in
+this order:
 
-Happy coding! 🎉
+- `docs/SCOPE.md` — what is in, what is out, and why each exclusion is an
+  argument rather than a preference.
+- `docs/ARCHITECTURE.md` — the seven crates, the central types, and the
+  invariants that are lints or tests rather than conventions.
+- `docs/RISKS.md` — the decisions that are irreversible, when each must be
+  taken, and the cheapest hedge available now.
+- `docs/MILESTONES.md` — M0 to M9, each with an exit criterion that is a command
+  rather than an inspection.
+- `docs/ENGINEERING.md` — toolchain, workflows, supply chain, release, and what
+  stays manual on purpose.
+
+## Contributing and security
+
+`CONTRIBUTING.md` for scope and process; `SECURITY.md` for how to report a
+vulnerability in the server, and for the boundary around the cheat client — it
+targets this project only, and contributions targeting other games are refused.
+
+## License
+
+MIT. See `LICENSE`.
