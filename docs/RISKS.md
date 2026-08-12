@@ -91,8 +91,19 @@ it later means auditing every path that touches `State`.
 **Hedge:** `State` never derives `Serialize`; determinism tests compare
 `State::digest()` rather than encoded bytes; replay storage holds seed and inputs,
 never snapshots. A CI check greps for a serialization derive on the state types.
-If a snapshot format is ever genuinely needed for replay seeking, it lives behind
-a `dev-snapshot` feature that the server binary cannot enable.
+
+The two pressures that will push back — mid-match reconnection and test fixtures
+— are answered in advance in `ARCHITECTURE.md`, "The `State` escape hatch",
+rather than left to be improvised the week they bite: reconnection resends a
+`PlayerView` and transports no state, fixtures are `(seed, inputs)` and are built
+by simulation through the public API, and the only direct constructors are
+`#[cfg(test)]`-gated inside `sim`.
+
+A `dev-snapshot` feature is deliberately **not** that escape hatch. Cargo
+features are additive and unified, so "a feature the server binary cannot enable"
+is not something Cargo enforces. If replay seeking ever genuinely needs
+snapshots, this risk is reopened as its own decision, and the reopening has to
+bring a CI check on the server binary's resolved feature graph with it.
 
 ## R6 — Transport choice
 
