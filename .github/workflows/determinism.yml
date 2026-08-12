@@ -1,0 +1,96 @@
+name: determinism
+
+# The single property everything else in this repository rests on: the same
+# seed and the same input log produce the same `State::digest()` on every
+# supported target. Replays, resimulation, the human corpus and the detector
+# calibration all inherit it, so a leak found late invalidates recorded data and
+# not just code (docs/RISKS.md R1).
+#
+# The path filter is what makes this cheap enough to run on every change that
+# could break it, and getting it wrong is silent in the worst direction: a job
+# that never triggers looks exactly like a job that always passes. So the list
+# below covers not only the simulation and the fixtures but the toolchain pin
+# and the lockfile, because "a compiler upgrade perturbed the arithmetic" is
+# precisely the scenario R1 is about, and the workflow file itself, so a change
+# to these rules is validated by the rules it changes.
+#
+# If this workflow is ever made a required status check, note that a path filter
+# on `pull_request` means it does not report at all on unrelated pull requests,
+# which blocks them. Require it only alongside a fallback, or not at all.
+on:
+  pull_request:
+    paths:
+      - "sim/**"
+      - "replay/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/determinism.yml"
+  push:
+    branches: [main]
+    paths:
+      - "sim/**"
+      - "replay/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/determinism.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: determinism-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fixture:
+    name: fixture (${{ matrix.arch }} ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86-64
+          - os: windows-latest
+            arch: x86-64
+          # The reason the matrix exists. aarch64 is what catches the
+          # determinism leaks an x86-only matrix hides, so this entry is here
+          # for a security reason and not for macOS support
+          # (docs/ENGINEERING.md, platform matrix). `macos-14` is named
+          # explicitly rather than `macos-latest` because the architecture is
+          # the requirement; when GitHub retires the label, bump it to another
+          # aarch64 image rather than to whatever `latest` happens to mean.
+          - os: macos-14
+            arch: aarch64
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: Swatinem/rust-cache@v2
+
+      # `--release` deliberately, and it is the same profile on all three: the
+      # workspace turns `overflow-checks` on in every profile precisely so that
+      # this can run against optimised code without arithmetic meaning
+      # something different here than it does under `cargo test`.
+      - name: Run the fixture
+        shell: bash
+        run: cargo test -p sim --release --locked --test determinism -- --nocapture | tee determinism.log
+
+      # The digests are echoed into the run summary so that a three-way
+      # disagreement is one glance rather than three logs opened side by side.
+      - name: Report the digests
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### ${{ matrix.arch }} ${{ matrix.os }}"
+            echo ''
+            echo '```'
+            grep '^determinism:' determinism.log || echo 'no digest reported: the fixture did not run'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

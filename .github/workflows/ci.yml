@@ -39,3 +39,26 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - run: cargo test --workspace --locked
+
+      # docs/RISKS.md R5: `State` must not be serializable, anywhere, ever.
+      # Today the enforcement is stronger than this grep — `sim` has no
+      # serialization dependency at all, so no type in it *can* derive one — but
+      # `serde` arrives at M2 for the view types, and this is the check that
+      # keeps the property from quietly reverting to a code-review habit the
+      # moment it does. `sim/src/view` is excluded because the view types are
+      # the one thing that is allowed to cross the wire.
+      #
+      # Linux only: it reads the working tree, not the build, so running it a
+      # second time on Windows would buy nothing.
+      - name: No serialization on the state types
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          found=$(git grep -nE '\b(Serialize|Deserialize)\b' -- \
+            sim/src ':(exclude)sim/src/view' ':(exclude)sim/src/view.rs' || true)
+          if [[ -n "$found" ]]; then
+            echo "::error::a serialization derive reached sim outside the view types (docs/RISKS.md R5)"
+            echo "$found"
+            exit 1
+          fi
+          echo "ok: no serialization derive in sim outside sim/src/view"
