@@ -48,9 +48,9 @@ required.
 
 | Workflow | Trigger | Jobs | Permissions | Budget |
 | --- | --- | --- | --- | --- |
-| `ci` | PR, push to `main` | `check` (fmt + clippy `-D warnings` + test, matrixed over Linux and Windows), and from M7 `exploits` (Linux) | `contents: read` | < 5 min wall, warm |
-| `pr-hygiene` | PR, push to any branch but `main` | `branch-name`, `pr-title` (Conventional Commits) | `contents: read` | seconds |
-| `determinism` | PR and push touching `sim/`, `replay/`, or the fixtures | The 1000-tick fixture on Linux x86-64, Windows x86-64, macOS aarch64; digests compared across jobs | `contents: read` | < 4 min |
+| `ci` | PR, push to `main` | `check` (fmt + clippy `-D warnings` + test, matrixed over Linux and Windows, plus a Linux-only grep for a serialization derive in `sim` — `RISKS.md` R5), and from M7 `exploits` (Linux) | `contents: read` | < 5 min wall, warm |
+| `pr-hygiene` | PR, push to any branch but `main` | `branch-name` (skipped for pull requests from a fork, whose branch names are the fork's business), `pr-title` (Conventional Commits, every pull request) | `contents: read` | seconds |
+| `determinism` | PR and push touching `sim/`, `replay/`, the fixtures, the lockfile or the toolchain pin | `fixture` (the fixtures on Linux x86-64, Windows x86-64, macOS aarch64, under `--release`, each compared against digests committed in the repository), `properties` (the same three targets with a raised `PROPTEST_CASES`), and `sim-version` (a PR touching `sim/` must raise the crate version — `RISKS.md` R13) | `contents: read` | < 6 min |
 | `supply-chain` | PR (licenses, bans, sources) and weekly cron (advisories) | `cargo-deny` | `contents: read` | < 1 min |
 | `coverage` | Weekly cron, manual dispatch | `cargo llvm-cov`, uploaded as an artifact | `contents: read` | untimed |
 | `release` | Tag `v*` | Build matrix, container, SBOM, attestation, GitHub Release | `contents: write`, `packages: write`, `id-token: write`, `attestations: write` — this job only | < 20 min |
@@ -61,6 +61,16 @@ for all three green on both platforms. On an already-compiled workspace the two
 extra Windows steps cost seconds, and a Windows-only clippy finding — from a
 `cfg`-gated path, most likely — is exactly the kind of thing a Linux-only lint
 job would let through.
+
+The determinism job compares against committed digests rather than shipping each
+job's result to a fourth job that compares them. That is strictly stronger and
+much simpler: three jobs checking the same constant already detect any
+disagreement between platforms, and the constant additionally detects drift over
+time on a single platform — which cross-job comparison cannot see at all, since
+three jobs that have all drifted the same way still agree with each other. It
+also means a compiler upgrade that perturbs the simulation arrives as a failing
+test with a diff, which is exactly the reviewable event the pinned toolchain
+exists to produce.
 
 Advisories run on a schedule rather than on PRs deliberately: a CVE published in
 a transitive dependency has nothing to do with the PR in front of you, and a red
@@ -118,10 +128,53 @@ Arrives at M3, when there are dependencies to update. Configuration:
   change to `sim`'s dependencies — no exceptions, since `sim` is where a silent
   behavioral change is most expensive (`RISKS.md` R9).
 - `rangeStrategy: bump`, lockfile maintenance monthly.
+- **`helpers:pinGitHubActionDigests`**, which rewrites every third-party action
+  reference from a mutable tag to a commit SHA and then keeps those SHAs
+  current. This is the second half of `RISKS.md` R12: the pins and the
+  automation that maintains them land in the same milestone, because a SHA pin
+  with nothing to bump it is an unpatched action wearing a security measure.
 
 The lighter alternative, if Renovate ever becomes noise: delete it and run
 `cargo update` by hand once a month, with `cargo-deny` on the schedule to tell
 you when that is urgent. Say so explicitly rather than letting it rot.
+
+### Licensing
+
+**MIT alone, not the `MIT OR Apache-2.0` dual license that is the Rust
+ecosystem's default.** The holder is Vianney Veremme; the year is the year of
+first publication and does not get bumped annually.
+
+The dual license is a convention with two specific purposes, and neither one
+reaches this repository:
+
+- *License compatibility for downstream crates.* This is the real reason the
+  convention exists — a crate published to crates.io is linked into other
+  people's dependency trees, and offering Apache-2.0 lets Apache-licensed
+  projects consume it under their own terms. Every crate here is
+  `publish = false`, permanently and for stated reasons (`MILESTONES.md` M9).
+  Nothing in this workspace will ever appear in someone else's dependency tree.
+- *Apache-2.0's explicit patent grant and its contributor patent-retaliation
+  clause.* These matter when contributions arrive from parties who hold patents,
+  which is to say from companies. This is a solo portfolio project about
+  anti-cheat engineering, there is no patentable subject matter here, and MIT's
+  broad "deal in the Software without restriction" grant is not seriously argued
+  to withhold patent rights for a project of this shape.
+
+Against that, the dual license costs two license files, an SPDX expression
+every reader has to parse, a per-file header convention, and a paragraph in the
+README explaining a choice that changes nothing for anyone. One license is one
+fewer thing to be correct about.
+
+This is a decision that is expensive to reverse in exactly one direction:
+relicensing later requires the agreement of every copyright holder, so it gets
+harder with each outside contribution. Adding Apache-2.0 as an *option* is not
+a relicensing and stays available — the current holder can offer additional
+terms at any time. Removing MIT would not be. The asymmetry runs the safe way,
+which is why the choice is recorded here rather than escalated to `RISKS.md`.
+
+`cargo-deny`'s license allow-list at M3 governs *dependency* licenses and is a
+separate question from this one; it will need to admit the ecosystem's usual
+`MIT`, `Apache-2.0` and `Unicode-3.0` at minimum.
 
 ### Supply chain
 
@@ -170,6 +223,7 @@ in a security project.
 | Pushing the release tag | A human decides that a version exists. Auto-tagging on merge turns every merge into a release |
 | The release notes headline | The changelog is generated; the narrative of what changed is not a thing a tool knows |
 | Approving production-dependency updates | The blast radius is the running server and, for `sim`, the determinism guarantee |
+| Committing a proptest counter-example | The seed is printed into the run summary of the job that found it and pasted into `sim/proptest-regressions/properties.txt`. A bot pushing it would need write permissions on the branch, which is the automation `RISKS.md` R11 exists to refuse; the paste costs seconds and the case is permanent afterwards |
 | Rotating the replay signing key | Rotation without publishing the retired key orphans every replay signed with it (`RISKS.md` R4). Rare, consequential, and better done deliberately |
 | Admitting a participant to the human corpus | Consent is a person-to-person act, and the consent record is what makes the corpus lawfully usable (`RISKS.md` R3) |
 | Acting on a detector finding | By design, permanently. Detectors emit scores and evidence; a ban is a human judgment. This is a scope decision, not a missing feature |

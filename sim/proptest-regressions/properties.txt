@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# This repository does check it in, and the file is deliberately committed
+# empty of cases rather than left uncreated: a counter-example found once on
+# one platform and not written down is a counter-example the next run may
+# never sample again. See the header of `sim/tests/properties.rs`.

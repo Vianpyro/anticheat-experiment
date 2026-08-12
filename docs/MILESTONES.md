@@ -10,14 +10,39 @@ CI is not a delivered detector.**
 
 ## Current state
 
-**M0 is implemented.** The workspace exists with its seven crates, all empty;
-the toolchain is pinned; `ci` and `pr-hygiene` are the only workflows and
-neither holds write permissions; `LICENSE`, `SECURITY.md` and `CONTRIBUTING.md`
-exist. The template's super-linter, its `.dockerignore` and its branch-deleting
-VS Code task are gone.
+**M0 and M1 are reached.** The workspace exists with
+its seven crates; the toolchain is pinned; `ci`, `pr-hygiene` and `determinism`
+are the only workflows and none holds write permissions; `LICENSE`,
+`SECURITY.md` and `CONTRIBUTING.md` exist. The template's super-linter, its
+`.dockerignore` and its branch-deleting VS Code task are gone.
 
-Nothing else exists yet: no simulation, no protocol, no server, no exploits.
-Next is M1.
+`sim` holds the fixed-point type, the seeded generator, `State`, `Input`,
+`step`, the rules constants and their hash, and a hand-written SHA-256 behind
+`State::digest()`. It has no dependencies at all. Two fixtures — a scripted
+1000-tick match, and a shorter one whose job is to kill somebody and which
+carries its own `Rules` value to do it — check their digests against constants
+committed in the repository.
+
+**What made M1 reached rather than written.** Every digest in the repository was
+recorded on x86-64 Linux, and until the `determinism` workflow had run, a green
+local test was evidence that the simulation is deterministic *on this machine* —
+the claim R1 says is worth the least. It has now run: `ubuntu-latest` x86-64,
+`windows-latest` x86-64 and `macos-14` aarch64 report byte-identical digests for
+both fixtures against the constants committed here. The second architecture
+agreed on the first attempt, which is the outcome to be least smug about; it
+means the aarch64 job has caught nothing yet, not that there is nothing for it to
+catch.
+
+The `properties` job did fail, on all three targets at once, the first time it
+ran at CI's case budget — and not with a counter-example: two properties
+discarded about half their samples through `prop_assume!`, and proptest's global
+reject cap does not scale with the case count, so raising the budget aborted the
+tests instead of running them. A test that stops running looks nothing like a
+test that fails. Both are constructions rather than assumptions now, which is
+recorded here because it is the argument for raising the budget in the first
+place.
+
+The other six crates are still empty. Next is M2, the visibility projection.
 
 ---
 
@@ -151,6 +176,12 @@ all three before the match rather than after.
 Replay container format with a version stamp and a rules hash, signing, and
 verification. Decide and document what is signed — the input log alone is not
 enough, see `RISKS.md`.
+
+The version stamp is two fields, not one, and `RISKS.md` R13 says why: the
+`sim` crate version — already enforced at M1 by a CI check that refuses a change
+to `sim/` without a bump — and the commit the server was built from. `rules_hash`
+covers the constants, the version and the commit cover the code that reads them,
+and a mismatch on either is its own `VerifyError` rather than a digest mismatch.
 
 **Exit:** a table-driven test covers six tamper cases — truncated log, reordered
 inputs, altered outcome record, altered seed, unknown signing key, version or

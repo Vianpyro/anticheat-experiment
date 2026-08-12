@@ -1,0 +1,24 @@
+# Clippy configuration for `sim` only. Clippy resolves this file from the
+# manifest directory of the crate being linted, so nothing here leaks into the
+# other six crates — `client` is allowed floats and a game framework, and
+# `server` is allowed a clock.
+#
+# This is the cheap version of a `no_std` crate (docs/MILESTONES.md M1): it buys
+# the same property — no clock, no ambient randomness, no iteration order that
+# varies per process — without the cost of giving up `std`. The lint is the
+# enforcement mechanism, not the discipline (docs/RISKS.md R1, R9).
+
+disallowed-types = [
+    { path = "f32", reason = "floats are the one thing that cannot be made bit-identical across x86-64 and aarch64; see docs/RISKS.md R1" },
+    { path = "f64", reason = "floats are the one thing that cannot be made bit-identical across x86-64 and aarch64; see docs/RISKS.md R1" },
+    { path = "std::time::Instant", reason = "`sim` has no clock: the tick is the only time it knows, and it is an argument" },
+    { path = "std::time::SystemTime", reason = "`sim` has no clock: the tick is the only time it knows, and it is an argument" },
+    { path = "std::time::Duration", reason = "durations in the rules are counted in ticks, so that they survive a tick-rate change as a visible diff" },
+    { path = "std::collections::HashMap", reason = "the default hasher is seeded per process, so iteration order is not reproducible between two runs of the same binary" },
+    { path = "std::collections::HashSet", reason = "same randomized hasher as HashMap" },
+]
+
+# `rand` is deliberately absent from this list: it is not a dependency of `sim`
+# at all, so no path into it resolves and the lint could never fire. The
+# enforcement is the empty `[dependencies]` table in Cargo.toml, which is
+# stronger — a lint can be allowed, a missing dependency cannot be named.

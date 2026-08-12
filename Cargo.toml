@@ -17,3 +17,28 @@ publish = false
 repository = "https://github.com/Vianpyro/moba"
 rust-version = "1.96.1"
 version = "0.0.0"
+
+# Integer overflow is the one arithmetic behaviour Cargo varies by profile: it
+# panics in `dev` and wraps silently in `release`. For a project whose central
+# claim is that the same inputs produce the same bytes everywhere, a profile
+# that changes what arithmetic means is a determinism leak with a build flag in
+# front of it — the debug build would be right and the shipped one quietly
+# wrong. So it is on in all four, and there is no profile in this workspace
+# where arithmetic behaves differently from any other.
+#
+# It is not the primary defence: `sim` states an overflow semantics of its own
+# (saturating, see `docs/ARCHITECTURE.md`) and reaches it through explicit
+# `saturating_*` and `checked_*` calls, which this flag does not affect. What
+# it catches is a bare `+` slipping into a crate that was supposed to have
+# none. A tripwire, deliberately armed in the profile CI runs.
+[profile.dev]
+overflow-checks = true
+
+[profile.release]
+overflow-checks = true
+
+[profile.test]
+overflow-checks = true
+
+[profile.bench]
+overflow-checks = true
