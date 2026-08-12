@@ -10,17 +10,28 @@ CI is not a delivered detector.**
 
 ## Current state
 
-**M0 and M1 are implemented.** The workspace exists with its seven crates; the
-toolchain is pinned; `ci`, `pr-hygiene` and `determinism` are the only
-workflows and none holds write permissions; `LICENSE`, `SECURITY.md` and
-`CONTRIBUTING.md` exist. The template's super-linter, its `.dockerignore` and
-its branch-deleting VS Code task are gone.
+**M0 is reached. M1 is written but not yet reached.** The workspace exists with
+its seven crates; the toolchain is pinned; `ci`, `pr-hygiene` and `determinism`
+are the only workflows and none holds write permissions; `LICENSE`,
+`SECURITY.md` and `CONTRIBUTING.md` exist. The template's super-linter, its
+`.dockerignore` and its branch-deleting VS Code task are gone.
 
 `sim` holds the fixed-point type, the seeded generator, `State`, `Input`,
 `step`, the rules constants and their hash, and a hand-written SHA-256 behind
 `State::digest()`. It has no dependencies at all. Two fixtures — a scripted
-1000-tick match and a shorter one whose job is to kill somebody — run on all
-three targets against digests committed in the repository.
+1000-tick match, and a shorter one whose job is to kill somebody and which
+carries its own `Rules` value to do it — check their digests against constants
+committed in the repository.
+
+**Why M1 is not yet reached.** Its exit criterion is a criterion about three
+platforms, and until this branch is pushed only one of them has ever run the
+fixture: every digest in the repository was recorded on x86-64 Linux. A green
+local test is evidence that the simulation is deterministic *on this machine*,
+which is the claim R1 says is worth the least. The milestone is reached when the
+`determinism` workflow reports the same digests from `ubuntu-latest` x86-64,
+`windows-latest` x86-64 and a macOS aarch64 runner, and not before; a red
+aarch64 job at that point is not a setback but the whole reason the target is in
+the matrix.
 
 The other six crates are still empty. Next is M2, the visibility projection.
 
