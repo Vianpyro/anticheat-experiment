@@ -8,4 +8,19 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+# Empty, and meant to stay empty. `docs/ARCHITECTURE.md` allows a fixed-point
+# crate and `serde` for the view types; this crate takes neither. The
+# fixed-point type is thirty lines of integer arithmetic whose overflow
+# semantics are a decision this project has to make and document anyway
+# (see `src/fx.rs`), and a dependency there is a dependency that can change
+# rounding in a patch release — which is `docs/RISKS.md` R9 exactly.
 [dependencies]
+
+# `proptest` pulls in `rand`, which the `clippy.toml` disallows *by name* in
+# this crate's own code. That is not a contradiction: the ban exists so no rule
+# draws from an ambiently-seeded generator, and a dev-dependency used by a test
+# harness to choose which inputs to try is the opposite situation — its draws
+# never reach a `State`. Every test that needs randomness inside the simulation
+# uses `sim::Rng` with a written-down seed.
+[dev-dependencies]
+proptest = "1.11.0"
