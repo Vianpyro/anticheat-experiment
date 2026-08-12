@@ -102,10 +102,14 @@ pub struct PlayerView {
     pub outcome: Outcome,
     /// The player's own champion.
     pub own: OwnView,
-    /// Everything else the player can see, in a fixed order: champions by seat,
-    /// then towers by index, then projectiles in arena order. The order is part
-    /// of the encoding rather than an artefact of iteration, so that two
-    /// servers producing the same view produce the same bytes.
+    /// Everything else the player can see, in ascending [`EntityId`] order:
+    /// champions, then towers, then projectiles, because the handle spaces are
+    /// laid out in that order.
+    ///
+    /// The order is part of the encoding rather than an artefact of iteration,
+    /// and it is the handle rather than the iteration order for a reason that
+    /// is about leaks and not about tidiness — see [`view_for_with_rules`],
+    /// where the projectiles are sorted.
     pub visible: Vec<EntityView>,
     /// What happened this tick, where the player could see it happen.
     pub events: Vec<VisibleEvent>,
@@ -259,14 +263,32 @@ pub fn view_for_with_rules(state: &State, player: PlayerId, rules: &Rules) -> Pl
         });
     }
 
-    for projectile in state.projectiles().iter() {
-        // Including the caster's own projectile only while it is in team vision
-        // is the strict reading, and it is the one taken: one rule, applied to
-        // everything, is worth more than a courtesy that would need its own
-        // sentence in this module and its own branch in the test.
-        if !can_see(state, team, projectile.position, rules) {
-            continue;
-        }
+    // Including the caster's own projectile only while it is in team vision is
+    // the strict reading, and it is the one taken: one rule, applied to
+    // everything, is worth more than a courtesy that would need its own
+    // sentence in this module and its own branch in the test.
+    //
+    // Sorted by handle rather than emitted in arena order, and that is a
+    // culling rule rather than a formatting choice. The arena allocates the
+    // lowest free slot, so which slot a projectile occupies is a function of
+    // every cast that came before it — including the ones this player was never
+    // shown. Two views listing the same two projectiles in different orders
+    // therefore differ in a way that reports on the fog, which is the shape of
+    // thing `docs/SCOPE.md` counts as an information leak. Ordering by handle
+    // makes the order a function of the content, and `sim/tests/view_properties.rs`
+    // asserts it over reachable states; it is what found this.
+    //
+    // The sort is stable, so two projectiles that shared a handle — reachable
+    // only by wrapping the allocator, see `State::allocate_projectile_id` —
+    // would still come out in arena order rather than in an order that depends
+    // on the sort's internals.
+    let mut in_flight: Vec<&crate::state::Projectile> = state
+        .projectiles()
+        .iter()
+        .filter(|projectile| can_see(state, team, projectile.position, rules))
+        .collect();
+    in_flight.sort_by_key(|projectile| projectile.id.0);
+    for projectile in in_flight {
         visible.push(EntityView::Projectile {
             id: projectile.id,
             position: projectile.position,
