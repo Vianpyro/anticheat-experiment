@@ -1,0 +1,11 @@
+[package]
+name = "cheat-client"
+description = "The attacker, and the exploit suite. Speaks the protocol and nothing else."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]

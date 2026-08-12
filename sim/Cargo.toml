@@ -1,0 +1,11 @@
+[package]
+name = "sim"
+description = "Deterministic game rules: State, Input, step, view_for, fixed-point math."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]

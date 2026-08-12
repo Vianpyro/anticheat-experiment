@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = [
+    "anticheat",
+    "cheat-client",
+    "client",
+    "protocol",
+    "replay",
+    "server",
+    "sim",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+repository = "https://github.com/Vianpyro/moba"
+rust-version = "1.96.1"
+version = "0.0.0"

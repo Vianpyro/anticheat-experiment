@@ -42,17 +42,25 @@ commits are squashed away.
 
 ## Workflows
 
-Five, with their triggers and their permissions. Every workflow declares
+Six, with their triggers and their permissions. Every workflow declares
 `permissions: contents: read` at top level and elevates per job only where
 required.
 
 | Workflow | Trigger | Jobs | Permissions | Budget |
 | --- | --- | --- | --- | --- |
-| `ci` | PR, push to `main` | `check` (fmt + clippy `-D warnings`, Linux), `test` (Linux + Windows), `exploits` (Linux) | `contents: read` | < 5 min wall, warm |
+| `ci` | PR, push to `main` | `check` (fmt + clippy `-D warnings` + test, matrixed over Linux and Windows), and from M7 `exploits` (Linux) | `contents: read` | < 5 min wall, warm |
+| `pr-hygiene` | PR, push to any branch but `main` | `branch-name`, `pr-title` (Conventional Commits) | `contents: read` | seconds |
 | `determinism` | PR and push touching `sim/`, `replay/`, or the fixtures | The 1000-tick fixture on Linux x86-64, Windows x86-64, macOS aarch64; digests compared across jobs | `contents: read` | < 4 min |
 | `supply-chain` | PR (licenses, bans, sources) and weekly cron (advisories) | `cargo-deny` | `contents: read` | < 1 min |
 | `coverage` | Weekly cron, manual dispatch | `cargo llvm-cov`, uploaded as an artifact | `contents: read` | untimed |
 | `release` | Tag `v*` | Build matrix, container, SBOM, attestation, GitHub Release | `contents: write`, `packages: write`, `id-token: write`, `attestations: write` — this job only | < 20 min |
+
+`ci` runs fmt, clippy and the tests in one matrixed job rather than splitting a
+Linux-only `check` from a two-platform `test`, because M0's exit criterion asks
+for all three green on both platforms. On an already-compiled workspace the two
+extra Windows steps cost seconds, and a Windows-only clippy finding — from a
+`cfg`-gated path, most likely — is exactly the kind of thing a Linux-only lint
+job would let through.
 
 Advisories run on a schedule rather than on PRs deliberately: a CVE published in
 a transitive dependency has nothing to do with the PR in front of you, and a red
@@ -71,7 +79,12 @@ supply-chain surface and a source of confusing history, in exchange for
 formatting Markdown. If Markdown linting is wanted, run a linter in check mode
 and fix the file yourself.
 
-Keep the branch-name workflow. Convert the devcontainer to a Rust base image —
+Keep the branch-name check. It now lives in `pr-hygiene` alongside the PR-title
+check, since both are the same kind of thing — a few lines of `bash` reading the
+event payload, no checkout, no third-party action — and two workflows that each
+run for three seconds are one workflow more than the project needs to remember.
+
+Convert the devcontainer to a Rust base image —
 but the devcontainer installs the toolchain, it never defines it.
 `rust-toolchain.toml` is the single source of truth, so that a build inside the
 container, on the host, and in CI are the same build.

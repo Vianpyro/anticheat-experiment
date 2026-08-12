@@ -127,6 +127,49 @@ pub struct PlayerView {
 implements no serialization anywhere in the workspace, "the server accidentally
 sends the whole world" is a compile error rather than a bug class.
 
+### The `State` escape hatch, decided in advance
+
+A non-serializable `State` has a predictable cost, and the two places it will be
+felt are known now: mid-match reconnection wants to hand a client a world, and
+tests want to construct one. Both are answered here so that neither gets
+improvised under pressure later, because the rule that has to survive is
+absolute: **no production code path can serialize `State`.**
+
+**Reconnection does not transport state.** A reconnecting client is
+resynchronised exactly like a joining one: the server sends the current
+`PlayerView`, already culled, and the client rebuilds its local prediction from
+it and from subsequent ticks. There is no snapshot message and no fast-forward
+of the input log on the client. Shipping a state snapshot to a reconnecting
+player would be a maphack with a handshake in front of it, and the fact that
+`State` cannot be encoded is what makes that unavailable rather than merely
+discouraged.
+
+**Fixtures are seeds and input logs, not states.** A fixture is
+`(seed, Vec<Input>)` and an expected `Digest`. That is what the determinism
+suite compares, what the replay container stores, and what resimulation
+consumes. Any crate's tests can therefore build any reachable state, in normal
+builds and without a feature flag, through the ordinary public API — `new_state`
+then `step` — because a state reached by simulation is the only kind of state
+the game has. No serialization is involved at any point.
+
+**One narrow door beyond that: `#[cfg(test)]` constructors inside `sim`.** A
+unit test that needs a configuration which is awkward to reach by simulation — a
+projectile mid-flight, a tower at one hit point — builds it directly through a
+constructor gated on `#[cfg(test)]`. That gate is not a feature: it exists only
+while compiling `sim`'s own test target and is unreachable from any other crate,
+including `sim`'s integration tests. It constructs a `State`; it still cannot
+encode one.
+
+**What stays closed: a `Serialize` impl behind a Cargo feature.** `RISKS.md` R5
+floats a `dev-snapshot` feature as a hedge, and this document closes it until a
+concrete need demonstrates itself. The reason is mechanical: Cargo features are
+additive and unified, so "a feature the server binary cannot enable" is a claim
+Cargo does not enforce — one crate listing `sim` with that feature in
+`[dependencies]` turns it on everywhere. If replay seeking ever genuinely needs
+snapshots, reopening R5 is a deliberate decision that must arrive with a CI check
+on the resolved feature graph of the server binary, not a convenience added in a
+pull request that was about something else.
+
 ### `protocol`
 
 ```rust
@@ -150,9 +193,28 @@ pub enum ServerMessage {
 trusted, and the divergence between it and the server's arrival timestamp is
 itself the signal for exploit class 4.
 
-Encoded `ServerMessage::View` is padded to fixed size buckets: without padding,
-message length leaks the number of nearby entities, which is a maphack through
-the side door (see `MILESTONES.md` M7).
+**The traffic-shape invariant: one message per player per tick, at a constant
+cadence, of a constant encoded size, independent of content.** Both halves are
+load bearing, and padding alone is not the property:
+
+- Padding to fixed size buckets closes the *length* channel. Without it, message
+  length is close to a linear readout of the number of visible entities.
+- Constant cadence closes the *count and timing* channel, and that channel is
+  the one padding does nothing about. A server that sends a `View` only when
+  something changed, or that emits an extra message when an event fires, leaks
+  the number of visible entities through message counts and inter-arrival times
+  no matter how well each individual message is padded.
+
+So the server emits a `View` every tick for every connected player, whether or
+not anything happened, at the tick rate rather than at the rate the world
+produces news. Events do not get their own messages: they ride inside the tick
+message or they wait for the next one. "Nothing visible" and "six entities
+visible" must be indistinguishable to an observer who counts and times packets
+without reading them.
+
+The cost is bandwidth spent on nothing, which at 3v3 is not a cost. The exploit
+that must fail against this is scheduled in `MILESTONES.md` M7: recovering the
+number of nearby entities from message sizes *and* arrival times.
 
 ### `replay`
 
@@ -223,6 +285,13 @@ Each is a test or a lint, not a convention:
 6. `cargo tree -p client` shows no path to `anticheat`.
 7. Every detector in `anticheat` has an exploit in `cheat-client` that fails
    against it in CI.
+8. Every `View` message has the same encoded size, and the server emits exactly
+   one per connected player per tick. Checked by the M7 traffic-analysis
+   exploit, which must fail to recover the visible-entity count from a recorded
+   session's message sizes and arrival times.
+9. No `Serialize` impl for `State` exists behind any Cargo feature either — the
+   only sanctioned constructors are `#[cfg(test)]`-gated, and no reconnection
+   path transports state.
 
 ## Deliberate non-abstractions
 

@@ -1,0 +1,7 @@
+# The single source of truth for the toolchain: host, devcontainer and CI all
+# resolve it from here. Pinned to an exact version rather than `stable`, because
+# a compiler upgrade can perturb the determinism claim (docs/RISKS.md R1) and
+# must arrive as a reviewable commit.
+[toolchain]
+channel = "1.96.1"
+components = ["clippy", "rustfmt"]

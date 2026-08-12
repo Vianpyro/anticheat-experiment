@@ -10,10 +10,14 @@ CI is not a delivered detector.**
 
 ## Current state
 
-The repository is a generic project template: `README.md`, a devcontainer on a
-plain Debian base, a branch-name validation workflow, a super-linter workflow
-that auto-commits to PR branches, VS Code settings, Copilot commit-message
-conventions. No Rust, no Cargo, no license.
+**M0 is implemented.** The workspace exists with its seven crates, all empty;
+the toolchain is pinned; `ci` and `pr-hygiene` are the only workflows and
+neither holds write permissions; `LICENSE`, `SECURITY.md` and `CONTRIBUTING.md`
+exist. The template's super-linter, its `.dockerignore` and its branch-deleting
+VS Code task are gone.
+
+Nothing else exists yet: no simulation, no protocol, no server, no exploits.
+Next is M1.
 
 ---
 
@@ -103,9 +107,44 @@ Rendering, input capture, prediction and reconciliation, enough UI to play. This
 is the largest and least interesting milestone; it exists because behavioral
 detection needs human matches and human matches need a playable game.
 
+### The consent regime lands here, not at M6
+
+This milestone's own exit criterion is three real people generating input
+telemetry, which makes it the first collection of personal information. Under
+Law 25 that telemetry is personal information whether or not the account behind
+it is pseudonymous, and pseudonymisation does not lower the obligations
+(`RISKS.md` R3). Four things are therefore written down, agreed to in writing by
+each participant before the first recording, and stated in the consent text
+itself:
+
+- **Declared purpose.** Calibrating and evaluating this project's behavioral
+  cheat detectors, and publishing statistics derived from that work. Nothing
+  else: no identity verification, no transfer to a third party, no reuse by
+  another project, no training of anything that outlives this repository.
+  Publication of the *raw* corpus is a separate purpose with its own separate
+  opt-in, refusable without refusing the rest.
+- **Retention.** Raw telemetry, replays containing it, and the pseudonym mapping
+  are destroyed 24 months after recording, or on withdrawal, whichever comes
+  first. Aggregate statistics that identify no one are kept without a time
+  limit, and the consent text says so plainly rather than letting a participant
+  infer that everything disappears.
+- **Withdrawal of consent.** At any time, without justification and without
+  consequence, by a single message to a contact address printed in the consent
+  text. Acknowledged within 7 days, carried out within 30. No re-consent is
+  needed to withdraw and no reason is asked for.
+- **What withdrawal actually destroys.** A match is one interleaved input log
+  for six players; deleting one participant's inputs leaves a log that no longer
+  resimulates, so surgical removal is not on offer. Withdrawal therefore
+  destroys **every match that participant played in, in full**, together with
+  their pseudonym mapping — which also means it destroys other participants'
+  contributions to those matches. Aggregate statistics already published are not
+  retracted. Both consequences are stated before recording, because a
+  participant who learns them afterwards was not informed.
+
 **Exit:** three humans play a 3v3 match end to end on two operating systems; the
 match writes a replay; `replay verify` resimulates it to the server's final
-digest.
+digest. The consent text exists, states the four points above, and was signed by
+all three before the match rather than after.
 
 ## M5 — Replay integrity · 2 weeks
 
@@ -123,16 +162,19 @@ accepted. This is exploit class 2, and its exploits live in the cheat crate.
 This milestone gates every behavioral detector and it is bound by wall-clock
 availability of other people, not by your hours. **Start recruiting during M4.**
 
-Work: a consent record and its text, a pseudonymous player identity scheme, a
-documented telemetry schema (client-claimed timestamp *and* server arrival
-timestamp for every input — see `RISKS.md` on why raw input telemetry is
-personal data), a recording harness, and a held-out split fixed before any
-detector is written.
+Work: operating the consent regime written at M4 — collecting a consent record
+per participant and honouring withdrawal on the stated timeline — a pseudonymous
+player identity scheme, a documented telemetry schema (client-claimed timestamp
+*and* server arrival timestamp for every input — see `RISKS.md` R3 on why raw
+input telemetry is personal information), a recording harness, and a held-out
+split fixed before any detector is written.
 
 **Exit:** at least 40 recorded matches from at least 6 distinct people, each
-with a consent record; a documented schema; a frozen train/holdout split; and a
-published summary statistic set. Whether the raw corpus can be published at all
-is decided here, not later.
+with a consent record naming its retention date; a documented schema; a frozen
+train/holdout split; a written destruction procedure that has been executed once
+end to end on a discarded test recording; and a published summary statistic set.
+Whether the raw corpus can be published at all is decided here, not later, and
+only for the participants who opted into that purpose separately.
 
 ## M7 — Cheat client and exploit classes 1, 4, 5 · 3 weeks
 

@@ -1,18 +1,31 @@
 {
-    "name": "Template Development Container",
-    "image": "mcr.microsoft.com/devcontainers/base:bookworm",
+    // The image provides rustup and a build environment. It does not define the
+    // toolchain: rust-toolchain.toml does, so that a build in the container, on
+    // the host and in CI are the same build.
+    "name": "moba",
+    "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
+    // Pinned to the major only: these are conveniences inside the container,
+    // never build inputs. rust-toolchain.toml is what has to stay exact.
+    "features": {
+        "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
+        "ghcr.io/devcontainers/features/github-cli:1": {}
+    },
     "customizations": {
-        "settings": {
-            "terminal.integrated.shell.linux": "/bin/bash"
-        },
         "vscode": {
             "extensions": [
-                "ms-vscode.atom-keybindings",
-                "ms-vscode-remote.remote-containers",
-                "ms-azuretools.vscode-docker",
-                "myriad-dreamin.tinymist"
+                "rust-lang.rust-analyzer",
+                "tamasfe.even-better-toml",
+                "anthropic.claude-code"
             ]
         }
     },
+    // Keeps the `claude` and `gh` logins across rebuilds. Docker creates a new
+    // volume's mountpoint owned by root, so the chown is what makes them
+    // writable as `vscode` — without it both tools fail on first write.
+    "mounts": [
+        "source=moba-claude-${devcontainerId},target=/home/vscode/.claude,type=volume",
+        "source=moba-gh-${devcontainerId},target=/home/vscode/.config/gh,type=volume"
+    ],
+    "postCreateCommand": "sudo chown vscode: /home/vscode/.claude /home/vscode/.config/gh && rustup show active-toolchain",
     "remoteUser": "vscode"
 }
