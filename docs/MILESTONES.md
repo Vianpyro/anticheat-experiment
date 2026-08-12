@@ -10,10 +10,14 @@ CI is not a delivered detector.**
 
 ## Current state
 
-The repository is a generic project template: `README.md`, a devcontainer on a
-plain Debian base, a branch-name validation workflow, a super-linter workflow
-that auto-commits to PR branches, VS Code settings, Copilot commit-message
-conventions. No Rust, no Cargo, no license.
+**M0 is implemented.** The workspace exists with its seven crates, all empty;
+the toolchain is pinned; `ci` and `pr-hygiene` are the only workflows and
+neither holds write permissions; `LICENSE`, `SECURITY.md` and `CONTRIBUTING.md`
+exist. The template's super-linter, its `.dockerignore` and its branch-deleting
+VS Code task are gone.
+
+Nothing else exists yet: no simulation, no protocol, no server, no exploits.
+Next is M1.
 
 ---
 
