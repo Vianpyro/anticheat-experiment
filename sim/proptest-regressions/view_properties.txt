@@ -1,0 +1,15 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# The case below is the one this suite found on its first run, against the
+# projection as M2 shipped it: two skillshots from one seat, the first
+# expiring so that the second is allocated the arena slot below it, and a view
+# that then listed the newer projectile before the older one. The order a
+# player is told things in reported on the arena, and the arena remembers casts
+# that player never saw. The fix is in `sim/src/view.rs`; this line is what
+# makes the case permanent.
+cc a5a693c3aa9d453f07876e4d046b24996af242f9d078ef8f15ee63f8816f8211 # shrinks to recipe = Recipe { family: Brawl, seed: 0, script: [[Command { when: Now, seq: 0, player: PlayerId(0), action: Skillshot(FxVec2 { x: 0.00000, y: -0.06250 }) }], [], [], [Command { when: Now, seq: 0, player: PlayerId(0), action: Move(FxVec2 { x: 19.37913, y: 0.00000 }) }], [], [Command { when: Now, seq: 0, player: PlayerId(0), action: Skillshot(FxVec2 { x: 0.00000, y: -0.06250 }) }], [], [], [Command { when: Now, seq: 0, player: PlayerId(0), action: Skillshot(FxVec2 { x: 0.00000, y: 0.06250 }) }]], settle: 0 }
