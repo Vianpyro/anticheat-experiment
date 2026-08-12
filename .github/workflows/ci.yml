@@ -62,3 +62,29 @@ jobs:
             exit 1
           fi
           echo "ok: no serialization derive in sim outside sim/src/view"
+
+      # docs/ARCHITECTURE.md invariant 1: `sim` depends on nothing. It is the
+      # verification kernel — the same `step` runs in the server, in replay
+      # verification, in the determinism suite and eventually in the RL
+      # environment — and any upward dependency lets those consumers drift
+      # apart. The document already asks `cargo tree` to enforce the two
+      # dependency rules for `cheat-client` and `client`; this is the one that
+      # matters most, and until now it was checked by reading an empty
+      # `[dependencies]` table rather than by running anything.
+      #
+      # `--edges normal` excludes dev-dependencies deliberately: `proptest` is
+      # a real and sanctioned dev-dependency of `sim` (its manifest says why),
+      # and it links into the test harness, never into the crate. So the
+      # assertion is that the normal dependency graph of `sim` is exactly one
+      # node: itself.
+      - name: sim depends on nothing
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          tree=$(cargo tree -p sim --edges normal --locked)
+          echo "$tree"
+          if [[ "$(printf '%s\n' "$tree" | grep -c .)" -ne 1 ]]; then
+            echo "::error::sim gained a dependency (docs/ARCHITECTURE.md, docs/RISKS.md R9)"
+            exit 1
+          fi
+          echo "ok: sim's normal dependency graph is itself alone"
