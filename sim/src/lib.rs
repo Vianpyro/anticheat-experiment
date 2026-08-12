@@ -66,6 +66,7 @@
 )]
 
 mod canonical;
+mod event;
 mod fx;
 mod input;
 mod rng;
@@ -75,6 +76,16 @@ mod state;
 mod step;
 mod vec2;
 
+/// The visibility projection, and the only types in this crate that are meant
+/// to leave the server.
+///
+/// A module of its own rather than a handful of re-exports at the root, because
+/// the boundary is the point: every call site reads `sim::view::…`, and a grep
+/// for that path is a grep for everything that can reach a client
+/// (`docs/RISKS.md` R5).
+pub mod view;
+
+pub use crate::event::{Ability, Event, EventKind, Events, MAX_EVENTS};
 pub use crate::fx::{FRAC_BITS, Fx};
 pub use crate::input::{Action, Input};
 pub use crate::rng::Rng;
@@ -83,8 +94,8 @@ pub use crate::sha256::Digest;
 pub use crate::state::{
     Champion, Cooldowns, EntityId, EntityRef, Liveness, MAX_PROJECTILES, Order, Outcome,
     PLAYER_COUNT, PlayerId, Projectile, Projectiles, State, TEAM_SIZE, TOWER_COUNT, Team, Tick,
-    Tower, champion_entity_id, entity_team, new_state, new_state_with_rules, tower_entity_id,
-    tower_position, tower_team,
+    Tower, champion_entity_id, entity_id, entity_team, new_state, new_state_with_rules,
+    tower_entity_id, tower_position, tower_team,
 };
 pub use crate::step::{step, step_with_rules};
 pub use crate::vec2::FxVec2;

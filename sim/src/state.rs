@@ -15,6 +15,7 @@
 //! eventually want is an addition beside `step` rather than a redesign of the
 //! state.
 
+use crate::event::Events;
 use crate::fx::Fx;
 use crate::rng::Rng;
 use crate::rules::{RULES, Rules};
@@ -272,6 +273,10 @@ pub struct State {
     pub(crate) champions: [Champion; PLAYER_COUNT],
     pub(crate) towers: [Tower; TOWER_COUNT],
     pub(crate) projectiles: Projectiles,
+    /// What happened during the tick that produced this state, cleared at the
+    /// top of the next one. Under the digest deliberately: see
+    /// `crate::event`.
+    pub(crate) events: Events,
     pub(crate) outcome: Outcome,
 }
 
@@ -315,6 +320,7 @@ pub fn new_state_with_rules(seed: u64, rules: &Rules) -> State {
             cooldown: 0,
         }; TOWER_COUNT],
         projectiles: Projectiles::new(),
+        events: Events::new(),
         outcome: Outcome::InProgress,
     }
 }
@@ -393,6 +399,15 @@ pub const fn tower_entity_id(index: usize) -> EntityId {
     EntityId(TOWER_ID_BASE.saturating_add(index as u16))
 }
 
+/// The handle of a resolved entity.
+#[must_use]
+pub const fn entity_id(entity: EntityRef) -> EntityId {
+    match entity {
+        EntityRef::Champion(seat) => champion_entity_id(seat),
+        EntityRef::Tower(index) => tower_entity_id(index),
+    }
+}
+
 impl State {
     /// The tick this state describes. Advanced by exactly one per
     /// [`crate::step`].
@@ -423,6 +438,16 @@ impl State {
     #[must_use]
     pub const fn projectiles(&self) -> &Projectiles {
         &self.projectiles
+    }
+
+    /// What happened during the tick that produced this state.
+    ///
+    /// This is the full, uncensored record. Nothing outside `sim` may send it
+    /// to a client: [`crate::view::view_for`] is what decides which of these a
+    /// given player is allowed to learn about.
+    #[must_use]
+    pub const fn events(&self) -> &Events {
+        &self.events
     }
 
     /// The 32-byte fingerprint of the entire state.

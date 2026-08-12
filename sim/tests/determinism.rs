@@ -67,30 +67,30 @@ const CHECKPOINT_EVERY: u32 = 100;
 const EXPECTED_INPUT_LOG: &str = "0430e59cfbc35b63ee2289b63bcfa9b054a1f9cfc7f3c427a4860a67daabd54f";
 
 /// The digest of [`RULES`]. A balance change lands here first.
-const EXPECTED_RULES: &str = "f11e6a096d35b8ea7812d2a88c0f5aebd7fdff4c7c5860c439282742bba5b355";
+const EXPECTED_RULES: &str = "d05b4a56a94c63c52e497dbe772b22d8a3260443207c18a2e1a2f1536f68b297";
 
 /// `State::digest()` at tick 100, 200, … 1000.
 const EXPECTED_CHECKPOINTS: [&str; 10] = [
     // tick 100
-    "8b5c88313f8020da39d54d01437d6d09494761a2843afd3d94625217f35f7271",
+    "27da063e193d2e0f471b4e51bb1dcb9066e2c235a3b3fac41fe5ab39306e647b",
     // tick 200
-    "636df555a88ae2377859e956ec0ca4b9621f0ab8c3a7b043f667500aa0d3b52e",
+    "f8066b437649ab8530382351a3e62218c75837bec0c61d614ae467f4b13b2ca4",
     // tick 300
-    "dd8069a2ae22335b464773740019b2df6cf835c9c50fe91b249f5da2868ac4e1",
+    "f81210c00fbc8f829a4fd8d79c86a6c15de8c17ecac26ee72057be149a9e0b40",
     // tick 400
-    "f93a4bdf45fbc82ac33c540e7316d34ffd34f2db360a53545fe853679f9ad271",
+    "454a2ae7e38e5caccda33d83b337599a46f42f74f54782f54279c6e7b74ebf7d",
     // tick 500
-    "a4e1e116b886946c97bebfdbd41c72d3946c18d9a0e4bcfac86caac53339503c",
+    "66657b824c0c855637642c3934cc978e9b8c88588fd7f153b2515e1f20a47a0a",
     // tick 600
-    "e4267bf4ebfebc7c0df3ee130ce38715a1070e78b2beda4e52d336c5fdcc25aa",
+    "384d39f0e0ee09299e2d3231efd907bcd965b758342ff05b722b29b4621c70c8",
     // tick 700
-    "d48fab48522ee5d99389e094127e4a99db51a561f743c1f74fc65eba6ae97fe3",
+    "17ff8e53968c7dfad9e9abcd65788bd1f3c96ed9a5e79b0cd291e66f2cf0bbea",
     // tick 800
-    "42161d39e8a627d62a5a5d98b6d3c2e39907e36b9d6a4763b1a25548eab90be1",
+    "0ac9be58a75ec7a39330e07e4e063b8e7691a3179d603a9288e3e790be7e4d3f",
     // tick 900
-    "3f37e3937eea3373c6585d9a690fd887391055da05dc74bc91772d3ebdcd5e74",
+    "371b4faa8cccb4abdc6a8172aaf09458c8941a7bc37d6287d99bc6ff69a22c0c",
     // tick 1000
-    "ec9a6cde14dc077c5bf04fb698027ae5a0defbc7eb1272ebe30edec93778441a",
+    "1205ef8639bf5a816adb1cc51595728339738363932dd24bf12b0c126bd5c547",
 ];
 
 /// A scripted match: six players issuing plausible commands, plus the
@@ -219,10 +219,10 @@ const DUEL_RULES: Rules = Rules {
 /// which is the point: it is what stops a digest recorded under the fixture's
 /// constants from ever being read as one recorded under the game's.
 const EXPECTED_DUEL_RULES: &str =
-    "aab7e738b4762ccb5cad44bb3fbaea9c8f863e2945be3a40d3e1b6bea1457f2d";
+    "46c4c57095fbded8fdf70c9c32871d0fe0ff33bbadebc63f3c1eac6e7a548274";
 
 /// `State::digest()` at the end of the duel fixture.
-const EXPECTED_DUEL: &str = "bd7f85a21517f402aceb6b96e5a1582b3a759624ed3e8b5136c3e6434052777f";
+const EXPECTED_DUEL: &str = "f2a84bfe2b4111c24f8ef0a2c5f8bc489081c5d3b1c06990cac2feb3547d162b";
 
 fn duel_script() -> Vec<Vec<Input>> {
     let mut seq = [0u32; PLAYER_COUNT];
