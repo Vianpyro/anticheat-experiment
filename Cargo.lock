@@ -159,6 +159,10 @@ dependencies = [
 [[package]]
 name = "protocol"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "sim",
+]
 
 [[package]]
 name = "quick-error"
