@@ -684,8 +684,12 @@ which is the mechanism visible in the two rows at the bottom of the table.
 
 **So the residual is quantified and without consequence for the detectors in
 scope, and R14's timestamp half stops being a live risk.** What replaces it is a
-test that runs on every pull request and prints the distribution, so a regression
-is a number in a log rather than a discovery at M8.
+test that runs on every pull request. What that test enforces is the property
+below — an event waits at most one pass of the capture loop — and the
+distribution is printed *when it fails*, or under `--nocapture` for whoever wants
+the number. So a regression is caught in CI and read on a developer's terminal,
+which is the right division: a threshold on a runner's timing would be a check
+that goes red for reasons that have nothing to do with this repository.
 
 **Three things this does not establish**, because a table is exactly where a
 reader stops asking:
