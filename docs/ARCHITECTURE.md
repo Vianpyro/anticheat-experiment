@@ -26,7 +26,7 @@ client   server --+---------+         |
 | --- | --- | --- | --- |
 | `sim` | The rules of the game. `State`, `Input`, `step`, `view_for`, fixed-point math, seeded RNG | Nothing in the workspace. Externally: a fixed-point crate; `serde` only for view types | Anything with a clock, an allocator strategy, I/O, async, threads, or floats |
 | `protocol` | The wire. Message types, framing, versioning, sequence numbers | `sim` (for `PlayerView`, `Input`, ids) | `server`, `client`, `anticheat`, any runtime |
-| `replay` | The replay container: format, signing, verification, resimulation. From M4, the corpus on disk and the commands that withdraw a participant from it and audit the result | `sim`; externally, an audited signature crate and a source of entropy for `keygen` | `server`, `client`, `anticheat`, any runtime |
+| `replay` | The replay container: format, signing, verification, resimulation. From M4, the corpus on disk and the commands that withdraw a participant from it and audit the result. From M6, the corpus's schema — the session record, the consent version, and the frozen train/holdout split | `sim`; externally, an audited signature crate and a source of entropy for `keygen` | `server`, `client`, `anticheat`, any runtime |
 | `server` | Authority. Tick loop, the clock, sockets, sessions, fog application, telemetry capture, replay recording | `sim`, `protocol`, `replay`, `anticheat`, a runtime | `client`, `cheat-client` |
 | `client` | Presentation. Rendering, **input capture**, prediction, reconciliation | `sim`, `protocol`, a runtime, a window library and a framebuffer; plus `server` and `replay` as dev-dependencies for the M3 and M4 exit harnesses | `server`, **`anticheat`**, `replay`'s signing keys |
 | `anticheat` | Detection. Feature extraction from telemetry, detectors, thresholds, evidence bundles | `sim`, `replay` | `server` (it is called by the server, not the reverse), `client`, any network or filesystem I/O |
@@ -1008,10 +1008,36 @@ one is precisely the artefact somebody would later hand you as evidence.
 The `replay` binary is the tool: `replay verify <replay> <keys>` is M3's separate
 process and M4's exit criterion, `replay keygen` and `replay inspect` are the
 operator's, and `replay withdraw` / `replay audit` are the consent regime's
-teeth. They share a binary because `docs/ENGINEERING.md` prefers five automations
-understood to fifteen endured and this document refuses a crate for a handful of
-commands; they operate on directories of the thing this crate defines.
-`docs/CONSENT.md` is what they implement.
+teeth. M6 adds the three that operate a recording session — `replay enrol`,
+`replay store` and `replay census`. They share a binary because
+`docs/ENGINEERING.md` prefers five automations understood to fifteen endured and
+this document refuses a crate for a handful of commands; they operate on
+directories of the thing this crate defines. `docs/CONSENT.md` and
+`docs/SCHEMA.md` are what they implement.
+
+**`census` prints and stores nothing**, and that is the same decision as the
+absent index. A stored summary is derived from the corpus, can disagree with it,
+and outlives a withdrawal that changed what it summarised. Recomputing it costs
+milliseconds on a corpus of dozens and is correct by construction. What it prints
+is a page rather than a line because `docs/RISKS.md` R8 requires the two
+confidence bounds to travel together, and it prints the sentence refusing "0%
+false positives" beside them on every run.
+
+**The session record is a second file in a match directory and it is not a second
+format.** `replay::session` carries it: one entry per seat, no pseudonym, holding
+what a *replay* structurally cannot — the hardware a participant declared, the
+sensitivity the build applied, the platform, and whether the client kept up with
+the tick (`docs/RISKS.md` R16). It cannot go in the manifest, which M5 froze and
+whose every field is something the authority knows; the server has no idea what
+mouse anybody is using, and an operator-filled field inside the server's signature
+would be the server attesting to something it did not observe.
+
+It crosses from `client` as **text rather than as a type**, because
+`docs/ARCHITECTURE.md` forbids `client` a normal dependency on `replay` and that
+rule stands: `replay` owns the signing key. The coupling that creates is closed in
+`client/tests/session_part.rs`, where a test binary links both — a dev-dependency,
+which the enforced `--edges normal` claim excludes — and requires the writer and
+the reader to agree field for field.
 
 **`verify` takes a key registry and there is no default.** A verification with no
 registry establishes nothing — a signature is internally consistent by
@@ -1358,6 +1384,45 @@ Each is a test or a lint, not a convention:
    Linux and committed, and the `determinism` workflow requires byte equality
    with them on all three targets. Encoding the seed little-endian turns it red
    with both hex strings printed.
+
+15. **A match the consent regime cannot account for does not enter the corpus,
+   and the refusal is at the door.** `Corpus::store` refuses eight ways —
+   `replay/src/corpus.rs` carries the table — and the two that are new in kind
+   rather than in detail are worth naming here. A participant whose consent record
+   is from another version of `docs/CONSENT.md`, **or has no version at all**,
+   is refused identically: a record written before the field existed does not
+   decode, so "absent" and "stale" cannot be told apart by a corpus assembled
+   under an older regime. And a seat whose client recorded **zero device events**
+   is refused, which is the one mechanical thing a file can say about synthetic
+   play — narrow by construction, since a bot moving a real mouse records as many
+   samples as a person, and `docs/SCOPE.md`'s ceiling is where that stops.
+
+   Nothing is written until every check has passed. A corpus that half-stored a
+   match it then refused would be holding telemetry it had already decided it may
+   not hold.
+
+16. **The corpus holds no derived artefact, and the two things M6 could have made
+   one of are a file that is primary and a rule that is a function.** The session
+   record beside each replay carries what a replay structurally cannot — the
+   hardware, the sensitivity, the platform, and whether the client kept the tick —
+   and it is primary rather than derived, indexed by **seat and never by
+   pseudonym**, and filed inside the directory a withdrawal removes whole. The
+   train/holdout split is `replay::split::split_of(match_id)`, a pure function of
+   a frozen salt and the identifier, stored nowhere.
+
+   Both decisions are the same decision, and `docs/CONSENT.md` records why: the
+   way a destruction promise fails is a derived artefact outliving what it
+   described. A split *file* has a second failure of its own — a withdrawal would
+   leave a line about somebody's participation after they asked for it to be
+   destroyed, and a date-ordered rule would reshuffle a holdout a threshold had
+   already been chosen against.
+
+   What keeps a future one out is the audit's crudeness, extended: a match
+   directory whose replay **or** whose session record fails to read is reported
+   unconditionally, for every pseudonym, because a seat record with no manifest in
+   front of it describes somebody's session and nobody can say whose.
+   `replay/tests/withdrawal.rs` breaks the withdrawal on both files and plants an
+   index besides.
 
 ## Deliberate non-abstractions
 

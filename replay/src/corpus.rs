@@ -66,11 +66,46 @@
 //! pseudonym is written and one thing to delete, and [`Corpus::audit`] — which
 //! reads every byte of every file under the root rather than the places a
 //! pseudonym is supposed to be — is what refuses a future one added quietly.
+//!
+//! # M6 adds one file to a match directory, and it is not an index either
+//!
+//! [`crate::session::SessionRecord`] is filed beside the replay, and it holds the
+//! facts a *replay* structurally cannot: what hardware each seat was played on,
+//! what the client's sensitivity was, which platform, and whether the client kept
+//! up with the tick while it recorded (`docs/RISKS.md` R16). It is primary rather
+//! than derived — nothing else in the corpus holds any of it — it is indexed by
+//! **seat and never by pseudonym**, and it lives inside the match directory, so
+//! the single `remove_dir_all` a withdrawal already performs destroys it.
+//!
+//! That last point is what a search for a pseudonym cannot check, so the audit's
+//! unaccountable-match case grew to cover it: a match directory whose replay
+//! **or** whose session record does not decode is reported for every pseudonym,
+//! because a seat record with no manifest in front of it describes somebody's
+//! session and nobody can say whose.
+//!
+//! # What [`Corpus::store`] refuses, and why each refusal is here
+//!
+//! Every one of these is cheaper to enforce at the door than to discover in a
+//! distribution, and every one of them is a thing `docs/SCHEMA.md` states as a
+//! rule about the corpus:
+//!
+//! | Refused | Because |
+//! | --- | --- |
+//! | a participant with no consent record | a match nobody consented to is a match this project may not hold |
+//! | a consent record from another version of the consent document | what they signed is not what this session was recorded under |
+//! | a session record naming another match | a record filed beside the wrong replay describes the wrong hardware |
+//! | a session record under another consent version | the operator ran a session against a document that is no longer current |
+//! | a seat the manifest fills and the session leaves empty, or the reverse | the two files disagree about who was playing |
+//! | one pseudonym in two seats | one person filling several seats is not nine people, and `docs/SCHEMA.md` excludes it |
+//! | a seat that recorded no device event | a seat with no device behind it is a script, and the corpus is a human corpus |
+//! | a seat declaring pointer acceleration on | no covariate recorded here recovers the operating system's curve |
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::consent::ConsentVersion;
+use crate::session::SessionRecord;
 use crate::{Replay, keys::VerifyingKey};
 
 /// Where the consent records live, one file per participant.
@@ -83,6 +118,8 @@ const MATCHES: &str = "matches";
 const WITHDRAWALS: &str = "withdrawals";
 /// The file a match's replay is stored as.
 const REPLAY_FILE: &str = "match.replay";
+/// The file a match's session record is stored as.
+const SESSION_FILE: &str = "match.session";
 
 /// One participant's consent, as recorded.
 ///
@@ -105,6 +142,19 @@ pub struct ConsentRecord {
     /// be published. Refusable without refusing the rest, which is what "consent
     /// is per purpose" means.
     pub publication: bool,
+    /// **Which version of `docs/CONSENT.md` this participant signed.**
+    ///
+    /// The field that turns a signature on paper into something a program can
+    /// refuse. A consent record from another version of the document is a record
+    /// of somebody agreeing to a text that is no longer the one being operated,
+    /// and `Corpus::store` treats it as no consent at all rather than as a
+    /// warning — see [`crate::consent`].
+    ///
+    /// It is not optional, and a record written before this field existed does
+    /// not decode. That is deliberate: "absent" and "stale" have to fail the same
+    /// way, or a corpus assembled under an older regime is readmitted by the
+    /// silence of its own files.
+    pub consent_version: ConsentVersion,
 }
 
 impl ConsentRecord {
@@ -121,10 +171,12 @@ impl ConsentRecord {
             consented_on,
             retention_until,
             publication,
+            consent_version,
         } = self;
         format!(
             "pseudonym: {pseudonym}\nconsented_on: {consented_on}\nretention_until: \
-             {retention_until}\npublication: {publication}\n"
+             {retention_until}\npublication: {publication}\nconsent_version: \
+             {consent_version}\n"
         )
     }
 
@@ -141,6 +193,7 @@ impl ConsentRecord {
             consented_on: field("consented_on")?,
             retention_until: field("retention_until")?,
             publication: field("publication")? == "true",
+            consent_version: ConsentVersion::parse(&field("consent_version")?)?,
         })
     }
 }
@@ -208,7 +261,7 @@ impl Corpus {
         )
     }
 
-    /// Stores a sealed match.
+    /// Stores a sealed match and the record of the session it was recorded in.
     ///
     /// The participants are **read out of the replay's manifest** rather than
     /// passed in, which is the M5 change and the whole of why this corpus has no
@@ -219,26 +272,157 @@ impl Corpus {
     /// the signature — so a replay filed under somebody else's identifier is a
     /// mismatch this can see, and refuses.
     ///
+    /// The session record is the M6 addition and this module's header carries the
+    /// table of what it makes refusable. Nothing is written until every check has
+    /// passed, because a corpus that half-stores a match it then refuses is a
+    /// corpus holding telemetry it has already decided it may not hold.
+    ///
     /// # Errors
     ///
-    /// Anything the filesystem refuses; [`io::ErrorKind::PermissionDenied`] for
-    /// a participant with no consent record — a match nobody consented to is a
-    /// match this project may not hold, and refusing it here is cheaper than
-    /// discovering it at M6 — and [`io::ErrorKind::InvalidInput`] for a replay
-    /// whose manifest names a different match.
-    pub fn store(&self, replay: &Replay) -> io::Result<()> {
-        let match_id = replay.manifest.match_id.to_string();
-        for pseudonym in replay.manifest.participants() {
-            if !self.consent_path(pseudonym.as_str()).exists() {
-                return Err(io::Error::new(
+    /// Anything the filesystem refuses; [`io::ErrorKind::PermissionDenied`] when
+    /// the consent regime cannot account for the match — no consent record, or
+    /// one from another version of the consent document — and
+    /// [`io::ErrorKind::InvalidInput`] when the two files disagree, when one
+    /// person occupies two seats, when a seat recorded no device event, or when a
+    /// participant declared pointer acceleration left on.
+    pub fn store(&self, replay: &Replay, session: &SessionRecord) -> io::Result<()> {
+        let manifest = &replay.manifest;
+        let refuse = |kind: io::ErrorKind, message: String| -> io::Result<()> {
+            Err(io::Error::new(kind, message))
+        };
+
+        // 1. The consent regime, per participant. `decode` is what makes an
+        //    absent version indistinguishable from a stale one: a record written
+        //    under an older format simply is not a consent record.
+        for pseudonym in manifest.participants() {
+            let path = self.consent_path(pseudonym.as_str());
+            let Some(record) = fs::read_to_string(&path)
+                .ok()
+                .as_deref()
+                .and_then(ConsentRecord::decode)
+            else {
+                return refuse(
                     io::ErrorKind::PermissionDenied,
-                    format!("{pseudonym} has no consent record in this corpus"),
-                ));
+                    format!(
+                        "{pseudonym} has no readable consent record in this corpus \
+                         (docs/CONSENT.md)"
+                    ),
+                );
+            };
+            if !record.consent_version.is_current() {
+                return refuse(
+                    io::ErrorKind::PermissionDenied,
+                    format!(
+                        "{pseudonym} consented to consent document {} and this build \
+                         records against {}: the text they signed is not the text this \
+                         session was recorded under (docs/RISKS.md R3)",
+                        record.consent_version,
+                        ConsentVersion::current()
+                    ),
+                );
             }
         }
-        let directory = self.root.join(MATCHES).join(&match_id);
+
+        // 2. One person, one seat. Nine seats filled by four people is four
+        //    people's telemetry wearing nine labels, and every count this corpus
+        //    reports would be wrong in the direction that flatters it.
+        let mut seen: Vec<&str> = Vec::new();
+        for pseudonym in manifest.participants() {
+            if seen.contains(&pseudonym.as_str()) {
+                return refuse(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "{pseudonym} occupies more than one seat in this match, which \
+                         is one person filling several seats rather than several \
+                         people (docs/SCHEMA.md)"
+                    ),
+                );
+            }
+            seen.push(pseudonym.as_str());
+        }
+
+        // 3. The session record describes this match, under this document.
+        if session.match_id != manifest.match_id {
+            return refuse(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "the session record names match {} and the replay names {}",
+                    session.match_id, manifest.match_id
+                ),
+            );
+        }
+        if !session.consent_version.is_current() {
+            return refuse(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "the session was operated under consent document {} and this build \
+                     records against {}",
+                    session.consent_version,
+                    ConsentVersion::current()
+                ),
+            );
+        }
+
+        // 4. The two files agree, seat by seat, about who was playing.
+        for (index, slot) in manifest.participants.iter().enumerate() {
+            let named = slot.is_some();
+            let recorded = session.occupied().contains(&index);
+            if named != recorded {
+                return refuse(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "seat {index} is {} in the replay and {} in the session record",
+                        if named { "occupied" } else { "empty" },
+                        if recorded { "occupied" } else { "empty" }
+                    ),
+                );
+            }
+        }
+
+        // 5. Nothing synthetic, and nothing accelerated.
+        let silent = session.silent_seats();
+        if !silent.is_empty() {
+            return refuse(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "seat(s) {silent:?} recorded no device event at all, so nothing \
+                     with a mouse was sitting there. A human corpus contaminated with \
+                     synthetic play is not a human corpus (docs/SCHEMA.md)"
+                ),
+            );
+        }
+        let accelerated = session.accelerated_seats();
+        if !accelerated.is_empty() {
+            return refuse(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "seat(s) {accelerated:?} declare the operating system's pointer \
+                     acceleration left on, and no covariate in this schema recovers \
+                     the curve (docs/SCHEMA.md)"
+                ),
+            );
+        }
+
+        let directory = self.root.join(MATCHES).join(manifest.match_id.to_string());
         fs::create_dir_all(&directory)?;
-        fs::write(directory.join(REPLAY_FILE), replay.encode())
+        fs::write(directory.join(REPLAY_FILE), replay.encode())?;
+        fs::write(directory.join(SESSION_FILE), session.encode())
+    }
+
+    /// The session record a match directory holds.
+    ///
+    /// # Errors
+    ///
+    /// Anything the filesystem refuses, and [`io::ErrorKind::InvalidData`] for a
+    /// file that is not a session record.
+    pub fn session_of(&self, match_id: &str) -> io::Result<SessionRecord> {
+        let text = fs::read_to_string(self.root.join(MATCHES).join(match_id).join(SESSION_FILE))?;
+        SessionRecord::decode(&text).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{match_id}: the session record does not decode"),
+            )
+        })
     }
 
     /// The replay a match directory holds.
@@ -385,6 +569,14 @@ impl Corpus {
     /// this corpus in a state I can defend" has to have one answer rather than
     /// nine.
     ///
+    /// **M6 widened it back**, because the session record it adds names no
+    /// pseudonym either — deliberately, so that there is one naming of a person
+    /// and it is the signed one. A record whose replay is gone is a description of
+    /// somebody's hardware and somebody's session with nothing left to say whose,
+    /// and a search for a name structurally cannot reach it. So a match directory
+    /// counts as unaccountable when the replay **or** the session record fails to
+    /// read, and either way the directory is reported.
+    ///
     /// # Errors
     ///
     /// Anything the filesystem refuses. A missing root is an empty corpus, which
@@ -395,7 +587,9 @@ impl Corpus {
             return Ok(traces);
         }
         for match_id in self.matches()? {
-            if self.replay_of(&match_id).is_err() {
+            let accountable =
+                self.replay_of(&match_id).is_ok() && self.session_of(&match_id).is_ok();
+            if !accountable {
                 traces.push(self.root.join(MATCHES).join(match_id));
             }
         }

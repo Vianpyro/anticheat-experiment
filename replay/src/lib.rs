@@ -63,15 +63,30 @@
 //! in a crate of its own because `docs/ARCHITECTURE.md` refuses an `xtask` crate
 //! and a corpus is a directory of the thing this crate defines; the alternative
 //! is an eighth crate whose whole content is `std::fs`.
+//!
+//! # And what M6 adds to it, which is a schema rather than a format
+//!
+//! The replay format is frozen and this milestone does not touch it. What it adds
+//! is the three things a corpus of *people* needs and a corpus of matches does
+//! not: [`session`], the per-seat record of what each match was recorded on —
+//! hardware, sensitivity, platform, and whether the client kept up with the tick;
+//! [`consent`], which turns "they signed the document" into a version a program
+//! can refuse; and [`split`], the train/holdout assignment, frozen before the
+//! first detector and computed rather than stored. `docs/SCHEMA.md` is the
+//! document; these modules are what makes each of its rules a refusal.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs, missing_debug_implementations, unused_variables)]
 
+pub mod consent;
 pub mod container;
 pub mod corpus;
 pub mod keys;
 pub mod manifest;
+pub mod session;
+pub mod split;
 
+pub use crate::consent::ConsentVersion;
 pub use crate::container::{
     FORMAT, ReadError, Replay, Verified, VerifyError, resimulate, seal, signed_bytes, verify,
 };
@@ -79,6 +94,8 @@ pub use crate::keys::{
     KeyEntry, KeyRegistry, KeyStatus, RegistryError, Signature, SigningKey, VerifyingKey,
 };
 pub use crate::manifest::{Build, Manifest, MatchId, Pseudonym, SessionFacts, SimCommit};
+pub use crate::session::SessionRecord;
+pub use crate::split::{Split, split_of};
 
 use sim::{Action, Digest, EntityId, Fx, FxVec2, Input, Outcome, Seat, Tick};
 

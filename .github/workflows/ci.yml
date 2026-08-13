@@ -126,7 +126,8 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          found=$(git ls-files -- '*.replay' '*.consent' '*.identity' '*.withdrawn' 'corpus/**' || true)
+          found=$(git ls-files -- '*.replay' '*.consent' '*.identity' '*.withdrawn' \
+            '*.session' '*.session-part' 'corpus/**' || true)
           if [[ -n "$found" ]]; then
             echo "::error::a recording or a consent record is tracked in git (docs/RISKS.md R3)"
             echo "$found"
@@ -179,3 +180,70 @@ jobs:
             exit 1
           fi
           echo "ok: client links neither anticheat nor server"
+
+  # docs/CONSENT.md declares its own version and `replay::consent::CURRENT`
+  # repeats it; a unit test fails when the two disagree. What that test cannot
+  # see is the edit that changes the document and leaves *both* alone, which is
+  # the case that matters: a consent text that gained a field has stopped being
+  # the text somebody signed, and every consent record in the corpus would still
+  # claim to be current.
+  #
+  # This is `determinism.yml`'s `sim-version` job one level up and for the same
+  # reason (docs/RISKS.md R13): a number bumped by convention is a number
+  # forgotten on the Tuesday it matters. A spurious bump costs a line and a
+  # conversation; a missed one costs a corpus nobody can state the basis for. The
+  # check is set to demand the cheap mistake.
+  #
+  # A job of its own rather than a step in `check`, because it is the one thing
+  # here that needs the whole history and `check` runs twice.
+  consent-version:
+    name: consent version
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # The check is a comparison against the base of the pull request, and
+          # a shallow clone does not contain it.
+          fetch-depth: 0
+
+      - name: Require a consent-version bump for a change to the consent text
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$(git diff --name-only "$BASE"...HEAD -- docs/CONSENT.md)" ]]; then
+            echo "ok: this pull request does not touch docs/CONSENT.md"
+            exit 0
+          fi
+
+          version_of() {
+            git show "$1:docs/CONSENT.md" 2>/dev/null \
+              | sed -n 's/^consent-version: \([0-9][0-9-]*\)$/\1/p' | head -1
+          }
+
+          head_version=$(version_of HEAD)
+          base_version=$(version_of "$BASE")
+
+          if [[ -z "$head_version" ]]; then
+            echo "::error file=docs/CONSENT.md::docs/CONSENT.md must declare a consent-version line"
+            exit 1
+          fi
+          if [[ -z "$base_version" ]]; then
+            echo "ok: the consent text gained a version ($head_version)"
+            exit 0
+          fi
+          # Dates, so a lexical comparison is a chronological one. Strictly
+          # later, not merely different: a version that moved backwards would
+          # readmit records signed against a text nobody is operating.
+          if [[ "$head_version" > "$base_version" ]]; then
+            echo "ok: consent document $base_version -> $head_version"
+            exit 0
+          fi
+          echo "::error file=docs/CONSENT.md::this pull request changes docs/CONSENT.md but leaves its version at $base_version."
+          echo "Raise the consent-version line and replay::consent::CURRENT together. Every consent record"
+          echo "carries the version its participant signed, so a text that changed without the version means"
+          echo "every record in the corpus claims to have been signed against a document that no longer exists."
+          exit 1

@@ -37,6 +37,28 @@
 //! the renderer's jitter into every sample. It is still not a *device*
 //! timestamp; [`crate::input::CLOCK`] says so, per platform, in a type.
 //!
+//! # The loop measures itself against the tick it has to keep
+//!
+//! [`ApplicationHandler::new_events`] starts a stopwatch and
+//! [`ApplicationHandler::about_to_wait`] stops it, so a *pass* is one turn of
+//! the loop with the wait excluded. [`crate::health::Cadence`] counts the passes
+//! that took longer than one tick and the worst of them, and the client prints
+//! both on the way out — `docs/RISKS.md` R16, which is the observation that the
+//! only tick budget this project ever measured was measured on a fixture, and
+//! that a client which falls behind writes the delay into the corpus as though
+//! it were the hand.
+//!
+//! **This wiring is the one part of that mechanism no test covers, and it says so
+//! rather than passing for evidence.** `winit` cannot open a window without a
+//! display server and CI has none, so `Cadence` itself is tested directly
+//! (`crate::health`), the loop shape is measured against a real match and a real
+//! server in `client/tests/cadence.rs`, and the two callbacks below — which is
+//! where the measurement is *attached* to the playable client — are checked by
+//! nobody. What limits the damage is that the failure is loud rather than silent:
+//! an unpaired bracket records no pass at all, so the number the client prints on
+//! the way out is zero, and a session part with `passes: 0` is a session part an
+//! operator reads as broken.
+//!
 //! # The pointer is hidden and not grabbed, and that was measured
 //!
 //! Cursor visibility is state on a device the process does not own; it is
@@ -58,6 +80,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::draw::{Mark, Viewport, compose, rasterize};
+use crate::health::{Cadence, CadenceReport, Recorded, SessionPart};
 use crate::input::{Control, TraceStats};
 use crate::play::{Aiming, Play};
 use crate::predict::Prediction;
@@ -176,6 +199,10 @@ struct Session {
     seat: Seat,
     inbox: Receiver<[u8; SERVER_FRAME_BYTES]>,
     outbox: tokio::sync::mpsc::Sender<ClientFrame>,
+    /// The loop, measured against one tick. See this module's header.
+    cadence: Cadence,
+    /// When the current pass began, or `None` between passes.
+    pass_began: Option<Instant>,
     /// Why the loop stopped. `Over` is not an error: the server closing the
     /// connection is what the end of a match looks like from here, and it has
     /// its own variant rather than a string somebody has to compare, because a
@@ -272,6 +299,17 @@ impl Session {
 }
 
 impl ApplicationHandler<Wake> for Session {
+    /// The platform is handing control back with work to do: a pass begins.
+    ///
+    /// Reading the clock here rather than in each callback is deliberate. What
+    /// the budget is about is the whole turn of the loop — draining the device
+    /// queue, folding in every view that arrived, answering each with an
+    /// intention, and drawing — because a client that spends 40 ms doing all of
+    /// that answers the next frame late no matter which of the four was slow.
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, _cause: winit::event::StartCause) {
+        self.pass_began = Some(Instant::now());
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.screen.is_some() {
             return;
@@ -366,6 +404,15 @@ impl ApplicationHandler<Wake> for Session {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // The pass ends here, before the loop blocks. Taking the stopwatch
+        // rather than reading it means a turn is measured once even if the
+        // platform calls this twice, and that an unpaired `about_to_wait`
+        // records nothing rather than recording the time since the last one —
+        // which would be the wait, and the wait is not the client being late.
+        if let Some(began) = self.pass_began.take() {
+            self.cadence
+                .pass(u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        }
         event_loop.set_control_flow(ControlFlow::Wait);
     }
 }
@@ -412,12 +459,33 @@ fn describe(error: ClientError) -> String {
 /// the session state machine, the prediction, the capture — on one thread with
 /// no locking to reason about.
 ///
+/// `recorded` is `Some` when this session is part of a recording session, and it
+/// is what makes the session part reach a disk. A client playing for fun writes
+/// nothing at all.
+///
 /// # Errors
 ///
 /// A string, because everything this can fail at is something to print once and
-/// exit on: a refused connection, a server on another build, or a display that
-/// will not give out a window.
-pub fn play(address: std::net::SocketAddr, certificate: &[u8]) -> Result<(), String> {
+/// exit on: a refused connection, a server on another build, a display that will
+/// not give out a window, or a declared pointer acceleration this project does
+/// not record against.
+pub fn play(
+    address: std::net::SocketAddr,
+    certificate: &[u8],
+    recorded: Option<&Recorded>,
+) -> Result<(), String> {
+    // Before the connection rather than after the match, for the reason
+    // `moba-server` loads its signing key before playing: a session that plays a
+    // match and then discovers it may not be recorded has thrown the match away.
+    if let Some(recorded) = recorded
+        && recorded.declared.pointer_acceleration
+    {
+        return Err("this session declares the operating system's pointer \
+                    acceleration left on, and a corpus recorded through it \
+                    measures the operating system's curve as much as the hand \
+                    (docs/SCHEMA.md). Turn it off, or record nothing."
+            .to_owned());
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -483,13 +551,32 @@ pub fn play(address: std::net::SocketAddr, certificate: &[u8]) -> Result<(), Str
         seat,
         inbox: in_rx,
         outbox: out_tx,
+        cadence: Cadence::new(),
+        pass_began: None,
         outcome: None,
     };
     event_loop
         .run_app(&mut session)
         .map_err(|error| error.to_string())?;
 
-    report(session.play.trace().stats());
+    let stats = session.play.trace().stats();
+    let cadence = session.cadence.report();
+    report(stats);
+    report_cadence(cadence);
+    if let Some(recorded) = recorded {
+        let part = SessionPart {
+            seat,
+            declared: recorded.declared,
+            trace: stats,
+            cadence,
+        };
+        std::fs::create_dir_all(&recorded.directory)
+            .map_err(|error| format!("{}: {error}", recorded.directory.display()))?;
+        let path = recorded.directory.join(part.file_name());
+        std::fs::write(&path, part.encode())
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        eprintln!("capture: session part {}", path.display());
+    }
     match session.outcome {
         Some(Ending::Failed(reason)) => Err(reason),
         Some(Ending::Over) | None => Ok(()),
@@ -658,4 +745,36 @@ fn report(stats: TraceStats) {
          platform delivered one device event more than once, and the record is \
          not one sample per motion (see client::input::TraceStats)"
     );
+}
+
+/// Prints what the loop cost, which every recording session owes
+/// `docs/RISKS.md` R16.
+///
+/// It is printed on every run and not only on a bad one, for the reason R15
+/// gives about counters: a reader who sees `28714 passes, 0 over a budget of
+/// 33.333 ms` has been told something, and a reader who sees nothing has been
+/// told that nothing was measured.
+fn report_cadence(report: CadenceReport) {
+    let CadenceReport {
+        budget_ns,
+        passes,
+        passes_over_budget,
+        worst_overrun_ns,
+        worst_pass_ns,
+    } = report;
+    let ms = |ns: u64| (ns as f64) / 1e6;
+    eprintln!(
+        "cadence: {passes} passes, {passes_over_budget} over a budget of {:.3} ms; \
+         worst overrun {:.3} ms, longest pass {:.3} ms",
+        ms(budget_ns),
+        ms(worst_overrun_ns),
+        ms(worst_pass_ns)
+    );
+    if report.degraded() {
+        eprintln!(
+            "cadence: this session fell behind the tick on {passes_over_budget} \
+             pass(es). It is recorded as degraded and must not be pooled with \
+             sessions that did not (docs/SCHEMA.md, docs/RISKS.md R16)."
+        );
+    }
 }

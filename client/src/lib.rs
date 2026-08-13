@@ -51,6 +51,7 @@
 
 pub mod draw;
 pub mod gfx;
+pub mod health;
 pub mod input;
 pub mod net;
 pub mod play;

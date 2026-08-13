@@ -1,5 +1,7 @@
 # CONSENT
 
+consent-version: 2026-08-13
+
 The text every participant reads and agrees to **in writing, before the first
 recording**, and the rules this project holds itself to afterwards.
 
@@ -7,6 +9,27 @@ recording**, and the rules this project holds itself to afterwards.
 M4 makes its existence part of an exit criterion, because M4's own criterion —
 three people playing a match — is already a collection of personal information
 and there is no later milestone at which writing this down is still in time.
+
+## The version line above, and what it is for
+
+`consent-version` is the identifier of *this* text, and it is the one thing on
+this page a program reads. A signature on paper is a fact about a document on a
+day; a consent text that later gains a field — a new covariate, a new retention
+rule, a new purpose — has stopped being the document somebody signed, and a
+corpus of replays would say nothing whatever about the difference.
+
+So: every consent record carries the version its participant signed, every
+recording session carries the version it was operated under, and `Corpus::store`
+**refuses a match where either is missing or is not the current one**. Missing
+and stale fail identically and deliberately — a consent record written before
+this field existed does not decode, and is therefore not a consent record — so
+that a corpus assembled under an older regime cannot be readmitted by the silence
+of its own files.
+
+`replay::consent::CURRENT` is the same date as the line above; a test fails if
+the two disagree, and `ci` refuses a pull request that edits this document
+without raising it. The paper is still paper. What has changed is that its
+**absence is now a mechanical error**.
 
 This document is engineering, not legal advice. Whether Quebec's *Act respecting
 the protection of personal information in the private sector* (Law 25) formally
@@ -80,21 +103,53 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 > part of this project ever needs the finer stream, it will be a separate thing
 > to be asked for separately, and this text will say so before it is collected.
 >
-> Beside the replays, the project holds a **consent record** for you — your
-> pseudonym, the date you consented, the date your data is destroyed, and
-> whether you agreed to publication — and a **pseudonym mapping**, which is the
-> one file that connects your pseudonym to you.
+> **3. What is recorded about the equipment you played on.**
+>
+> Beside each match the project keeps one more file, describing the **seat**
+> rather than the person: there is no name and no pseudonym in it, and what
+> connects a seat to you is the replay above. It exists because a mouse set to
+> 400 counts per inch and one set to 1600 describe the same hand differently, and
+> without knowing which you had, a difference of equipment would be read as a
+> difference in how you play.
+>
+> Three things you are **asked**, because no program can read them:
+>
+> | Field | What it is |
+> | --- | --- |
+> | `device_cpi` | How many counts per inch your mouse is set to |
+> | `device_polling_hz` | How many times a second it reports |
+> | `pointer_acceleration` | Whether your operating system's pointer acceleration is on. It has to be **off** to take part, and a session that says otherwise is refused rather than recorded |
+>
+> And what your own copy of the game **measures about itself** while you play:
+> which operating system, which clock its timestamps came from, the sensitivity
+> the game applied, how many device events it recorded, how regularly they
+> arrived, and whether the game kept up with its own clock — the number of times
+> it fell behind and by how much. That last pair is about the machine and not
+> about you: a session in which the game stuttered records a pause that was the
+> computer's, and the project would otherwise read it as yours.
+>
+> **Nothing here identifies a device.** No model, no serial number, no
+> manufacturer, no operating-system version, no machine name. A number is not a
+> fingerprint of a mouse.
+>
+> **4. What else the project holds.**
+>
+> A **consent record** for you — your pseudonym, the date you consented, the
+> version of *this text* you signed, the date your data is destroyed, and whether
+> you agreed to publication — and a **pseudonym mapping**, which is the one file
+> that connects your pseudonym to you.
 >
 > **What is not collected:** no audio, no video, no screen capture, no chat, no
-> IP address in the corpus, no hardware identifiers, no files from your machine,
-> and nothing at all outside the match.
+> IP address in the corpus, no hardware identifiers, no device models or serial
+> numbers, no operating-system versions, no files from your machine, and nothing
+> at all outside the match.
 >
 > **This is still information about you.** Replacing your name with an opaque
 > identifier is a security measure, not a change of category: input timing is
 > distinctive, and "the mapping is in another file" would be a thin claim. The
 > project treats this as personal information throughout.
 >
-> **3. How long it is kept, and what triggers deletion.**
+> **5. How long it is kept, and what triggers deletion.**
 >
 > Raw telemetry, the recordings containing it, and the pseudonym mapping are
 > destroyed **24 months after the recording**, or when you withdraw, whichever
@@ -104,7 +159,7 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 > numbers in the project's documents — are kept without a time limit. This is
 > said plainly rather than left for you to infer that everything disappears.
 >
-> **4. Withdrawing.**
+> **6. Withdrawing.**
 >
 > You may withdraw at any time, without giving a reason and without any
 > consequence, by a single message to the contact address at the end of this
@@ -114,7 +169,7 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 > Your withdrawal is acknowledged within **7 days** and carried out within
 > **30**.
 >
-> **5. What withdrawing actually destroys — please read this one before you
+> **7. What withdrawing actually destroys — please read this one before you
 > sign.**
 >
 > A match is a single interleaved log of nine players' inputs. Removing one
@@ -134,7 +189,7 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 > date. It contains nothing else, and because the mapping is destroyed in the
 > same operation, it names nobody.
 >
-> **6. Who has access, and where the data lives.**
+> **8. Who has access, and where the data lives.**
 >
 > One person: the author of the project, Vianney Veremme, who is the only
 > operator and the only administrator.

@@ -34,17 +34,45 @@
 //! replay keygen <name>                  # <name>.signing-key and <name>.public-key
 //! replay verify <replay> <keys>         # resimulate, check the seal, report
 //! replay inspect <replay>               # print the manifest, check nothing
+//! replay enrol <corpus> <pseudonym> <identity> <consented-on> <retention-until> <publication>
+//! replay store <corpus> <replay> <parts-dir> <recorded-on>
+//! replay census <corpus>                # what the corpus is, and what it supports
 //! replay withdraw <corpus> <pseudonym> <date>
 //! replay audit <corpus> <pseudonym>     # non-zero if anything is left
 //! ```
 //!
 //! Exit status: 0 on success, 1 when the thing being checked is wrong, 2 when
 //! the arguments or the file are.
+//!
+//! # The three M6 commands, and what each of them refuses
+//!
+//! `enrol` writes a consent record and the pseudonym mapping. It is the one
+//! command whose input is a conversation — `docs/ENGINEERING.md` lists admitting
+//! a participant among the things that stay manual — and what it mechanises is
+//! only the filing. It stamps the consent record with the version of
+//! `docs/CONSENT.md` this build holds, so the operator cannot record somebody
+//! against a text that is not the one in front of them.
+//!
+//! `store` is the pipeline. It takes the sealed replay and the directory of
+//! session parts the nine clients wrote, assembles them into one session record,
+//! and refuses the match if the consent regime cannot account for it — see
+//! `replay::corpus`'s table of refusals. Nothing is written until every check has
+//! passed.
+//!
+//! `census` prints what the corpus is and what it supports. It writes **nothing**:
+//! a stored summary is the derived index M5 removed wearing a friendly name, and
+//! the number it would carry is a number that can disagree with the corpus it
+//! came from. Its output is a page rather than a line because `docs/RISKS.md` R8
+//! requires the two confidence bounds to travel together — a reader shown the
+//! friendlier one has been handled.
 
 use std::path::Path;
 use std::process::ExitCode;
 
-use replay::corpus::Corpus;
+use replay::consent::ConsentVersion;
+use replay::corpus::{ConsentRecord, Corpus};
+use replay::session::{SeatRecord, SessionRecord};
+use replay::split::{HOLDOUT_IN, Split, split_of};
 use replay::{Build, KeyRegistry, KeyStatus, Replay, SigningKey, VerifyError};
 
 fn main() -> ExitCode {
@@ -56,6 +84,21 @@ fn main() -> ExitCode {
         ("keygen", 2) => keygen(Path::new(&arguments[1])),
         ("verify", 3) => verify(Path::new(&arguments[1]), Path::new(&arguments[2])),
         ("inspect", 2) => inspect(Path::new(&arguments[1])),
+        ("enrol", 7) => enrol(
+            &arguments[1],
+            &arguments[2],
+            &arguments[3],
+            &arguments[4],
+            &arguments[5],
+            &arguments[6],
+        ),
+        ("store", 5) => store(
+            &arguments[1],
+            Path::new(&arguments[2]),
+            Path::new(&arguments[3]),
+            &arguments[4],
+        ),
+        ("census", 2) => census(&arguments[1]),
         ("withdraw", 4) => withdraw(&arguments[1], &arguments[2], &arguments[3]),
         ("audit", 3) => audit(&arguments[1], &arguments[2]),
         _ => usage(),
@@ -66,9 +109,283 @@ fn usage() -> ExitCode {
     eprintln!("usage: replay keygen <name>");
     eprintln!("       replay verify <replay> <keys>");
     eprintln!("       replay inspect <replay>");
+    eprintln!(
+        "       replay enrol <corpus> <pseudonym> <identity> <consented-on> \
+         <retention-until> <publication:yes|no>"
+    );
+    eprintln!("       replay store <corpus> <replay> <parts-dir> <recorded-on>");
+    eprintln!("       replay census <corpus>");
     eprintln!("       replay withdraw <corpus> <pseudonym> <date>");
     eprintln!("       replay audit <corpus> <pseudonym>");
     ExitCode::from(2)
+}
+
+/// Records one participant's consent and their pseudonym mapping.
+fn enrol(
+    root: &str,
+    pseudonym: &str,
+    identity: &str,
+    consented_on: &str,
+    retention_until: &str,
+    publication: &str,
+) -> ExitCode {
+    let publication = match publication {
+        "yes" => true,
+        "no" => false,
+        other => {
+            eprintln!("replay: publication is yes or no, not {other}");
+            return ExitCode::from(2);
+        }
+    };
+    if replay::Pseudonym::parse(pseudonym).is_none() {
+        eprintln!(
+            "replay: {pseudonym} is not a pseudonym: letters, digits, '_' and '-', \
+             at most 32 bytes (docs/SCHEMA.md)"
+        );
+        return ExitCode::from(2);
+    }
+    let record = ConsentRecord {
+        pseudonym: pseudonym.to_owned(),
+        consented_on: consented_on.to_owned(),
+        retention_until: retention_until.to_owned(),
+        publication,
+        // Stamped from this build rather than typed by the operator: the version
+        // is a fact about which document was on the table, and a field somebody
+        // types is a field somebody types wrong.
+        consent_version: ConsentVersion::current(),
+    };
+    if let Err(error) = Corpus::open(root).enrol(&record, identity) {
+        eprintln!("replay: {root}: {error}");
+        return ExitCode::from(2);
+    }
+    println!(
+        "replay: enrolled {pseudonym} under consent document {}, retained until \
+         {retention_until}, publication {}",
+        record.consent_version,
+        if publication { "agreed" } else { "refused" }
+    );
+    eprintln!(
+        "replay: the signed consent text is kept with the corpus and outside this \
+         repository. This record is only the machine's note that one exists."
+    );
+    ExitCode::SUCCESS
+}
+
+/// Files a sealed match and the session it was recorded in.
+fn store(root: &str, replay_path: &Path, parts: &Path, recorded_on: &str) -> ExitCode {
+    let Some(replay) = read(replay_path) else {
+        return ExitCode::from(2);
+    };
+
+    let mut collected: Vec<(String, String)> = Vec::new();
+    let entries = match std::fs::read_dir(parts) {
+        Ok(entries) => entries,
+        Err(error) => {
+            eprintln!("replay: {}: {error}", parts.display());
+            return ExitCode::from(2);
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|kind| kind != "session-part") {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(text) => collected.push((path.display().to_string(), text)),
+            Err(error) => {
+                eprintln!("replay: {}: {error}", path.display());
+                return ExitCode::from(2);
+            }
+        }
+    }
+    if collected.is_empty() {
+        eprintln!(
+            "replay: {} holds no *.session-part file. A match with no session \
+             record is a match whose hardware nobody wrote down (docs/SCHEMA.md).",
+            parts.display()
+        );
+        return ExitCode::from(2);
+    }
+
+    let session = match SessionRecord::assemble(
+        replay.manifest.match_id,
+        ConsentVersion::current(),
+        recorded_on,
+        &collected,
+    ) {
+        Ok(session) => session,
+        Err(message) => {
+            eprintln!("replay: {message}");
+            return ExitCode::from(2);
+        }
+    };
+
+    match Corpus::open(root).store(&replay, &session) {
+        Ok(()) => {
+            println!(
+                "replay: stored {} — {} seat(s) occupied, {}, {}",
+                replay.manifest.match_id,
+                session.occupied().len(),
+                split_of(replay.manifest.match_id).tag(),
+                if session.degraded() {
+                    "DEGRADED: a client fell behind the tick"
+                } else {
+                    "every client kept the tick"
+                }
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("replay: refused: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// What the corpus is, and what a claim made on it may say.
+///
+/// Prints and stores nothing. Every number here is recomputed from the matches
+/// on disk, so it cannot drift from them and a withdrawal changes it the moment
+/// it happens.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one report, printed in the order a reader needs it"
+)]
+fn census(root: &str) -> ExitCode {
+    let corpus = Corpus::open(root);
+    let matches = match corpus.matches() {
+        Ok(matches) => matches,
+        Err(error) => {
+            eprintln!("replay: {root}: {error}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let mut people: Vec<String> = Vec::new();
+    let mut full = 0u32;
+    let mut partial = 0u32;
+    let mut degraded = 0u32;
+    let mut held = 0u32;
+    let mut unaccountable: Vec<String> = Vec::new();
+    let mut ticks = 0u64;
+    let mut worst_overrun_ns = 0u64;
+
+    for match_id in &matches {
+        let (Ok(replay), Ok(session)) = (corpus.replay_of(match_id), corpus.session_of(match_id))
+        else {
+            unaccountable.push(match_id.clone());
+            continue;
+        };
+        for pseudonym in replay.manifest.participants() {
+            let name = pseudonym.to_string();
+            if !people.contains(&name) {
+                people.push(name);
+            }
+        }
+        ticks = ticks.saturating_add(u64::from(replay.manifest.ticks));
+        if session.occupied().len() == sim::PLAYER_COUNT {
+            full = full.saturating_add(1);
+        } else {
+            partial = partial.saturating_add(1);
+        }
+        if session.degraded() {
+            degraded = degraded.saturating_add(1);
+        }
+        for seat in &session.seats {
+            if let SeatRecord::Human { measured, .. } = seat {
+                worst_overrun_ns = worst_overrun_ns.max(measured.worst_overrun_ns);
+            }
+        }
+        if split_of(replay.manifest.match_id) == Split::Holdout {
+            held = held.saturating_add(1);
+        }
+    }
+    people.sort();
+
+    let recorded = matches.len().saturating_sub(unaccountable.len());
+    println!("corpus: {} match(es) at {root}", recorded);
+    println!("corpus: {} distinct participant(s): {}", people.len(), {
+        if people.is_empty() {
+            "-".to_owned()
+        } else {
+            people.join(", ")
+        }
+    });
+    println!(
+        "corpus: {full} at nine seats, {partial} partially filled — counted \
+         separately and never pooled into one distribution (docs/SCHEMA.md)"
+    );
+    println!(
+        "corpus: {degraded} session(s) degraded; worst tick-budget overrun {:.3} ms \
+         (docs/RISKS.md R16)",
+        (worst_overrun_ns as f64) / 1e6
+    );
+    println!(
+        "corpus: {held} held out, {} for training, one in {HOLDOUT_IN} by \
+         replay::split (frozen)",
+        recorded.saturating_sub(held as usize)
+    );
+    println!(
+        "corpus: {} tick(s) recorded, {:.1} minute(s) of play",
+        ticks,
+        (ticks as f64) / f64::from(sim::TICKS_PER_SECOND) / 60.0
+    );
+
+    if !unaccountable.is_empty() {
+        eprintln!(
+            "replay: {} match(es) do not read and are in nobody's account:",
+            unaccountable.len()
+        );
+        for match_id in &unaccountable {
+            eprintln!("replay:   {match_id}");
+        }
+    }
+
+    // The two bounds, together, always. `docs/RISKS.md` R8 and
+    // `docs/MILESTONES.md` M6: nine seats of one match are not nine independent
+    // observations and several matches share people, so a detector has two
+    // honest denominators depending on what it reads, and showing one of them is
+    // showing the friendlier one.
+    let people_bound = bound(people.len());
+    let match_bound = bound(recorded);
+    println!();
+    println!("what this corpus can support, at 95% confidence and zero observed false positives:");
+    println!(
+        "  what a person's style drives  : N = {} people  -> upper bound about {people_bound}",
+        people.len()
+    );
+    println!(
+        "  what a match's circumstances drive: N = {recorded} matches -> upper bound about {match_bound}"
+    );
+    println!(
+        "  Both belong in every detector document. The rule is 3/N; the 9 x {recorded} = {} scored",
+        recorded.saturating_mul(9)
+    );
+    println!("  player-matches are NOT independent and must never be used as N. No claim of");
+    println!("  the form \"0% false positives\" is supportable at any size this project reaches.");
+
+    if unaccountable.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// The rule of three, rendered.
+///
+/// Zero observations in `n` independent trials supports roughly a `3/n` upper
+/// bound at 95% confidence. `n = 0` has no bound at all and says so rather than
+/// dividing.
+fn bound(n: usize) -> String {
+    if n == 0 {
+        return "nothing at all (no observations)".to_owned();
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a percentage printed in a report"
+    )]
+    let percent = 300.0 / (n as f64);
+    format!("{percent:.1}%")
 }
 
 /// Generates a signing key and the registry line that accepts it.

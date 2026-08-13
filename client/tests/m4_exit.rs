@@ -235,7 +235,31 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
         // The lesson is the one this file already had and had not had to spend:
         // the period is a budget for the *client*, and a fixture that reaches
         // more of the game spends more of it.
-        Duration::from_millis(10),
+        //
+        // **And ten was not enough either, on one of the two platforms.** It
+        // held here and on `ubuntu-latest`, and `check (windows-latest)` failed
+        // with the same `worst correction 13106 raw units` on two merges to
+        // `main` before M6 was started — intermittently, which is worse than
+        // consistently, because a criterion that is red every other run trains
+        // its reader to re-run it.
+        //
+        // The cause is not that the client is slow, and R14's own instrument
+        // already measured the thing that explains it: **Windows' default timer
+        // resolution is about 15.6 milliseconds**, so a ten-millisecond period
+        // is a period the host cannot schedule. Both ends of this harness ask
+        // for wake-ups finer than the clock can give, and a client whose
+        // receive-reconcile-send crosses one of those boundaries misses the tick
+        // it was answering. Compressing below the host's granularity is not a
+        // compression; it is a different experiment.
+        //
+        // So the period is **the game's own**, and the compression is gone.
+        // `docs/RISKS.md` R16 is what makes that defensible rather than merely
+        // safe: the capture loop at nine seats in a group fight has a factor of
+        // six in hand at 33 ms, so a criterion that cannot hold here is a
+        // criterion about a game nobody can play rather than about a scheduler.
+        // It costs this test twenty-three more seconds and it removes the last
+        // number in it that was a guess.
+        Duration::from_millis(33),
         TICKS,
     ));
 
@@ -269,6 +293,15 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
     // the rules moves it by less.
     let step = sim::RULES.champion_speed.to_raw();
 
+    // Rounded rather than truncated, and it is not a cosmetic choice. A
+    // correction of one tick arrives as 13106 raw units against a step of 13107
+    // — a raw unit short, because the displacement truncates toward zero — so
+    // integer division reported `0 tick(s) of movement` for the one failure this
+    // criterion actually has. A message that says "zero ticks" about a one-tick
+    // correction is a message that sends its reader looking for an arithmetic
+    // bug in `step`.
+    let ticks_of = |raw: i32| (raw.saturating_add(step / 2)) / step;
+
     for report in &reports {
         println!(
             "{:?}: {} checkpoints, prediction exact on {} of {} views, worst \
@@ -279,7 +312,7 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
             report.exact,
             report.views,
             report.worst_correction,
-            report.worst_correction / step,
+            ticks_of(report.worst_correction),
             report.predicted_ahead,
             report.frames_lost
         );
@@ -308,7 +341,7 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
              moves, or the client fell behind the tick period",
             report.seat,
             report.worst_correction,
-            report.worst_correction / step
+            ticks_of(report.worst_correction)
         );
         assert_eq!(
             report.exact, report.views,
