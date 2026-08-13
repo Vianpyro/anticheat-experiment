@@ -662,25 +662,25 @@ what this residual *is*. That is what the table reports.
 | --- | --- | --- | --- |
 | Samples recorded / emitted | 1200 / 1200 | 1200 / 1200 | 1200 / 1200 |
 | Views reconciled, frames rasterised | none, none | 290, 532 | 290, 435 |
-| **Added latency, mean** | not isolated | **0.036 ms** | **0.240 ms** |
-| **…standard deviation** | not isolated | **0.028 ms** | **0.613 ms** |
-| …95th percentile | — | 0.045 ms | 2.034 ms |
-| **…99th percentile** | — | **0.058 ms** | **2.468 ms** |
-| …maximum | — | 0.944 ms | 3.428 ms |
-| Slowest single pass of the capture loop | — | 4.795 ms | 8.067 ms |
-| Recorded inter-arrival, standard deviation | 0.247 ms | 0.049 ms | 0.912 ms |
+| **Added latency, mean** | not isolated | **0.041 ms** | **0.288 ms** |
+| **…standard deviation** | not isolated | **0.016 ms** | **0.690 ms** |
+| …95th percentile | — | 0.055 ms | 2.312 ms |
+| **…99th percentile** | — | **0.107 ms** | **2.709 ms** |
+| …maximum | — | 0.257 ms | 5.114 ms |
+| Slowest single pass of the capture loop | — | 6.013 ms | 9.163 ms |
+| Recorded inter-arrival, standard deviation | 0.247 ms | 0.051 ms | 1.033 ms |
 
 **The conclusion, and it is the one the arithmetic supports rather than the one
 the numbers flatter.** In the profile a player runs, the delay this client adds
-between an event existing and being stamped has a standard deviation of **28
-microseconds**, a 99th percentile of **58 microseconds**, and a worst case over
-1200 samples of **0.94 ms**. Against the grandeurs M8 will look for —
+between an event existing and being stamped has a standard deviation of **16
+microseconds**, a 99th percentile of **107 microseconds**, and a worst case over
+1200 samples of **0.26 ms**. Against the grandeurs M8 will look for —
 inter-arrival distributions and reaction latencies whose human spreads are tens
 of milliseconds — that is a fraction of a per cent of the signal, and the tail is
 bounded rather than heavy: there is no fifteen-millisecond mode in either
-profile. The unoptimised build is an order of magnitude worse and still under a
-millisecond of spread, and its tail is bounded by its own frame, which is the
-mechanism visible in the two rows at the bottom of the table.
+profile. The unoptimised build is more than an order of magnitude worse and
+still under a millisecond of spread, and its tail is bounded by its own frame,
+which is the mechanism visible in the two rows at the bottom of the table.
 
 **So the residual is quantified and without consequence for the detectors in
 scope, and R14's timestamp half stops being a live risk.** What replaces it is a
@@ -706,12 +706,12 @@ reader stops asking:
   behind the device, which is the only way this design can write a delay into a
   corpus. Reading the clock once per frame instead of once per event fails it and
   the sample count together, with the frame written into the record as an added
-  latency of mean 8.195 ms and maximum 30.3 ms against a slowest pass of 4.8.
+  latency of mean 8.195 ms and maximum 30.3 ms against a slowest pass of 4.8 ms.
 - **`evdev` stays refused, and this measurement is why.** A per-platform input
   stack would buy a device timestamp on Linux and nothing on Windows, at the cost
   of a `/dev/input` permission each participant has to be granted and a corpus
   whose timestamps mean different things on the two platforms it is recorded on.
-  That was a defensible trade against an unmeasured residual. Against 28
+  That was a defensible trade against an unmeasured residual. Against 16
   microseconds it is not a trade at all. **This reopens only if a detector at M8
   turns out to depend on a quantity at the scale of a millisecond**, which none
   of the candidates in `MILESTONES.md` M8 does — and the reopening would then be

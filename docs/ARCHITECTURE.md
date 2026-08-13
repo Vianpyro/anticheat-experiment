@@ -1325,7 +1325,7 @@ Each is a test or a lint, not a convention:
    `client/tests/jitter.rs` runs the capture loop while it rasterises real frames
    and talks to a real server over QUIC, and isolates the delay the loop *adds*
    by differencing against a timestamp the event source read from the same clock:
-   in `release`, a standard deviation of 0.028 ms and a worst case of 0.94 ms over
+   in `release`, a standard deviation of 0.016 ms and a worst case of 0.26 ms over
    1200 samples. The isolation is not a refinement — the recorded inter-arrival
    is the sum of the client's promptness and the source's regularity, and on a
    host with a coarse sleep granularity the second term is all of it, which is
