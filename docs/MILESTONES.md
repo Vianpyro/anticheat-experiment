@@ -194,8 +194,17 @@ units of a hundred-and-seventy-three-unit lane and agreed about a world in which
 nothing happened — and one thin one. The floors are counted, printed, and red at
 zero.
 
-Next is M4's remaining clause and M6, both of which are waiting on people rather
-than on hours; M7 is the next milestone that is only work.
+**M6's machinery is built and M6 is not reached**, for the same shape of reason
+M4 is not: its criterion asks for forty matches from nine people and that is a
+calendar rather than a test. The schema, the identity scheme, the consent-version
+refusal, the frozen split, the recording harness and the destruction procedure all
+exist and run; `docs/SCHEMA.md` is the document and `replay/tests/destruction.rs`
+executes the procedure end to end on every pull request. What does not exist is a
+corpus, and this document proposes the revision — hold nine people, drop to twenty
+matches — rather than declaring the criterion met on one that cannot support it.
+
+Next is M4's remaining clause and M6's recordings, both of which are waiting on
+people rather than on hours; M7 is the next milestone that is only work.
 
 ---
 
@@ -661,6 +670,92 @@ count: a corpus of forty matches from nine people and a corpus of forty matches
 from four people cost the same to collect and the second supports nothing at
 all, because the null model a behavioural detector needs is a distribution over
 humans.
+
+### M6's machinery is built, and M6 is not reached
+
+Everything the criterion asks for **except the recordings** exists and runs.
+`docs/SCHEMA.md` is the document; `replay::consent`, `replay::session` and
+`replay::split` are what make each of its rules a refusal rather than a paragraph.
+The split between what a machine can do and what a calendar has to is the same
+split M4 records, and it is stated here rather than in a commit message:
+
+| Clause | Who can satisfy it |
+| --- | --- |
+| a documented schema | this repository — `docs/SCHEMA.md` |
+| a pseudonymous player identity scheme | this repository — `docs/SCHEMA.md` §2, `replay::Pseudonym` |
+| a consent record per participant naming its retention date | this repository — `replay enrol`, and `Corpus::store` refuses a match without one |
+| a frozen train/holdout split | this repository — `replay::split`, frozen and computed rather than stored |
+| a destruction procedure executed once end to end | this repository — `docs/SCHEMA.md` §9, run on every pull request by `replay/tests/destruction.rs` |
+| a recording harness | this repository — `moba-client --record`, `replay store` |
+| **at least 40 matches from at least 9 distinct people** | **nobody but nine people, four to seven times** |
+| a published summary statistic set | nobody, until the line above happens |
+
+**The last two are not work and no test stands in for them.** `replay census`
+computes and prints the summary set the criterion asks for, and on an empty corpus
+it correctly prints that the corpus supports nothing at all. That is a working
+instrument, not a satisfied criterion, and the milestone stays open.
+
+### The exit criterion needs a revision, and here it is
+
+The arithmetic above says forty matches is four to seven evenings of nine adults,
+which is three to six months of wall clock. That was written as a warning; on the
+evidence of the calendar it is the outcome. So the proposal, made here rather than
+resolved by declaring the criterion met on a corpus that cannot support it:
+
+**Hold the people count at 9 and drop the match count to 20.** Not because twenty
+is enough for anything in particular, but because the *people* count is what a
+behavioural null model is a distribution over, and dropping it is the one trade
+that makes the corpus worth nothing. Twenty matches is two to four sessions, and
+`3/20 ≈ 15%` alongside `3/9 ≈ 33%` is what may then be claimed.
+
+**And the two bounds travel together regardless of which number wins.**
+`docs/SCHEMA.md` §8 is the table, `replay census` prints both on every run
+together with the sentence refusing "0% false positives", and every detector
+document at M8 carries both. A reader shown only the friendlier one has been
+handled, and the friendlier one is always whichever the author is quoting.
+
+### Four things the criterion did not say, which the work had to decide
+
+- **A replay cannot say what a match was recorded *on*, so there is a second file
+  and it is not an index.** A mouse at 400 counts per inch and one at 1600
+  describe the same hand differently; without the number, a difference of
+  equipment reads as a difference of style. The manifest is frozen and every field
+  in it is something the *authority* knows, so the covariates go in a session
+  record filed beside the replay — indexed by **seat and never by pseudonym**, so
+  the signed manifest stays the one naming of a person, and inside the match
+  directory a withdrawal already removes whole. `docs/SCHEMA.md` §4 is the schema,
+  including the three fields that are declarations rather than measurements and
+  what refusing pointer acceleration costs.
+- **The tick budget was set on a fixture and had never been measured on a match.**
+  `docs/RISKS.md` R16 is the entry, `client/tests/cadence.rs` is the measurement —
+  nine seats in a group fight at the game's own rate — and the answer is that the
+  budget holds with a factor of six in hand. What the milestone keeps regardless
+  is the instrumentation: every session reports its worst overrun and its count of
+  passes over budget, and a session that fell behind is identifiable in the corpus
+  rather than pooled into it.
+- **The consent regime became something a program can refuse.** The text existed
+  and said the right things; that it was signed *before* the match stayed paper.
+  It still is. What changed is that the document declares a version, every consent
+  record carries the version its participant signed, and `Corpus::store` refuses a
+  match where that version is absent or superseded — so the paper's *absence* is
+  now a mechanical error. `docs/RISKS.md` R3 carries it.
+- **The split is a function and not a file.** A list of held-out matches would be
+  the derived index M5 removed, and it has a failure mode of its own: a withdrawal
+  that destroyed a match and left it named in a split file would leave behind a
+  line about somebody's participation after they asked for it to be destroyed —
+  and a rule like "the first four fifths by date" would silently move matches out
+  of a holdout a threshold had already been chosen against. A hash of the
+  identifier does neither, and
+  `a_withdrawal_cannot_move_a_match_from_one_half_to_the_other` is the assertion.
+
+### And no detector, deliberately
+
+`docs/SCOPE.md` puts behavioural statistics at M8 and this milestone builds none.
+A detector written before the corpus exists is a detector whose threshold was
+chosen on nothing, and the choice would then be defended by whoever inherits it.
+What M6 owes M8 is a corpus, a frozen split, and an honest statement of what the
+two can support — and the last of those is a sentence M8 is not allowed to
+improve on.
 
 ## M7 — Cheat client and exploit classes 1, 4, 5 · 3 weeks
 
