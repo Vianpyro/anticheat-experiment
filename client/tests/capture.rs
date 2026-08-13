@@ -479,3 +479,60 @@ fn motion_finer_than_the_fixed_point_resolution_accumulates() {
         "a hundred hundredths of a fixed-point unit did not add up to one"
     );
 }
+
+/// A device event delivered twice is reported, not filtered.
+///
+/// This statistic exists because the platform really does this: an X11 pointer
+/// grab makes the server deliver every raw motion event a second time, five
+/// microseconds after the first, and the playable client does not take a grab
+/// for exactly that reason (`client::gfx`). The two halves below are the design:
+/// the duplicate stays in the record, and the number says it is there.
+///
+/// Filtering would have been the tempting fix and it is the same mistake in a
+/// better disguise — a predicate on the contents of the record, which is what
+/// the terminal's cell-crossing sampler was.
+#[test]
+fn a_duplicated_device_event_is_counted_and_kept() {
+    let mut clean = InputTrace::new();
+    let mut doubled = InputTrace::new();
+    for (at_ns, dx, dy) in slow_then_fast() {
+        clean.moved(at_ns, dx, dy);
+        doubled.moved(at_ns, dx, dy);
+        // What an X11 grab does: the same delta again, five microseconds later.
+        doubled.moved(at_ns + 5_000, dx, dy);
+    }
+
+    assert_eq!(clean.stats().coincident, 0, "a clean stream was accused");
+    assert_eq!(
+        doubled.stats().coincident,
+        clean.len(),
+        "a duplicated stream was not detected"
+    );
+    assert_eq!(
+        doubled.len(),
+        clean.len() * 2,
+        "the duplicates were filtered instead of kept"
+    );
+
+    // …and the damage the statistic exists to make visible: the median
+    // inter-arrival collapses from the device's report period to the duplicate
+    // gap, which is what a detector at M8 would otherwise calibrate on.
+    assert_eq!(clean.stats().gaps_ns.p50, 8_000_000);
+    assert_eq!(doubled.stats().gaps_ns.p50, 5_000);
+}
+
+/// A device that legitimately reports at 8 kHz is not accused of duplicating.
+#[test]
+fn the_fastest_real_device_is_not_mistaken_for_a_duplicate() {
+    let mut trace = InputTrace::new();
+    // 8 kHz is 125 microseconds, the fastest report rate on sale, and the same
+    // delta twice in a row is perfectly ordinary at constant speed.
+    for index in 0..500u64 {
+        trace.moved(index * 125_000, 1.0, 0.0);
+    }
+    assert_eq!(
+        trace.stats().coincident,
+        0,
+        "an 8 kHz mouse was reported as a platform duplicating events"
+    );
+}

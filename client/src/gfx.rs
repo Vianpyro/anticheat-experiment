@@ -37,11 +37,13 @@
 //! the renderer's jitter into every sample. It is still not a *device*
 //! timestamp; [`crate::input::CLOCK`] says so, per platform, in a type.
 //!
-//! # The window is put back the way it was found
+//! # The pointer is hidden and not grabbed, and that was measured
 //!
-//! Cursor visibility and pointer grab are state on a device the process does not
-//! own. Both are released when the window is dropped, which winit does on exit,
-//! including on the way out of a panic.
+//! Cursor visibility is state on a device the process does not own; it is
+//! released when the window is dropped, which winit does on exit, including on
+//! the way out of a panic. The pointer is deliberately **not** grabbed, and
+//! [`Screen::open`] carries the measurement that decided it: an X11 pointer grab
+//! makes the server deliver every raw motion event twice.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -53,7 +55,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{CursorGrabMode, Window, WindowId};
+use winit::window::{Window, WindowId};
 
 use crate::draw::{Mark, Viewport, compose, rasterize};
 use crate::input::{Control, TraceStats};
@@ -118,17 +120,29 @@ impl Screen {
         let surface = softbuffer::Surface::new(&context, Arc::clone(&window))
             .map_err(|error| error.to_string())?;
 
-        // The OS pointer is hidden and confined so it cannot wander out of the
-        // window; the aim a player sees is drawn by this client from raw
-        // deltas, and has nothing to do with where the OS thinks the pointer
-        // is. `Confined` is what X11 supports and `Locked` is what Wayland
-        // supports, so both are tried and neither is required — a platform that
-        // refuses both still delivers raw motion, which is the part that
-        // matters.
+        // The OS pointer is hidden, because the aim a player sees is drawn by
+        // this client from raw deltas and has nothing to do with where the OS
+        // thinks the pointer is.
+        //
+        // It is deliberately **not grabbed**, and the reason is measured rather
+        // than argued. `CursorGrabMode::Confined` is the natural thing to write
+        // here — it stops the invisible OS pointer wandering off the window —
+        // and on X11 it makes the server deliver every raw motion event
+        // *twice*: 50 synthesised device motions produced 50
+        // `DeviceEvent::MouseMotion` without the grab and 100 with it, measured
+        // against `winit` alone with none of this crate involved. A duplicate
+        // five microseconds after its original is invisible on screen and is a
+        // second mode near zero in every inter-arrival distribution a detector
+        // at M8 would read, which is exactly the kind of platform artefact a
+        // corpus must not be quietly calibrated on.
+        //
+        // What it costs is that the invisible OS pointer drifts, and a click
+        // after it has left the window goes to whatever is under it. That is a
+        // usability wart on a fixture and it is the cheaper of the two. If a
+        // platform's grab is ever *shown* to deliver one event per motion, it
+        // can come back for that platform — [`crate::input::InputTrace::stats`]
+        // reports the coincident-sample count that would demonstrate it.
         window.set_cursor_visible(false);
-        if window.set_cursor_grab(CursorGrabMode::Confined).is_err() {
-            let _ = window.set_cursor_grab(CursorGrabMode::Locked);
-        }
         Ok(Self { window, surface })
     }
 
@@ -600,6 +614,7 @@ fn report(stats: TraceStats) {
         finest_count,
         finest_world_units,
         travelled_counts,
+        coincident,
     } = stats;
     let ms = |ns: u64| (ns as f64) / 1e6;
     eprintln!(
@@ -619,5 +634,10 @@ fn report(stats: TraceStats) {
         crate::input::CLOCK,
         finest_count.map_or("n/a".to_owned(), |value| format!("{value}")),
         finest_world_units.map_or("n/a".to_owned(), |value| format!("{value}")),
+    );
+    eprintln!(
+        "capture: coincident samples {coincident} — a non-zero count means the \
+         platform delivered one device event more than once, and the record is \
+         not one sample per motion (see client::input::TraceStats)"
     );
 }

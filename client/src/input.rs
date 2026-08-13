@@ -334,6 +334,8 @@ impl InputTrace {
         let mut moves = 0usize;
         let mut smallest: Option<f64> = None;
         let mut travelled = 0.0f64;
+        let mut coincident = 0usize;
+        let mut last_move: Option<(u64, f64, f64)> = None;
 
         for sample in &self.samples {
             if let Some(last) = previous {
@@ -341,6 +343,14 @@ impl InputTrace {
             }
             previous = Some(sample.at_ns);
             if let Motion::Moved { dx, dy } = sample.motion {
+                if let Some((was, x, y)) = last_move
+                    && sample.at_ns.saturating_sub(was) < COINCIDENT_NS
+                    && x.to_bits() == dx.to_bits()
+                    && y.to_bits() == dy.to_bits()
+                {
+                    coincident = coincident.saturating_add(1);
+                }
+                last_move = Some((sample.at_ns, dx, dy));
                 moves = moves.saturating_add(1);
                 let length = dx.hypot(dy);
                 travelled += length;
@@ -362,6 +372,7 @@ impl InputTrace {
             finest_count: smallest,
             finest_world_units: smallest.map(|counts| counts * WORLD_UNITS_PER_COUNT),
             travelled_counts: travelled,
+            coincident,
         }
     }
 }
@@ -427,7 +438,31 @@ pub struct TraceStats {
     /// Total path length in device counts, so that a resolution figure can be
     /// read against how far the pointer actually went.
     pub travelled_counts: f64,
+    /// Consecutive motion samples less than [`COINCIDENT_NS`] apart carrying
+    /// bit-identical deltas.
+    ///
+    /// **Reported, never filtered**, and the distinction is the whole of why
+    /// this field exists. No hand produces two identical deltas five
+    /// microseconds apart, so a non-zero count here means the platform
+    /// delivered one device event more than once and the record is no longer
+    /// one sample per motion. That is not hypothetical: it is what an X11
+    /// pointer grab does, and it is why `crate::gfx` does not take one.
+    ///
+    /// Dropping the duplicates instead would be a predicate on the contents of
+    /// the record, which is the speed-dependent sampling this whole module
+    /// exists to refuse — with a better excuse. So the trace keeps everything
+    /// it was given and the statistic says whether what it was given was sound.
+    pub coincident: usize,
 }
+
+/// How close together two identical motion samples have to be before they are
+/// evidence that the platform delivered one event twice rather than that a hand
+/// did the same thing twice.
+///
+/// A tenth of a millisecond. The fastest pointing device in ordinary use reports
+/// at 8 kHz, which is 125 microseconds apart, so this is inside the shortest
+/// legitimate gap and does not accuse a real device of duplicating.
+pub const COINCIDENT_NS: u64 = 100_000;
 
 /// Where the player is pointing, in the world.
 ///
