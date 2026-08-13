@@ -359,17 +359,21 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
         recording.inputs.len()
     );
 
-    let path = std::env::temp_dir().join(format!("moba-m4-{}.replay", std::process::id()));
-    std::fs::write(&path, recording.encode()).expect("write the recording");
+    // Sealed, because since M5 there is one file format and it is signed: a
+    // criterion that wrote an unsigned container would be exercising a format
+    // this project no longer has. The key and the registry are the harness's.
+    let (path, keys) = harness::seal_to_disk(&recording, "moba-m4");
 
     let output = std::process::Command::new(harness::replay_binary())
         .arg("verify")
         .arg(&path)
+        .arg(&keys)
         .output()
         .expect("run the replay tool");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&keys);
 
     assert!(
         output.status.success(),

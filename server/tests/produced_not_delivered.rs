@@ -307,9 +307,30 @@ fn what_a_client_was_told_does_not_reach_the_recording() {
         watched.recording().inputs.len() > 900,
         "the log is too short to contain the inputs of the seats that left"
     );
+    // Compared as sealed bytes rather than as structs, and the difference is
+    // the point: a `Recording` has no encoding since M5 — there is one file
+    // format and it is signed — so what has to be identical is the artefact that
+    // reaches a disk. Ed25519 signing is deterministic, so two seals of one
+    // match are the same 64 bytes and this is a byte comparison rather than a
+    // field-by-field one that could miss a field.
+    let seal = |recording: &replay::Recording| {
+        replay::seal(
+            recording,
+            &replay::SessionFacts {
+                match_id: replay::MatchId([7u8; 16]),
+                started_at_unix_ms: 1_786_000_000_000,
+                participants: [const { None }; PLAYER_COUNT],
+                // Pinned, so that the comparison is about the two matches rather
+                // than about which commit this was built from.
+                sim_commit: replay::SimCommit::Unknown,
+            },
+            &replay::SigningKey::from_seed(*b"moba produced-not-delivered key\0"),
+        )
+        .encode()
+    };
     assert_eq!(
-        watched.recording().encode(),
-        unwatched.recording().encode(),
+        seal(&watched.recording()),
+        seal(&unwatched.recording()),
         "the recording followed who was listening"
     );
 }

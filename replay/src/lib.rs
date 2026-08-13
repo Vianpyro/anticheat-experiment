@@ -1,81 +1,86 @@
-//! The recording a match leaves behind, and the offline resimulation of it.
+//! The replay container: what a match leaves behind, and what a third party can
+//! establish from it.
 //!
-//! # What this is at M3, and what it is not
+//! # What this is at M5, and what changed
 //!
-//! `docs/MILESTONES.md` M3 asks for replay recording and for an exit criterion
-//! that resimulates the recorded input log **in a separate process** and gets
-//! the server's own final digest back. That is what is here: a container, a
-//! reader that is total on hostile bytes, and [`resimulate`].
+//! At M3 and M4 this crate held a *recording*: a container, a reader total on
+//! hostile bytes, and a resimulation. It carried `rules_hash` and nothing else,
+//! so a digest mismatch meant "these bytes do not describe that match" and could
+//! not distinguish tampering from a build difference; it had no signature, so it
+//! proved that some server wrote it and nothing about who. It was a development
+//! artefact and its own documentation said so.
 //!
-//! What is deliberately absent is everything M5 owns, and the list is worth
-//! writing down so that nothing here is mistaken for it. There is **no
-//! signature**, so a recording proves that some server wrote this file and
-//! nothing about who; `docs/RISKS.md` R4 is explicit that signing the log alone
-//! would not be enough anyway, and the manifest it describes — match id, server
-//! identity, participants, start time — is M5's object rather than a subset of
-//! this one. There is **no `sim_version` and no commit**, so two builds that
-//! reordered a rule resimulate to different digests with nothing in the file to
-//! say which was right (`docs/RISKS.md` R13). A digest mismatch out of
-//! [`resimulate`] at this milestone therefore means "these bytes do not
-//! describe that match" and cannot yet distinguish tampering from a build
-//! difference. M5 is where that distinction becomes a distinct error, and until
-//! then a recording is a development artefact rather than evidence.
+//! `docs/MILESTONES.md` M5 is the milestone that turns it into evidence, and it
+//! is the milestone that **freezes a record format**: whatever is missing from
+//! [`Manifest`] is missing from every match this project will ever record.
+//! [`crate::manifest`] carries the field-by-field account and, more importantly,
+//! the absences and why each of them is a decision.
 //!
-//! What *is* here is `rules_hash`, and it is here rather than deferred because
-//! its absence is a silent failure rather than a missing feature: a recording
-//! resimulated under other constants does not error, it produces a different
-//! match (`docs/RISKS.md` R2).
+//! **There is now exactly one file format.** The unsigned container is gone
+//! rather than kept beside the signed one. Two formats would be two things to
+//! verify, two things to parse, and — the reason that decided it — a question
+//! with no good answer the first time somebody hands you the unsigned one: a
+//! reader that accepts both accepts the weaker, and a corpus that holds both
+//! holds files nobody can tell apart at a glance. [`Recording`] survives as the
+//! authority's in-memory product and has no encoding of its own; [`seal`] is the
+//! only way it reaches a disk.
+//!
+//! # The three layers, and which one makes which claim
+//!
+//! - [`Recording`] — what `server::Match` produced. Facts about a match, held in
+//!   memory, signed by nobody.
+//! - [`Replay`] — a recording bound to an identity, a build and a moment by a
+//!   signature over a [`Manifest`]. The only thing this project writes to disk
+//!   and the only thing it will publish.
+//! - [`verify`] — the one function that turns bytes into a claim, and
+//!   [`crate::container`]'s header is the honest account of which claims and
+//!   which not. Short version: it establishes that a key you accept sealed this
+//!   manifest, that the log is the one the manifest names, and that the log
+//!   reaches the state and the result it claims. It establishes **nothing about
+//!   whether a player cheated**, which is `docs/SCOPE.md`'s standing note on
+//!   exploit class 2 and is the reason M7's exploit rather than this milestone
+//!   is what makes the defence delivered.
 //!
 //! # Why the log holds inputs and not frames
 //!
-//! A `TimedInput` names a seat, a tick, a sequence number and an action. It
+//! A [`TimedInput`] names a seat, a tick, a sequence number and an action. It
 //! names no projectile and no view. That matters because `protocol` gives every
-//! recipient its own projectile handles: a log of what clients were *told*
-//! would be a log in six mutually untranslatable namings, and resimulating it
-//! would mean choosing one. A log of what clients *asked for* is in the one
-//! namespace the server and `sim` share, which is why resimulation is a
-//! function of it.
+//! recipient its own projectile handles: a log of what clients were *told* would
+//! be a log in nine mutually untranslatable namings, and resimulating it would
+//! mean choosing one. A log of what clients *asked for* is in the one namespace
+//! the server and `sim` share, which is why resimulation is a function of it.
 //!
-//! For the same reason this crate depends on `sim` alone. `docs/ARCHITECTURE.md`
-//! permits a dependency on `protocol` and it is deliberately not taken, exactly
-//! as `sim`'s permission to use `serde` is not: nothing here reads a wire
-//! format, and a dependency in the graph that nothing uses is a dependency
-//! nobody is watching. It arrives at M5 with the manifest, which does record
-//! the session that produced the file.
-
+//! It also settles a question `docs/ARCHITECTURE.md` answers at length: a replay
+//! records the events the rules **produced**, never the ones a client was
+//! **delivered**, and it does so structurally rather than by convention —
+//! because it records no events at all. Resimulation derives them.
+//!
 //! # And the corpus, which arrives at M4 with the consent regime
 //!
-//! [`corpus`] is a directory of recordings and the consent records that make
-//! them lawful to hold, plus the command that destroys a participant's part of
-//! it and the command that fails if anything was left behind. It lives here
-//! rather than in a crate of its own because `docs/ARCHITECTURE.md` refuses an
-//! `xtask` crate and a corpus is a directory of the thing this crate defines;
-//! the alternative is an eighth crate whose whole content is `std::fs`.
+//! [`corpus`] is a directory of replays and the consent records that make them
+//! lawful to hold, plus the command that destroys a participant's part of it and
+//! the command that fails if anything was left behind. It lives here rather than
+//! in a crate of its own because `docs/ARCHITECTURE.md` refuses an `xtask` crate
+//! and a corpus is a directory of the thing this crate defines; the alternative
+//! is an eighth crate whose whole content is `std::fs`.
 
 #![forbid(unsafe_code)]
-#![deny(missing_docs, missing_debug_implementations)]
+#![deny(missing_docs, missing_debug_implementations, unused_variables)]
 
+pub mod container;
 pub mod corpus;
+pub mod keys;
+pub mod manifest;
 
-use sim::{Action, Digest, EntityId, Fx, FxVec2, Input, Seat, State, Tick, new_state, step};
+pub use crate::container::{
+    FORMAT, ReadError, Replay, Verified, VerifyError, resimulate, seal, signed_bytes, verify,
+};
+pub use crate::keys::{
+    KeyEntry, KeyRegistry, KeyStatus, RegistryError, Signature, SigningKey, VerifyingKey,
+};
+pub use crate::manifest::{Build, Manifest, MatchId, Pseudonym, SessionFacts, SimCommit};
 
-/// The container format this build writes.
-///
-/// Not the protocol version and not `sim`'s: one is how two processes talk to
-/// each other, one is how a file is laid out, one is what the rules do, and
-/// they change for different reasons.
-///
-/// It moved to 2 when the match went to nine seats. The layout did not change —
-/// a seat is still one byte — and that is exactly why it had to move: a
-/// format-1 recording holds seat bytes `0..6` that this build would read as
-/// perfectly good seats belonging to other teams, and resimulate into a
-/// different match. `rules_hash` would catch it a moment later, which is a
-/// reason to be relieved rather than a reason to leave the version alone.
-pub const FORMAT: u16 = 2;
-
-/// What every recording starts with, so that a file that is not one is refused
-/// by its first eight bytes rather than by an arithmetic error further in.
-const MAGIC: [u8; 8] = *b"MOBAREPL";
+use sim::{Action, Digest, EntityId, Fx, FxVec2, Input, Outcome, Seat, Tick};
 
 /// One input, with both clocks.
 ///
@@ -84,6 +89,14 @@ const MAGIC: [u8; 8] = *b"MOBAREPL";
 /// clock in the system that is evidence of anything (`docs/SCOPE.md`, adversary
 /// model). Both are recorded, neither is read by [`resimulate`], and the
 /// divergence between them is exploit class 4's signal at M8.
+///
+/// These two fields are also the whole of the per-input telemetry this format
+/// carries, and `docs/MILESTONES.md` M6 asks for exactly them. Anything at a
+/// higher rate — the raw device deltas `client::input::InputTrace` holds — lives
+/// beside a replay rather than inside one, because `sim` consumes one intention
+/// per tick at 30 Hz and folding a kilohertz stream into the artefact
+/// resimulation is a function of would have made the resimulation a function of
+/// something the rules never read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimedInput {
     /// The input as the server accepted it. Its `player` and `tick` are the
@@ -95,7 +108,13 @@ pub struct TimedInput {
     pub received_at_ms: u64,
 }
 
-/// A match, as the seed and the log that reproduce it.
+/// A match, as the authority produced it.
+///
+/// **This type has no encoding**, and that is the M5 decision rather than an
+/// omission: the only thing that reaches a disk is a [`Replay`], which is this
+/// bound to an identity by a signature. A `Recording::encode` would be a second
+/// file format, unsigned, indistinguishable from the real one at a glance, and
+/// exactly the artefact somebody would hand you as evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Recording {
     /// The match seed.
@@ -104,215 +123,20 @@ pub struct Recording {
     pub rules_hash: Digest,
     /// How many ticks the server ran.
     pub ticks: u32,
+    /// How the match stood when the server stopped. The claim a forged replay
+    /// exists to make, and the reason it is a field rather than a derivation.
+    pub outcome: Outcome,
     /// The digest the server ended on. What [`resimulate`] has to reproduce.
     pub final_state_digest: Digest,
     /// Every input the server accepted, in the order it applied them.
     pub inputs: Vec<TimedInput>,
 }
 
-/// Why a byte string is not a recording.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReadError {
-    /// The first eight bytes are not [`MAGIC`].
-    NotARecording,
-    /// A container format this build does not read.
-    UnsupportedFormat(u16),
-    /// The bytes ran out, or a field held a value that names nothing.
-    Malformed,
-    /// Bytes after the last input.
-    TrailingBytes,
-}
-
-impl core::fmt::Display for ReadError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::NotARecording => write!(f, "not a recording"),
-            Self::UnsupportedFormat(found) => {
-                write!(f, "container format {found}, this build reads {FORMAT}")
-            }
-            Self::Malformed => write!(f, "malformed recording"),
-            Self::TrailingBytes => write!(f, "trailing bytes after the last input"),
-        }
-    }
-}
-
-impl core::error::Error for ReadError {}
-
-/// Why a recording did not resimulate to what it claims.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VerifyError {
-    /// The recording was made under other constants, so resimulating it here
-    /// would produce a different match rather than a different digest.
-    ///
-    /// Its own case rather than a digest mismatch because the two have
-    /// different answers, and a verifier that conflates them teaches its reader
-    /// to distrust the loud one (`docs/RISKS.md` R2).
-    RulesHash {
-        /// What the recording was made under.
-        recorded: Digest,
-        /// What this build plays by.
-        local: Digest,
-    },
-    /// The log does not reproduce the digest the recording claims.
-    ///
-    /// At M3 this cannot yet distinguish a tampered log from a build that
-    /// resolves a tick differently; see the module documentation and
-    /// `docs/RISKS.md` R13.
-    Digest {
-        /// What the recording claims.
-        claimed: Digest,
-        /// What resimulating produced.
-        computed: Digest,
-    },
-}
-
-impl core::fmt::Display for VerifyError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::RulesHash { .. } => write!(f, "recorded under other constants"),
-            Self::Digest { .. } => write!(f, "the log does not reproduce the claimed digest"),
-        }
-    }
-}
-
-impl core::error::Error for VerifyError {}
-
-/// Replays the log through `sim` and returns the digest it ends on.
-///
-/// The one function this crate exists for at M3, and it is deliberately as thin
-/// as it looks: the same `step` the server ran, over the same inputs, from the
-/// same seed. Anything cleverer would be a second simulation to keep in
-/// agreement with the first, which is the whole reason `sim` has no workspace
-/// dependencies.
-///
-/// # Errors
-///
-/// [`VerifyError::RulesHash`] if the recording was made under other constants,
-/// and [`VerifyError::Digest`] if the log does not reproduce what the recording
-/// claims.
-pub fn resimulate(recording: &Recording) -> Result<Digest, VerifyError> {
-    let local = sim::rules_hash();
-    if recording.rules_hash != local {
-        return Err(VerifyError::RulesHash {
-            recorded: recording.rules_hash,
-            local,
-        });
-    }
-
-    let computed = run(recording).digest();
-    if computed == recording.final_state_digest {
-        Ok(computed)
-    } else {
-        Err(VerifyError::Digest {
-            claimed: recording.final_state_digest,
-            computed,
-        })
-    }
-}
-
-/// The state the log reaches, without checking anything about it.
-///
-/// Inputs are bucketed by their own `tick` field, which is authoritative:
-/// `step` ignores an input whose tick is not the state's, so a log fed in bulk
-/// would mostly be discarded. Bucketing here rather than trusting the log's
-/// order means a reordered log resimulates to the same digest as an ordered one
-/// *within a tick's slice only* — across ticks the order is the tick field, and
-/// `sim`'s `input_log_digest` is what makes the order of the log itself part of
-/// its identity.
-fn run(recording: &Recording) -> State {
-    let mut buckets: Vec<Vec<Input>> = vec![Vec::new(); recording.ticks as usize];
-    for timed in &recording.inputs {
-        if let Some(bucket) = buckets.get_mut(timed.input.tick.0 as usize) {
-            bucket.push(timed.input);
-        }
-    }
-
-    let mut state = new_state(recording.seed);
-    for bucket in &buckets {
-        state = step(&state, bucket);
-    }
-    state
-}
-
-// ---------------------------------------------------------------------------
-// The container
-// ---------------------------------------------------------------------------
-
-impl Recording {
-    /// The recording's bytes.
-    #[must_use]
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(64 + self.inputs.len() * 32);
-        out.extend_from_slice(&MAGIC);
-        out.extend_from_slice(&FORMAT.to_be_bytes());
-        out.extend_from_slice(&self.seed.to_be_bytes());
-        out.extend_from_slice(self.rules_hash.as_bytes());
-        out.extend_from_slice(&self.ticks.to_be_bytes());
-        out.extend_from_slice(self.final_state_digest.as_bytes());
-        out.extend_from_slice(&(self.inputs.len() as u64).to_be_bytes());
-        for timed in &self.inputs {
-            write_input(&mut out, timed);
-        }
-        out
-    }
-
-    /// Reads a recording.
-    ///
-    /// Total on every byte string, for the same reason `protocol`'s decoders
-    /// are: a replay file is something a third party hands you, and M5's whole
-    /// subject is what happens when they hand you a tampered one.
-    ///
-    /// # Errors
-    ///
-    /// [`ReadError`] for anything that is not exactly one well-formed
-    /// recording, including trailing bytes after the last input.
-    pub fn decode(bytes: &[u8]) -> Result<Self, ReadError> {
-        let mut reader = ByteReader::new(bytes);
-        if reader.array::<8>().ok_or(ReadError::Malformed)? != MAGIC {
-            return Err(ReadError::NotARecording);
-        }
-        let format = reader.u16().ok_or(ReadError::Malformed)?;
-        if format != FORMAT {
-            return Err(ReadError::UnsupportedFormat(format));
-        }
-        let seed = reader.u64().ok_or(ReadError::Malformed)?;
-        let rules_hash = Digest::from_bytes(reader.array::<32>().ok_or(ReadError::Malformed)?);
-        let ticks = reader.u32().ok_or(ReadError::Malformed)?;
-        let final_state_digest =
-            Digest::from_bytes(reader.array::<32>().ok_or(ReadError::Malformed)?);
-
-        let count = reader.u64().ok_or(ReadError::Malformed)?;
-        // Bounded against what is left in the buffer before anything is
-        // allocated for it: a header claiming four billion inputs is malformed,
-        // not large, and reserving for it first would make that a memory
-        // exhaustion rather than an error.
-        let count = usize::try_from(count).map_err(|_| ReadError::Malformed)?;
-        if count.saturating_mul(INPUT_BYTES) > reader.remaining() {
-            return Err(ReadError::Malformed);
-        }
-        let mut inputs = Vec::with_capacity(count);
-        for _ in 0..count {
-            inputs.push(read_input(&mut reader).ok_or(ReadError::Malformed)?);
-        }
-        if reader.remaining() != 0 {
-            return Err(ReadError::TrailingBytes);
-        }
-
-        Ok(Self {
-            seed,
-            rules_hash,
-            ticks,
-            final_state_digest,
-            inputs,
-        })
-    }
-}
-
 /// A `TimedInput` on the wire: tick, seq, seat, both clocks, and an action
 /// padded to its widest variant so that every entry is the same width.
-const INPUT_BYTES: usize = 4 + 4 + 1 + 8 + 8 + 9;
+pub(crate) const INPUT_BYTES: usize = 4 + 4 + 1 + 8 + 8 + 9;
 
-fn write_input(out: &mut Vec<u8>, timed: &TimedInput) {
+pub(crate) fn write_input(out: &mut Vec<u8>, timed: &TimedInput) {
     let TimedInput {
         input,
         claimed_at_ms,
@@ -361,7 +185,7 @@ fn write_point(out: &mut Vec<u8>, point: FxVec2) {
     out.extend_from_slice(&point.y.to_raw().to_be_bytes());
 }
 
-fn read_input(reader: &mut ByteReader<'_>) -> Option<TimedInput> {
+pub(crate) fn read_input(reader: &mut ByteReader<'_>) -> Option<TimedInput> {
     let tick = Tick(reader.u32()?);
     let seq = reader.u32()?;
     let player = Seat::from_index(reader.u8()?)?;
@@ -405,52 +229,73 @@ fn read_point(reader: &mut ByteReader<'_>) -> Option<FxVec2> {
 }
 
 /// A cursor that never reads past the end.
-struct ByteReader<'a> {
+#[derive(Debug)]
+pub struct ByteReader<'a> {
     bytes: &'a [u8],
     at: usize,
 }
 
 impl<'a> ByteReader<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
+    /// A cursor at the start of these bytes.
+    #[must_use]
+    pub const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, at: 0 }
     }
 
-    fn remaining(&self) -> usize {
+    /// How many bytes are left.
+    #[must_use]
+    pub fn remaining(&self) -> usize {
         self.bytes.len().saturating_sub(self.at)
     }
 
-    fn rest(&self) -> &'a [u8] {
+    /// Everything left, without consuming it.
+    #[must_use]
+    pub fn rest(&self) -> &'a [u8] {
         self.bytes.get(self.at..).unwrap_or(&[])
     }
 
-    fn take(&mut self, count: usize) -> Option<&'a [u8]> {
+    /// The next `count` bytes, or nothing.
+    #[must_use]
+    pub fn take(&mut self, count: usize) -> Option<&'a [u8]> {
         let end = self.at.checked_add(count)?;
         let slice = self.bytes.get(self.at..end)?;
         self.at = end;
         Some(slice)
     }
 
-    fn array<const N: usize>(&mut self) -> Option<[u8; N]> {
+    /// The next `N` bytes as an array.
+    #[must_use]
+    pub fn array<const N: usize>(&mut self) -> Option<[u8; N]> {
         self.take(N)?.try_into().ok()
     }
 
-    fn u8(&mut self) -> Option<u8> {
+    /// The next byte.
+    #[must_use]
+    pub fn u8(&mut self) -> Option<u8> {
         self.take(1)?.first().copied()
     }
 
-    fn u16(&mut self) -> Option<u16> {
+    /// The next big-endian `u16`.
+    #[must_use]
+    pub fn u16(&mut self) -> Option<u16> {
         Some(u16::from_be_bytes(self.array::<2>()?))
     }
 
-    fn u32(&mut self) -> Option<u32> {
+    /// The next big-endian `u32`.
+    #[must_use]
+    pub fn u32(&mut self) -> Option<u32> {
         Some(u32::from_be_bytes(self.array::<4>()?))
     }
 
-    fn u64(&mut self) -> Option<u64> {
+    /// The next big-endian `u64`.
+    #[must_use]
+    pub fn u64(&mut self) -> Option<u64> {
         Some(u64::from_be_bytes(self.array::<8>()?))
     }
 
-    fn i32(&mut self) -> Option<i32> {
+    /// The next big-endian `i32`.
+    #[must_use]
+    pub fn i32(&mut self) -> Option<i32> {
         Some(i32::from_be_bytes(self.array::<4>()?))
     }
 }

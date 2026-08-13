@@ -9,4 +9,31 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+# The signature, and the one place in this workspace where a cryptographic
+# primitive is depended upon rather than written out. `docs/ARCHITECTURE.md`
+# draws the line: `sim` hand-writes SHA-256 because a digest has to produce the
+# same 32 bytes for as long as any replay exists and a dependency there can
+# change rounding in a patch release (`docs/RISKS.md` R9) — and a *signature* is
+# the opposite case, where the failure modes are subtle, invisible to a passing
+# test, and a security portfolio that hand-rolls one has a hole in it with a
+# comment beside it.
+#
+# Ed25519 rather than anything else for two project-specific reasons: signing is
+# deterministic, so a replay is a function of the match rather than of the moment
+# it was sealed and two sealings of one match compare byte for byte; and a public
+# key is 32 bytes, so a key registry is a text file a person can read against a
+# published one by eye.
+#
+# `rand_core` is deliberately **off**: signing needs no randomness, and key
+# generation takes its 32 bytes from `getrandom` below, so the only entropy this
+# crate consumes is at the one call where an operator asks for a key.
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std", "fast", "zeroize"] }
+
+# Thirty-two bytes of operating-system entropy, for `replay keygen` and for
+# nothing else. Reading `/dev/urandom` is a few lines on Unix and is not a few
+# lines on Windows, which is exactly the bar `docs/ENGINEERING.md` sets for a
+# dependency. It is already in this workspace's lockfile beneath `ring`, so it
+# is a new *direct* edge rather than a new crate.
+getrandom = "0.3.4"
+
 sim = { path = "../sim" }

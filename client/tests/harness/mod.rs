@@ -71,6 +71,48 @@ pub fn hex(digest: &sim::Digest) -> String {
         .collect()
 }
 
+/// The key the exit criteria seal with. A written-down constant and not a
+/// secret; `replay/tests/tamper.rs` says why that is the right shape for a
+/// fixture key.
+pub const EXIT_SEED: [u8; 32] = *b"moba exit-criterion signing key\0";
+
+/// Seals a recording and writes it, with a registry beside it, and returns both
+/// paths.
+///
+/// Since M5 there is exactly one file format and it is signed, so an exit
+/// criterion that asks `replay verify` to resimulate a match has to produce the
+/// artefact a person would actually keep — not a development container that no
+/// longer exists. And `verify` refuses to run without a registry, so the harness
+/// writes one: a verification with no registry establishes nothing, and a
+/// criterion that passed one would be asserting less than it reads as.
+///
+/// # Panics
+///
+/// If the files cannot be written.
+#[must_use]
+pub fn seal_to_disk(recording: &replay::Recording, name: &str) -> (PathBuf, PathBuf) {
+    let key = replay::SigningKey::from_seed(EXIT_SEED);
+    let mut identifier = [0u8; 16];
+    for (slot, byte) in identifier.iter_mut().zip(name.bytes()) {
+        *slot = byte;
+    }
+    let sealed = replay::seal(
+        recording,
+        &replay::SessionFacts::anonymous(replay::MatchId(identifier), 1_786_000_000_000),
+        &key,
+    );
+
+    let directory = std::env::temp_dir();
+    let replay_path = directory.join(format!("{name}-{}.replay", std::process::id()));
+    let keys_path = directory.join(format!("{name}-{}.public-key", std::process::id()));
+
+    let mut registry = replay::KeyRegistry::new();
+    registry.insert(key.verifying(), replay::KeyStatus::Active, "exit-criterion");
+    std::fs::write(&replay_path, sealed.encode()).expect("write the replay");
+    std::fs::write(&keys_path, registry.encode()).expect("write the key registry");
+    (replay_path, keys_path)
+}
+
 /// What a match a client played actually contained.
 ///
 /// `docs/RISKS.md` R15 is the reason this type exists rather than the three

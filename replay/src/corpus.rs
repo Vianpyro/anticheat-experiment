@@ -42,21 +42,47 @@
 //! [`Corpus::audit`] treats `withdrawals/` as the one place the pseudonym may
 //! still appear and reports every other occurrence, byte by byte, over every
 //! file under the root.
+//!
+//! # There is no derived index, and that is the answer rather than an omission
+//!
+//! `docs/CONSENT.md` promises that withdrawal destroys a participant's data, and
+//! the obvious way for that promise to fail is not a match directory somebody
+//! forgot to unlink: it is a *derived* artefact — a summary, a cache, a list of
+//! who played what — that outlives the thing it was derived from. A corpus with
+//! an index has two places a pseudonym lives and one command that deletes one of
+//! them.
+//!
+//! Until M5 this corpus had exactly that. `store` took a participant list and
+//! wrote it into a `participants` file beside the recording, because a recording
+//! named seats and not people and there was nowhere else to put it. That file
+//! was an index: derived from what the operator passed in, able to drift from
+//! the recording it sat next to, and — the case `audit` had to grow a second job
+//! for — able to be deleted while the telemetry it pointed at survived, leaving
+//! somebody's inputs in a corpus with nobody able to say whose.
+//!
+//! A sealed replay carries its participants **inside the signature**
+//! (`crate::manifest`), so the index has no reason to exist and it is gone.
+//! [`Corpus::participants_of`] reads the manifest. There is one place a
+//! pseudonym is written and one thing to delete, and [`Corpus::audit`] — which
+//! reads every byte of every file under the root rather than the places a
+//! pseudonym is supposed to be — is what refuses a future one added quietly.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::Recording;
+use crate::{Replay, keys::VerifyingKey};
 
 /// Where the consent records live, one file per participant.
 const PARTICIPANTS: &str = "participants";
 /// Where the pseudonym mapping lives. The sensitive directory.
 const IDENTITIES: &str = "identities";
-/// Where the recordings live, one directory per match.
+/// Where the replays live, one directory per match.
 const MATCHES: &str = "matches";
 /// Where a withdrawal leaves its tombstone.
 const WITHDRAWALS: &str = "withdrawals";
+/// The file a match's replay is stored as.
+const REPLAY_FILE: &str = "match.replay";
 
 /// One participant's consent, as recorded.
 ///
@@ -182,42 +208,59 @@ impl Corpus {
         )
     }
 
-    /// Stores a recorded match and the pseudonyms that played it.
+    /// Stores a sealed match.
+    ///
+    /// The participants are **read out of the replay's manifest** rather than
+    /// passed in, which is the M5 change and the whole of why this corpus has no
+    /// index: there is one statement of who played a match, it is inside the
+    /// signature, and a second one kept beside it could disagree with it.
+    ///
+    /// The match's directory is named by its `match_id`, which is also inside
+    /// the signature — so a replay filed under somebody else's identifier is a
+    /// mismatch this can see, and refuses.
     ///
     /// # Errors
     ///
-    /// Anything the filesystem refuses, and [`io::ErrorKind::PermissionDenied`]
-    /// for a participant with no consent record — a match nobody consented to is
-    /// a match this project may not hold, and refusing it here is cheaper than
-    /// discovering it at M6.
-    pub fn store(
-        &self,
-        match_id: &str,
-        recording: &Recording,
-        participants: &[String],
-        recorded_on: &str,
-    ) -> io::Result<()> {
-        for pseudonym in participants {
-            if !self.consent_path(pseudonym).exists() {
+    /// Anything the filesystem refuses; [`io::ErrorKind::PermissionDenied`] for
+    /// a participant with no consent record — a match nobody consented to is a
+    /// match this project may not hold, and refusing it here is cheaper than
+    /// discovering it at M6 — and [`io::ErrorKind::InvalidInput`] for a replay
+    /// whose manifest names a different match.
+    pub fn store(&self, replay: &Replay) -> io::Result<()> {
+        let match_id = replay.manifest.match_id.to_string();
+        for pseudonym in replay.manifest.participants() {
+            if !self.consent_path(pseudonym.as_str()).exists() {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     format!("{pseudonym} has no consent record in this corpus"),
                 ));
             }
         }
-        let directory = self.root.join(MATCHES).join(match_id);
+        let directory = self.root.join(MATCHES).join(&match_id);
         fs::create_dir_all(&directory)?;
-        fs::write(directory.join("recording.replay"), recording.encode())?;
-        fs::write(
-            directory.join("participants"),
-            format!(
-                "recorded_on: {recorded_on}\n{}",
-                participants
-                    .iter()
-                    .map(|pseudonym| format!("participant: {pseudonym}\n"))
-                    .collect::<String>()
-            ),
-        )
+        fs::write(directory.join(REPLAY_FILE), replay.encode())
+    }
+
+    /// The replay a match directory holds.
+    ///
+    /// # Errors
+    ///
+    /// Anything the filesystem refuses, and [`io::ErrorKind::InvalidData`] for a
+    /// file that is not a replay.
+    pub fn replay_of(&self, match_id: &str) -> io::Result<Replay> {
+        let bytes = fs::read(self.root.join(MATCHES).join(match_id).join(REPLAY_FILE))?;
+        Replay::decode(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
+    }
+
+    /// The key that sealed a match, for an operator checking a corpus against a
+    /// published registry.
+    ///
+    /// # Errors
+    ///
+    /// Anything [`Corpus::replay_of`] refuses.
+    pub fn sealed_by(&self, match_id: &str) -> io::Result<VerifyingKey> {
+        Ok(self.replay_of(match_id)?.manifest.server_identity)
     }
 
     /// Every match identifier in the corpus.
@@ -239,18 +282,26 @@ impl Corpus {
         Ok(found)
     }
 
-    /// The pseudonyms a match was played by.
+    /// The pseudonyms a match was played by, read out of its manifest.
+    ///
+    /// Not out of a file beside the replay, which is what this used to do: that
+    /// file was an index derived from what an operator passed to `store`, and an
+    /// index is a second place a pseudonym lives and a second thing a withdrawal
+    /// has to reach. The manifest is inside the signature, so this cannot drift
+    /// from what the match actually was and cannot be edited without breaking
+    /// verification.
     ///
     /// # Errors
     ///
-    /// Anything the filesystem refuses.
+    /// Anything the filesystem refuses, and [`io::ErrorKind::InvalidData`] for a
+    /// file that is not a replay.
     pub fn participants_of(&self, match_id: &str) -> io::Result<Vec<String>> {
-        let path = self.root.join(MATCHES).join(match_id).join("participants");
-        let text = fs::read_to_string(path)?;
-        Ok(text
-            .lines()
-            .filter_map(|line| line.strip_prefix("participant: "))
-            .map(str::to_owned)
+        Ok(self
+            .replay_of(match_id)?
+            .manifest
+            .participants()
+            .into_iter()
+            .map(ToString::to_string)
             .collect())
     }
 
@@ -320,17 +371,19 @@ impl Corpus {
     ///
     /// # The orphan case, which searching for a name cannot reach
     ///
-    /// A recording does **not** carry a pseudonym. It names seats — `player: 0`
-    /// through `player: 8` — and the only thing tying a seat to a person is the
-    /// match's `participants` file. So a match directory whose participant list
-    /// was deleted while its recording survived is telemetry that no search for
-    /// a name can find, in any corpus, for any participant.
+    /// A *log* does not carry a pseudonym. It names seats — `player: 0` through
+    /// `player: 8` — so telemetry with no manifest in front of it is telemetry
+    /// no search for a name can find, in any corpus, for any participant.
     ///
-    /// That is reported too, unconditionally: a match directory with no readable
-    /// participant list is an orphan, it is somebody's input telemetry, and
-    /// nobody can say whose. It appears in the result of every audit, which is
-    /// deliberate — the question "is this corpus in a state I can defend" has to
-    /// have one answer rather than nine.
+    /// M5 narrowed this case rather than closing it. The participants are inside
+    /// the manifest now and the manifest is inside the signature, so there is no
+    /// longer a separate file that can be deleted while the log survives; what
+    /// is left is a match directory whose replay does not decode at all — a
+    /// truncated write, a half-finished copy, a file somebody edited. That is
+    /// still somebody's inputs and still nobody can say whose, so it is still
+    /// reported, unconditionally, in the result of every audit. The question "is
+    /// this corpus in a state I can defend" has to have one answer rather than
+    /// nine.
     ///
     /// # Errors
     ///
@@ -342,7 +395,7 @@ impl Corpus {
             return Ok(traces);
         }
         for match_id in self.matches()? {
-            if self.participants_of(&match_id).is_err() {
+            if self.replay_of(&match_id).is_err() {
                 traces.push(self.root.join(MATCHES).join(match_id));
             }
         }

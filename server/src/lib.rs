@@ -440,12 +440,26 @@ impl Match {
     }
 
     /// The match so far, as the seed and the log that reproduce it.
+    ///
+    /// **Unsigned, and it has no encoding.** `docs/MILESTONES.md` M5 gives this
+    /// project one file format and it is `replay::Replay`, which is this bound
+    /// to an identity by a signature over a manifest. The sealing happens in
+    /// `replay::seal` and not here, because the authority has no clock, no
+    /// socket and no identity — which is what makes it a function of its inputs,
+    /// and a signing key inside it would be the first secret in the one
+    /// component that is supposed to have none.
+    ///
+    /// `outcome` is a field rather than something a reader derives, because it
+    /// is the claim a replay is submitted to make: exploit class 2 is result
+    /// forgery, and the manifest has to carry the assertion in order for
+    /// resimulation to be able to contradict it.
     #[must_use]
     pub fn recording(&self) -> Recording {
         Recording {
             seed: self.seed,
             rules_hash: rules_hash(),
             ticks: self.ticks_run,
+            outcome: self.state.outcome(),
             final_state_digest: self.state.digest(),
             inputs: self.log.clone(),
         }
