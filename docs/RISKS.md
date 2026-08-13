@@ -170,6 +170,41 @@ start time, participant pseudonyms, the input log digest, and the final state
 digest — rather than the log alone. Version the manifest from day one. Publish
 the public key alongside releases and keep every retired key published.
 
+### Taken at M5, with two things the hedge did not name
+
+The manifest is what is signed and it carries every field above, plus three the
+hedge did not ask for and the work found it needed: the **outcome**, because that
+is the claim a forged replay exists to make and a field is what lets resimulation
+contradict it; the **input count**, because it is what makes a shortened log a
+different answer from an altered one; and the **tick count**, because a verifier
+that took the match's length from the log would be taking it from the part an
+attacker shortens. The signed bytes are the magic, the format and the manifest,
+so a file cannot be re-labelled as another format's and re-parsed under different
+rules while keeping a signature that verifies.
+
+**Key rotation is implemented as this entry demands and the demand is the
+unobvious half.** A retired key still verifies what it sealed; the registry
+records its status and `verify` reports it. The tempting reading of "retired" is
+"refused", and that reading destroys evidence by housekeeping — every replay
+signed with the old key becomes unverifiable the day it is rotated.
+`a_retired_key_still_verifies_what_it_sealed` is the assertion.
+
+**The signing key gets the same treatment as the corpus, for a different reason.**
+`.gitignore` refuses `*.signing-key` and `ci` fails on a tracked one: whoever
+holds it can seal a manifest this project's own verifier accepts, so a committed
+key is a committed authority to mint evidence, with R3's irreversibility — history
+and forks. The **public** half is deliberately not refused, because this entry
+requires it to stay published.
+
+**And the limit this hedge cannot reach, stated because a table of eight
+refusals invites a reader to conclude more.** An attacker who holds a key the
+registry accepts, and who adjusts every field consistently, has produced a replay
+of a different match, honestly simulated. Nothing in the bytes distinguishes it
+from one that was played, because nothing in it is false. What lies past that
+point is key custody, not verification, and
+`the_escalation_ends_where_key_custody_begins` executes it rather than leaving it
+to a reader's charity.
+
 ## R5 — Serializability of `State`
 
 **Irreversible in practice because:** the moment one debug endpoint, one
@@ -474,6 +509,25 @@ difference, which puts it in the reproducible-builds swamp `ENGINEERING.md`
 declines to enter, and it would report a difference between two builds of
 identical source. A version plus a commit is a weaker guarantee that is actually
 true.
+
+### Taken at M5, and the version stopped being a number somebody types
+
+`sim::VERSION` is read from Cargo's own environment at compile time rather than
+written out in `replay`, so the crate manifest is the source of truth and there
+is no second copy of the digits to forget. `replay`'s build script stamps the
+commit from `git rev-parse HEAD` and `git status --porcelain`, so a binary
+carries the commit it was *built* from rather than whatever the machine it runs
+on has checked out — and a tarball with no `.git` produces `Unknown`, which is
+this entry's "a manifest that lies about provenance is worse than one that admits
+it" in the one place it can be enforced.
+
+Both are their own `VerifyError`, checked in order after the signature and before
+anything is resimulated, so a replay from another build costs nothing to reject
+and reports why. `replay/tests/sealed.rs` demonstrates it against a real file
+rather than a constructed one: the committed cross-platform fixture pins its
+version field at `0.0.0`, which no build has, so verifying it as *this* build
+must fail with `SimVersion` — and that assertion is stable across every bump this
+entry's mechanism will ever demand.
 
 ## R14 — Input fidelity is a property of the client, and the corpus inherits it
 
