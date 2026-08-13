@@ -1015,7 +1015,41 @@ asking:
   session part reporting `passes: 0`, which is a thing an operator reads as broken
   rather than as healthy.
 
+### And the entry found one in the field, which is the reason to write it
+
+While M6 was open, `check (windows-latest)` was failing on `main` — on the merges
+of pull requests #6 and #7, intermittently, with `worst correction 13106 raw
+units` in `client/tests/m4_exit.rs`. Two things about that are worth recording.
+
+**It is this entry's subject and it had been read as a flake.** The assertion's
+own message says "or the client fell behind the tick period", and that is exactly
+what it was; the criterion had been re-run and had gone green, which is the
+treatment that turns a real failure into a habit. A criterion that is red every
+other run trains its reader to press the button again.
+
+**The cause is the harness's compression, and R14's instrument had already
+measured the thing that explains it.** Windows' default timer resolution is about
+15.6 ms, which `client/tests/jitter.rs` records against the Windows run that made
+it isolate the added latency. The M4 harness compressed the server's period to
+**ten** milliseconds, so both ends of it were asking for wake-ups finer than the
+host clock can give. **Compressing below the host's granularity is not a
+compression; it is a different experiment**, and the number the criterion was
+being asserted against was a property of the runner.
+
+The period is the game's own 33 ms now and the compression is gone. What makes
+that defensible rather than merely safe is the measurement above: the capture loop
+at nine seats in a group fight has a factor of six in hand at 33 ms, so a
+criterion that cannot hold there is a criterion about a game nobody can play
+rather than about a scheduler. It costs that test twenty-three seconds.
+
+One legibility defect went with it. A one-tick correction arrives as 13106 raw
+units against a step of 13107 — a raw unit short, because the displacement
+truncates toward zero — so integer division was reporting `0 tick(s) of movement`
+about a one-tick correction, which sends a reader looking for an arithmetic bug in
+`step`. It rounds.
+
 **Reopened by**, any one of: a renderer that is not a CPU rasteriser over this
 scene; a window materially larger than 1280×800; a recording session whose census
-reports degraded matches; or any change that puts work on the thread between
-`new_events` and `about_to_wait`.
+reports degraded matches; any change that puts work on the thread between
+`new_events` and `about_to_wait`; or any harness that compresses a period below
+the granularity of the clock the host can schedule.
