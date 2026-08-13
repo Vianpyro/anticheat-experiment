@@ -49,18 +49,37 @@ fn a_view(seat: Seat) -> PlayerView {
 fn slow_then_fast() -> Vec<(u64, f64, f64)> {
     let period_ns = 8_000_000u64; // 125 Hz, an ordinary USB mouse
     let mut events = Vec::new();
-    for step in 0..250u64 {
-        // 0.03 device counts a step: far below one world unit, and far below
-        // anything a character cell would have noticed.
-        events.push((step * period_ns, 0.03, 0.0));
+    for step in 0..SLOW {
+        // 0.03 device counts a step, which is 0.0015 world units: a fortieth of
+        // the narrow side of a terminal character cell, so a terminal would
+        // have reported roughly one of these 770 events.
+        events.push((step * period_ns, SLOW_COUNTS, 0.0));
     }
-    for step in 250..500u64 {
-        // Forty counts a step: two world units, which would have crossed one or
-        // two terminal cells every single time.
-        events.push((step * period_ns, 40.0, 0.0));
+    for step in SLOW..SLOW + FAST {
+        // Twelve counts a step, which is 0.6 world units: half a cell, so a
+        // terminal would have reported every second one.
+        events.push((step * period_ns, FAST_COUNTS, 0.0));
     }
     events
 }
+
+/// The fixture's two stretches, and the sensitivity arithmetic that keeps the
+/// aim **inside** the map.
+///
+/// That last part is load bearing and it was not, once: an earlier version of
+/// this fixture walked far enough to hit the clamp, so every client it drove
+/// ended at exactly `map_half_extent` and "two windows produce the same aim" was
+/// true of any two windows whatever. A mutation that scaled the aim by the
+/// window's aspect ratio passed. The travel is now well inside the map and
+/// [`capture_is_a_function_of_the_device_and_not_of_the_window`] asserts that it
+/// is, so the hole cannot be reopened by a later edit to these numbers.
+const SLOW: u64 = 250;
+const FAST: u64 = 100;
+const SLOW_COUNTS: f64 = 0.03;
+const FAST_COUNTS: f64 = 12.0;
+/// Where the fixture leaves the aim, in world units: comfortably inside the
+/// map's `map_half_extent`.
+const TRAVEL_COUNTS: f64 = SLOW as f64 * SLOW_COUNTS + FAST as f64 * FAST_COUNTS;
 
 /// **The property this whole change exists for.** The capture path is a
 /// function of the device event stream and of nothing the renderer knows.
@@ -107,10 +126,25 @@ fn capture_is_a_function_of_the_device_and_not_of_the_window() {
         large.aim(),
         "the aim the simulation is given depends on the size of the window"
     );
-    assert!(
-        small.trace().len() == 500,
-        "the fixture recorded {} events instead of 500",
-        small.trace().len()
+    assert_eq!(
+        small.trace().len(),
+        usize::try_from(SLOW + FAST).unwrap(),
+        "the fixture did not record every event it fed in"
+    );
+
+    // …and the aim comparison above must be a comparison of two live values
+    // rather than of two saturated ones. Without this, a mutation that scales
+    // the aim by anything at all passes, because both clients pile up against
+    // the same clamp. That happened.
+    assert_ne!(
+        small.aim().x,
+        RULES.map_half_extent,
+        "the fixture saturated the clamp, so the aim assertion proves nothing"
+    );
+    assert_eq!(
+        small.aim().x,
+        Fx::from_raw(((TRAVEL_COUNTS * WORLD_UNITS_PER_COUNT) * 65536.0) as i32),
+        "the aim is not the device's travel in world units"
     );
 }
 
@@ -310,15 +344,20 @@ fn the_record_is_in_the_devices_units_and_the_aim_is_not() {
             Motion::Pressed { .. } => None,
         })
         .sum();
-    // The fixture walks 0.03 × 250 + 40 × 250 counts to the right.
     assert!(
-        (counts - (0.03 * 250.0 + 40.0 * 250.0)).abs() < 1e-9,
-        "the trace does not hold the device's own units: {counts}"
+        (counts - TRAVEL_COUNTS).abs() < 1e-9,
+        "the trace does not hold the device's own units: {counts} against \
+         {TRAVEL_COUNTS}"
     );
 
-    // …and the aim, which is that walk in world units, is clamped by the map
-    // rather than being the same number.
-    assert_eq!(play.aim().x, RULES.map_half_extent);
+    // …and the aim is that same walk multiplied by a sensitivity nobody else
+    // has to know about, which is the whole of the difference between the two
+    // paths.
+    let aimed = f64::from(play.aim().x.to_raw()) / 65536.0;
+    assert!(
+        (aimed - counts * WORLD_UNITS_PER_COUNT).abs() < 1e-4,
+        "the aim is {aimed} world units for {counts} counts"
+    );
 }
 
 /// The measurement the probe reports, checked on a stream whose answer is known.
@@ -334,18 +373,22 @@ fn the_reported_distribution_is_the_one_the_stream_had() {
     }
     let stats = trace.stats();
 
-    assert_eq!(stats.samples, 500);
-    assert_eq!(stats.moves, 500);
+    let events = usize::try_from(SLOW + FAST).unwrap();
+    assert_eq!(stats.samples, events);
+    assert_eq!(stats.moves, events);
     assert_eq!(stats.gaps_ns.min, 8_000_000);
     assert_eq!(stats.gaps_ns.p50, 8_000_000);
     assert_eq!(stats.gaps_ns.max, 8_000_000);
-    assert_eq!(stats.span_ns, 499 * 8_000_000);
+    assert_eq!(stats.span_ns, (SLOW + FAST - 1) * 8_000_000);
 
     // The finest motion in the stream is the slow stretch's 0.03 counts, which
     // is 0.0015 world units — against a terminal cell of 1.16 world units
     // across and 4.11 down. That ratio is what R14 becomes.
     let finest = stats.finest_count.expect("the stream has motion in it");
-    assert!((finest - 0.03).abs() < 1e-12, "finest motion was {finest}");
+    assert!(
+        (finest - SLOW_COUNTS).abs() < 1e-12,
+        "finest motion was {finest}"
+    );
     let world = stats
         .finest_world_units
         .expect("the stream has motion in it");
