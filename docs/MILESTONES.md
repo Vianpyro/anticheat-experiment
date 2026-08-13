@@ -11,7 +11,10 @@ CI is not a delivered detector.**
 ## Current state
 
 **M0, M1, M2 and M3 are reached**, the last of them for a game that is now
-3v3v3 on a triangular map. The workspace exists with
+3v3v3 on a triangular map. **M4 is built and not reached**: everything its
+criterion asks for except the three humans on two operating systems runs in
+`client/tests/m4_exit.rs`, and that clause is a fact about a calendar rather
+than a thing CI can stand in for. The workspace exists with
 its seven crates; the toolchain is pinned; `ci`, `pr-hygiene` and `determinism`
 are the only workflows and none holds write permissions; `LICENSE`,
 `SECURITY.md` and `CONTRIBUTING.md` exist. The template's super-linter, its
@@ -104,7 +107,9 @@ two states a player cannot tell apart produce byte-identical frames for that
 player, which covers the padding, the framing, the handle space and the event
 backlog at once. `ARCHITECTURE.md` carries the padding budget with the numbers
 in it — two datagrams of 555 bytes a tick a player, 266 kbit/s, ten times the
-unpadded mean — instead of the sentence that used to stand in for them.
+unpadded mean — instead of the sentence that used to stand in for them. (M4 put
+five bytes of input acknowledgement beside the view; the numbers there are 558
+and 268 now, and `ARCHITECTURE.md` carries the current arithmetic.)
 
 That budget was re-cut once, and the question that re-cut it is worth recording
 because it had not been asked: **is the worst case the bound is derived from
@@ -299,7 +304,8 @@ criterion did not say, which the work had to decide:
   correctly ordered, which is the precondition everything at M5 rests on.
 - **It was checked by breaking it.** Team vision replaced by per-player vision:
   `Blue1 disagrees with Blue0 about the world at tick 800`. An input left out of
-  the log: `resim` refuses the file. A criterion that has never been red is a
+  the log: `replay verify` refuses the file (the tool was called `resim` at M3
+  and gained subcommands at M4). A criterion that has never been red is a
   criterion nobody has verified.
 - **Half (a) is weaker than the sentence above, and the transport is why.**
   State travels in QUIC datagrams now, so a client can legitimately miss a tick;
@@ -360,6 +366,56 @@ rules already handle and the fixtures already cover; the match writes a replay;
 `replay verify` resimulates it to the server's final digest. The consent text exists, states the four points above, and was signed by
 all three before the match rather than after.
 
+### M4 is built, and it is not reached
+
+Everything the criterion asks for **except the three humans on two operating
+systems** is in the repository and runs. That clause is a fact about a calendar
+and three people; no test stands in for it, and the milestone stays open until
+it happens. `client/tests/m4_exit.rs` states the split in a table at the top of
+the file rather than in a commit message, so that a reader who opens it in six
+months finds out immediately which half of the criterion they are looking at.
+
+What that file does run: three clients take one team's seats through the real
+QUIC transport, driving the **same input path a person drives** — one intention
+per tick, a standing order that persists, one-shot abilities that leave it alone
+— for a thousand ticks; the match writes a replay; and `replay verify`
+resimulates it to the server's own final digest in a separate process. The
+prediction is exact on all 1000 of 1000 views for each of the three, which is
+the number the criterion could not have asked for at M3 because there was
+nothing to predict with.
+
+Four things the criterion did not say, which the work had to decide:
+
+- **The acknowledgement M3 left open is a field beside the view, not in it.**
+  `ServerMessage::View` carries `applied_through: Option<u32>`. A view is what
+  `view_for` computes from a `State` and that function has no session to ask, so
+  the alternatives were a second argument to the most sensitive function in the
+  project or a view type with a field its own constructor cannot fill.
+  `ARCHITECTURE.md` has the reasoning and the five bytes it costs.
+- **`Action::Idle` is not silence.** It is a rule that stops the champion, so a
+  client with nothing new to ask for repeats its standing intention. That is
+  also what keeps exactly one intention outstanding, which is the traffic under
+  which the prediction is exact — the two facts are the same fact.
+- **The renderer is a terminal, and it quantises aim.** `RISKS.md` R14 carries
+  the decision and its price: a corpus recorded through this client cannot
+  support M8's aim-curvature detector, and everything timing-shaped is
+  untouched.
+- **The consent regime is code as well as text.** `docs/CONSENT.md` is the
+  instrument; `replay withdraw` and `replay audit` are the mechanism, and
+  `replay/tests/withdrawal.rs` exercises the audit by breaking the withdrawal
+  three ways.
+
+And one thing M4 found in M3's own criterion, which is the reason to run a
+criterion under conditions it has never seen. `LocalWorld::digest` hashed the
+client's **own** liveness — its own hit points and its own respawn timer, which
+`ARCHITECTURE.md` is explicit that teammates are not entitled to. Three clients
+on one team therefore reported different digests as soon as anybody took damage,
+and M3 never noticed because its scripted match produces no damage at all: the
+three walk a lane, nothing touches them, and their hit points stay equal by
+accident. Walking them into a tower's range instead produced `Blue0 disagrees
+with Blue1 about the world at tick 620`. M3's criterion was passing on a
+fixture that could not reach the case it was about.
+
 ## M5 — Replay integrity · 2 weeks
 
 Replay container format with a version stamp and a rules hash, signing, and
@@ -398,6 +454,61 @@ train/holdout split; a written destruction procedure that has been executed once
 end to end on a discarded test recording; and a published summary statistic set.
 Whether the raw corpus can be published at all is decided here, not later, and
 only for the participants who opted into that purpose separately.
+
+### What forty matches actually costs, and what the number is for
+
+Written at M4 rather than at M6, because the constraint is a calendar and the
+time to look at a calendar is before it is the thing blocking you.
+
+**The arithmetic.** A recorded match needs nine people at once. Forty matches is
+not forty evenings: a session that gets nine people into a voice call can
+plausibly record six to ten matches once everyone is connected, so forty matches
+is **four to seven sessions of nine people**. That is the real unit, and it is
+the one to schedule against. Assembling nine adults on the same evening is,
+empirically, a fortnightly event at best; four to seven of them is three to six
+months of wall clock, running in parallel with M5 and M7 rather than after them.
+`MILESTONES.md` already says to start recruiting during M4, and this is the
+number that makes that instruction concrete.
+
+**What the corpus can support at that size, stated as a bound and not a rate.**
+`RISKS.md` R8 is the rule and the arithmetic is the rule of three: zero false
+positives observed over N independent trials supports an upper bound of about
+`3/N` at 95% confidence. What counts as N is the question people get wrong, and
+it is not forty. A detector that scores a *player-match* has `9 × 40 = 360`
+scored units, but they are not independent — nine of them share a match and a
+few dozen share a person — so the honest N is closer to the number of distinct
+people, **9**, for anything a person's style drives, and closer to the number of
+matches, **40**, for anything a match's circumstances drive. The supportable
+claims are therefore about `3/9 ≈ 33%` and `3/40 ≈ 7.5%` respectively, and
+**both** belong in a detector's document, because a reader who is shown only the
+friendlier one has been handled.
+
+No number in this repository may be written as "0% false positives", at any
+corpus size this project can reach. `RISKS.md` R8 says why in one sentence: the
+audience is engineers who will check.
+
+**Partially filled seats and short sessions are usable, and are not the same
+kind of data.** A match with six humans and three empty seats is a legitimate
+`State` — the rules handle it, the fixtures cover it, and M4's own criterion is
+three humans and six empty seats. Its *telemetry* is as good as any: an input's
+inter-arrival time does not know how many seats were occupied. What it is not
+usable for is anything that reads the *situation* a player was in, because a
+match with three absent champions has different fights in it. So: keep them,
+count them separately, and never mix them into a distribution a detector
+thresholds on without saying which. The same goes for short matches — a
+five-minute match is five minutes of inputs, and a detector reading
+per-match aggregates has to weight it as such rather than as a match.
+
+**If the calendar does not produce nine people forty times.** The revision to
+propose, rather than declaring the milestone reached on a corpus that does not
+support it: hold the *exit criterion* at 9 distinct people and drop the match
+count to **20**, which halves the sessions to two to four; report `3/20 ≈ 15%`
+alongside `3/9 ≈ 33%`; and move the difference into M8's document as a stated
+limit on which detectors may ship. What must not be traded is the *people*
+count: a corpus of forty matches from nine people and a corpus of forty matches
+from four people cost the same to collect and the second supports nothing at
+all, because the null model a behavioural detector needs is a distribution over
+humans.
 
 ## M7 — Cheat client and exploit classes 1, 4, 5 · 3 weeks
 

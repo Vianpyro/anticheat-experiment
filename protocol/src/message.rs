@@ -75,7 +75,62 @@ pub enum ServerMessage {
     /// The session has no seat, and why.
     Rejected(RejectReason),
     /// One tick, already culled, with this recipient's own handles.
-    View(PlayerView),
+    View {
+        /// The world this recipient may know about, at this tick.
+        view: PlayerView,
+        /// The highest sequence number from **this** recipient that the server
+        /// had folded into the world by the tick the view describes, or `None`
+        /// if it has folded in none.
+        ///
+        /// # Why this field exists, and why it is here rather than in the view
+        ///
+        /// `docs/MILESTONES.md` M3 closes on a thing it could not build:
+        /// client-side prediction needs the client to know *which of its inputs
+        /// the server applied to which tick*, and nothing told it. The server
+        /// buckets an intention into whichever tick it is about to run, and
+        /// `PlayerView` deliberately carries no standing order — an order names
+        /// an `EntityId` the player may no longer be able to see. M4 needed one
+        /// more field, and this is it.
+        ///
+        /// It is **outside** [`PlayerView`] on purpose. A view is what
+        /// `sim::view::view_for` computes from a `State`, and that function has
+        /// no session to ask: an acknowledgement is a fact about a connection,
+        /// not about the world. Putting it in the view would mean either a
+        /// projection that takes a session argument or a view type with a field
+        /// its own constructor cannot fill — and the second is how a type stops
+        /// meaning what its name says.
+        ///
+        /// # Why it is not a leak
+        ///
+        /// It is a number this recipient wrote and sent. It says nothing about
+        /// the world, nothing about any other seat, and nothing the sender did
+        /// not already know. Its width is constant — a tag byte and four bytes
+        /// present in both cases — so the frame's size does not follow it
+        /// either.
+        ///
+        /// The traffic property in `server/tests/traffic.rs` is stated with this
+        /// in mind: the frame is a function of what the recipient is entitled to
+        /// know about the world **and of what the recipient itself said**, both
+        /// of which are things the recipient already has.
+        ///
+        /// # What "folded into the world" means, exactly
+        ///
+        /// That the server drained the input into the slice it handed `step`,
+        /// not that a rule acted on it. An input from a dead champion is applied
+        /// and does nothing; an input the sequence rule or the rate limit
+        /// refused is never applied and never acknowledged. The client needs the
+        /// first meaning: it is asking which of its outstanding intentions it
+        /// may stop re-applying.
+        ///
+        /// The distinction between *applied* and *accepted* is not observable
+        /// today and is written down anyway, because the field's correctness
+        /// depends on it the day it becomes observable: the server's loop drains
+        /// its whole queue and emits its frames in one call, so every accepted
+        /// input is applied by the very next tick and no frame is sent in
+        /// between. `server/tests/traffic.rs` says which half of this it can and
+        /// cannot check.
+        applied_through: Option<u32>,
+    },
 }
 
 /// Why a session was refused.

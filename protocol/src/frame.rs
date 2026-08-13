@@ -78,9 +78,19 @@ pub const MAX_DATAGRAM_BYTES: usize = 600;
 /// per tick whatever happened.
 pub const SHARD_HEADER_BYTES: usize = 2 + 4 + 1;
 
-/// What a frame has to hold: the header plus the widest view the encoding can
-/// produce.
-const FRAME_MINIMUM: usize = HEADER_BYTES + PlayerView::MAX_ENCODED_BYTES;
+/// The input acknowledgement that precedes a view: a tag byte and four bytes of
+/// sequence number, present in both cases.
+///
+/// Constant width rather than "one byte when there is nothing to acknowledge",
+/// for the reason `Outcome` is padded in `sim`'s own encoding: a variant that
+/// costs fewer bytes is a variant an observer can read off a length. Here it
+/// would say "this session has not had an input applied yet", which is a fact
+/// about the start of a match and worth exactly as little as it costs to hide.
+pub const APPLIED_BYTES: usize = 1 + 4;
+
+/// What a frame has to hold: the header, the acknowledgement, and the widest
+/// view the encoding can produce.
+const FRAME_MINIMUM: usize = HEADER_BYTES + APPLIED_BYTES + PlayerView::MAX_ENCODED_BYTES;
 
 /// Bytes of frame in one shard. The frame is rounded up to a whole number of
 /// these, so the padding a receiver checks covers the rounding too.
@@ -367,7 +377,23 @@ impl ServerFrame {
                 writer.u8(reason.tag());
                 KIND_REJECTED
             }
-            ServerMessage::View(view) => {
+            ServerMessage::View {
+                view,
+                applied_through,
+            } => {
+                // The acknowledgement first, at a constant width, so that the
+                // view's own variable-length encoding starts at a fixed offset
+                // and the decoder does not have to find it.
+                match applied_through {
+                    Some(seq) => {
+                        writer.u8(1);
+                        writer.u32(*seq);
+                    }
+                    None => {
+                        writer.u8(0);
+                        writer.u32(0);
+                    }
+                }
                 writer.bytes(&view.encode());
                 KIND_VIEW
             }
@@ -401,9 +427,26 @@ impl ServerFrame {
                 ServerMessage::Rejected(RejectReason::from_tag(tag).ok_or(DecodeError::Body)?)
             }
             KIND_VIEW => {
-                let (view, read) = PlayerView::decode(payload).ok_or(DecodeError::Body)?;
-                check_padding(payload, read)?;
-                return Ok(ServerMessage::View(view));
+                let tag = reader.u8().ok_or(DecodeError::Body)?;
+                let seq = reader.u32().ok_or(DecodeError::Body)?;
+                let applied_through = match tag {
+                    // The absent case carries four bytes of nothing, and they
+                    // are required to be nothing: a sender that wrote a sequence
+                    // number behind a `None` tag would have given one message
+                    // two encodings, which is the whole reason padding is
+                    // checked rather than skipped.
+                    0 if seq == 0 => None,
+                    1 => Some(seq),
+                    _ => return Err(DecodeError::Body),
+                };
+                let consumed = reader.consumed();
+                let rest = payload.get(consumed..).ok_or(DecodeError::Body)?;
+                let (view, read) = PlayerView::decode(rest).ok_or(DecodeError::Body)?;
+                check_padding(payload, consumed.saturating_add(read))?;
+                return Ok(ServerMessage::View {
+                    view,
+                    applied_through,
+                });
             }
             other => return Err(DecodeError::Kind(other)),
         };

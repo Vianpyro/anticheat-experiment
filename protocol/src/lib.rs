@@ -62,7 +62,7 @@ mod wire;
 
 pub use crate::events::EventBacklog;
 pub use crate::frame::{
-    CLIENT_FRAME_BYTES, ClientFrame, DecodeError, HEADER_BYTES, MAX_DATAGRAM_BYTES,
+    APPLIED_BYTES, CLIENT_FRAME_BYTES, ClientFrame, DecodeError, HEADER_BYTES, MAX_DATAGRAM_BYTES,
     SERVER_DATAGRAM_BYTES, SERVER_FRAME_BYTES, SERVER_SHARD_PAYLOAD_BYTES, SERVER_SHARDS,
     SHARD_HEADER_BYTES, ServerFrame, ServerShard, ShardAssembler,
 };

@@ -101,7 +101,7 @@ fn every_server_message_survives_a_round_trip() {
         messages.push(ServerMessage::Rejected(reason));
     }
     for seat in Seat::ALL {
-        messages.push(ServerMessage::View(view_for(&busy_state(), seat)));
+        messages.push(seen(view_for(&busy_state(), seat)));
     }
 
     for message in messages {
@@ -137,7 +137,7 @@ fn every_frame_is_its_direction_s_one_size() {
         );
     }
     for seat in Seat::ALL {
-        let view = ServerMessage::View(view_for(&busy_state(), seat));
+        let view = seen(view_for(&busy_state(), seat));
         assert_eq!(
             ServerFrame::encode(&view).as_bytes().len(),
             SERVER_FRAME_BYTES
@@ -155,12 +155,60 @@ fn every_frame_is_its_direction_s_one_size() {
 fn the_widest_possible_view_still_fits_one_frame() {
     let view = widest_view();
     assert_eq!(view.encode().len(), PlayerView::MAX_ENCODED_BYTES);
-    let frame = ServerFrame::encode(&ServerMessage::View(view.clone()));
+    let frame = ServerFrame::encode(&seen(view.clone()));
     assert_eq!(frame.as_bytes().len(), SERVER_FRAME_BYTES);
-    assert_eq!(
-        ServerFrame::decode(frame.as_bytes()),
-        Ok(ServerMessage::View(view))
-    );
+    assert_eq!(ServerFrame::decode(frame.as_bytes()), Ok(seen(view)));
+}
+
+/// The acknowledgement M4 added rides beside the view at a constant width.
+///
+/// Both halves matter. It has to survive the round trip, or a client cannot
+/// reconcile; and it has to cost the same number of bytes whether or not the
+/// server has applied anything from this session, or the traffic-shape
+/// invariant has acquired a one-byte channel saying "your first input has
+/// landed".
+#[test]
+fn the_acknowledgement_costs_the_same_whether_or_not_there_is_one() {
+    let view = view_for(&busy_state(), Seat::Blue0);
+    for applied_through in [None, Some(0), Some(1), Some(u32::MAX)] {
+        let message = ServerMessage::View {
+            view: view.clone(),
+            applied_through,
+        };
+        let frame = ServerFrame::encode(&message);
+        assert_eq!(
+            frame.as_bytes().len(),
+            SERVER_FRAME_BYTES,
+            "{applied_through:?}"
+        );
+        assert_eq!(
+            ServerFrame::decode(frame.as_bytes()),
+            Ok(message),
+            "{applied_through:?}"
+        );
+    }
+}
+
+/// One message, one encoding — including in the part of the acknowledgement
+/// that is padding.
+///
+/// The absent case writes four zero bytes it does not use. A sender that wrote
+/// a sequence number behind an absent tag would have produced a second encoding
+/// of "nothing has been applied", which is the same failure the frame's own
+/// padding check exists to refuse: two verifiers reading one recorded frame and
+/// disagreeing about what it said.
+#[test]
+fn a_sequence_number_behind_an_absent_acknowledgement_is_refused() {
+    let frame = ServerFrame::encode(&seen(view_for(&busy_state(), Seat::Blue0)));
+    let mut bytes = *frame.as_bytes();
+    assert_eq!(bytes[HEADER_BYTES], 0, "the fixture acknowledges nothing");
+    bytes[HEADER_BYTES + 1] = 7;
+    assert_eq!(ServerFrame::decode(&bytes), Err(DecodeError::Body));
+
+    // …and a tag that names neither case is refused rather than read as one.
+    let mut bytes = *frame.as_bytes();
+    bytes[HEADER_BYTES] = 2;
+    assert_eq!(ServerFrame::decode(&bytes), Err(DecodeError::Body));
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +226,7 @@ fn the_widest_possible_view_still_fits_one_frame() {
 #[test]
 fn a_frame_is_always_the_same_datagrams_whatever_it_carries() {
     let quiet = ServerFrame::encode(&ServerMessage::Rejected(RejectReason::MatchFull));
-    let busy = ServerFrame::encode(&ServerMessage::View(widest_view()));
+    let busy = ServerFrame::encode(&seen(widest_view()));
 
     for frame in [&quiet, &busy] {
         let shards = frame.shards(0);
@@ -204,7 +252,7 @@ fn a_frame_is_always_the_same_datagrams_whatever_it_carries() {
 fn a_frame_survives_being_cut_into_datagrams() {
     let mut assembler = ShardAssembler::new();
     for seat in Seat::ALL {
-        let message = ServerMessage::View(view_for(&busy_state(), seat));
+        let message = seen(view_for(&busy_state(), seat));
         let frame = ServerFrame::encode(&message);
 
         let mut delivered = None;
@@ -230,7 +278,7 @@ fn a_frame_survives_being_cut_into_datagrams() {
 /// one with the highest index.
 #[test]
 fn the_shards_of_a_frame_may_arrive_in_any_order() {
-    let frame = ServerFrame::encode(&ServerMessage::View(view_for(&busy_state(), Seat::Blue0)));
+    let frame = ServerFrame::encode(&seen(view_for(&busy_state(), Seat::Blue0)));
     let shards = frame.shards(7);
 
     let mut assembler = ShardAssembler::new();
@@ -254,11 +302,8 @@ fn the_shards_of_a_frame_may_arrive_in_any_order() {
 #[test]
 fn a_frame_with_a_missing_shard_is_abandoned_rather_than_sewn_to_the_next() {
     let state = busy_state();
-    let first = ServerFrame::encode(&ServerMessage::View(view_for(&state, Seat::Blue0)));
-    let second = ServerFrame::encode(&ServerMessage::View(view_for(
-        &step(&state, &[]),
-        Seat::Blue0,
-    )));
+    let first = ServerFrame::encode(&seen(view_for(&state, Seat::Blue0)));
+    let second = ServerFrame::encode(&seen(view_for(&step(&state, &[]), Seat::Blue0)));
     assert_ne!(first, second, "the two ticks have to differ");
 
     let mut assembler = ShardAssembler::new();
@@ -291,7 +336,7 @@ fn a_frame_with_a_missing_shard_is_abandoned_rather_than_sewn_to_the_next() {
 /// discarded rather than replayed.
 #[test]
 fn a_duplicated_or_late_shard_does_not_deliver_a_tick_twice() {
-    let frame = ServerFrame::encode(&ServerMessage::View(view_for(&busy_state(), Seat::Blue0)));
+    let frame = ServerFrame::encode(&seen(view_for(&busy_state(), Seat::Blue0)));
     let shards = frame.shards(4);
 
     let mut assembler = ShardAssembler::new();
@@ -318,7 +363,7 @@ fn a_duplicated_or_late_shard_does_not_deliver_a_tick_twice() {
 /// A datagram that is not a shard of this protocol is refused.
 #[test]
 fn a_datagram_that_is_not_a_shard_is_refused() {
-    let frame = ServerFrame::encode(&ServerMessage::View(view_for(&busy_state(), Seat::Blue0)));
+    let frame = ServerFrame::encode(&seen(view_for(&busy_state(), Seat::Blue0)));
     let good = frame.shards(0)[0];
 
     let mut assembler = ShardAssembler::new();
@@ -506,7 +551,7 @@ fn a_byte_hidden_in_the_padding_is_refused() {
         );
     }
 
-    let view = ServerFrame::encode(&ServerMessage::View(view_for(&busy_state(), Seat::Blue0)));
+    let view = ServerFrame::encode(&seen(view_for(&busy_state(), Seat::Blue0)));
     let mut bytes = *view.as_bytes();
     let last = bytes.len() - 1;
     bytes[last] = 1;
@@ -815,7 +860,7 @@ proptest! {
         index in 0usize..SERVER_FRAME_BYTES,
         value in any::<u8>(),
     ) {
-        let view = ServerMessage::View(view_for(&busy_state(), Seat::Blue0));
+        let view = seen(view_for(&busy_state(), Seat::Blue0));
         let mut bytes = *ServerFrame::encode(&view).as_bytes();
         bytes[index] = value;
         let _ = ServerFrame::decode(&bytes);
@@ -825,6 +870,19 @@ proptest! {
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
+
+/// A `View` message with nothing acknowledged.
+///
+/// Most of this file is about the *view* half of the message, and the
+/// acknowledgement beside it is a constant five bytes whatever it holds — so
+/// these tests fix it at `None` and the two tests that are about the
+/// acknowledgement itself vary it deliberately.
+fn seen(view: PlayerView) -> ServerMessage {
+    ServerMessage::View {
+        view,
+        applied_through: None,
+    }
+}
 
 /// A state with something in every part of a view: entities in sight, a
 /// projectile in flight, and an event from the tick that produced it.

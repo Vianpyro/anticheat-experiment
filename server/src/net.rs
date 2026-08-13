@@ -65,7 +65,7 @@ use bytes::Bytes;
 use protocol::{CLIENT_FRAME_BYTES, ServerFrame};
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
 use replay::Recording;
-use sim::{PLAYER_COUNT, Seat};
+use sim::{PLAYER_COUNT, Rng, Seat};
 use tokio::sync::mpsc;
 
 use crate::{Match, MatchConfig, Violation};
@@ -125,6 +125,62 @@ fn now_ms() -> u64 {
 /// semantics the state channel already has.
 const DRAIN: Duration = Duration::from_millis(200);
 
+/// Datagrams this server throws away on purpose.
+///
+/// # Why a server has a knob for breaking itself
+///
+/// The state channel is unreliable by construction and the whole of the M3 exit
+/// criterion had to be weakened to say so — no two clients ever disagree about a
+/// checkpoint they *both received*, plus a floor of nine tenths of the
+/// checkpoints reached. On loopback the observed loss is zero, so that floor had
+/// never once been approached and its calibration was unknown; `ShardAssembler`
+/// was covered by unit tests that hand it shards in an order chosen by hand, and
+/// nothing had ever exercised loss end to end, through a real endpoint, against
+/// a client that was reconciling at the same time.
+///
+/// A test that cannot produce the condition it is about is a test about
+/// something else. So the loss is injected here, at the one place where dropping
+/// a datagram is indistinguishable from a network dropping it: the send path,
+/// after the frame has been cut into shards. Each shard is drawn for
+/// independently, which is the model that matters — a frame needs both of its
+/// shards, so a per-shard rate of *p* is a per-frame delivery rate of
+/// `(1 - p)²`, and the exit criterion's floor is a statement about the second
+/// number and not the first.
+///
+/// # Why it is safe to have in the shipping crate
+///
+/// It defaults to nothing, `moba-server` has no argument that reaches it, and
+/// the worst an operator can do with it is degrade their own players' sessions —
+/// there is no client-supplied field anywhere near it and nothing an attacker
+/// can steer. What it buys is that the loss tests run the *same* transport the
+/// game runs, rather than a second one written to be droppable.
+///
+/// The draw is `sim::Rng` from a written-down seed, not an ambient generator, so
+/// a run that goes red can be repeated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LossProfile {
+    /// Percentage of outgoing datagrams to drop, per shard, independently.
+    /// Clamped to `0..=100`.
+    pub datagram_percent: u8,
+    /// The seed the draws come from. Sessions are offset from it by seat, so
+    /// two sessions do not lose the same frames.
+    pub seed: u64,
+}
+
+impl LossProfile {
+    /// The transport as the game runs it: nothing is dropped on purpose.
+    pub const NONE: Self = Self {
+        datagram_percent: 0,
+        seed: 0,
+    };
+
+    /// Whether this profile ever drops anything.
+    #[must_use]
+    pub const fn is_lossless(self) -> bool {
+        self.datagram_percent == 0
+    }
+}
+
 /// A bound endpoint waiting for a match to be played on it.
 #[derive(Debug)]
 pub struct Listener {
@@ -155,6 +211,12 @@ struct Wire {
     /// A count of ticks, and therefore public: the cadence is one frame per
     /// player per tick whatever happened.
     sequence: u32,
+    /// The loss this session injects, and the draws it injects it from.
+    loss: LossProfile,
+    losses: Rng,
+    /// Datagrams this session threw away on purpose, so that a test can say
+    /// what it actually did rather than what it asked for.
+    dropped: u32,
 }
 
 impl Wire {
@@ -166,8 +228,20 @@ impl Wire {
     /// else's match by making their client stutter. The sequence advances
     /// either way, so a frame that was never sent is a gap the receiver
     /// abandons rather than a renumbering it cannot see.
+    ///
+    /// A shard the [`LossProfile`] drops takes the same path as one the network
+    /// eats: it is not sent, nothing is told, and the sequence still advances.
+    /// The draw is per shard rather than per frame, because that is what a
+    /// network does and because the two produce different frame-delivery rates —
+    /// which is exactly the number the exit criterion's floor is about.
     fn send_frame(&mut self, frame: &ServerFrame) {
         for shard in frame.shards(self.sequence) {
+            if !self.loss.is_lossless()
+                && self.losses.below(100) < u32::from(self.loss.datagram_percent.min(100))
+            {
+                self.dropped = self.dropped.saturating_add(1);
+                continue;
+            }
             let _ = self
                 .connection
                 .send_datagram(Bytes::copy_from_slice(shard.as_bytes()));
@@ -238,6 +312,26 @@ impl Listener {
         period: Duration,
         ticks: u32,
     ) -> Result<Recording, NetError> {
+        self.host_lossy(config, period, ticks, LossProfile::NONE)
+            .await
+    }
+
+    /// The same, throwing away outgoing datagrams at the rate given.
+    ///
+    /// See [`LossProfile`] for why a server has this and why it is safe to ship.
+    /// `host` is this with nothing dropped, which is what the binary calls and
+    /// what the game runs.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError`] if a stream fails while the match is still running.
+    pub async fn host_lossy(
+        self,
+        config: MatchConfig,
+        period: Duration,
+        ticks: u32,
+        loss: LossProfile,
+    ) -> Result<Recording, NetError> {
         let (events, mut inbox) = mpsc::channel::<Event>(256);
         let accepting = tokio::spawn(accept_loop(self.endpoint.clone(), events.clone()));
 
@@ -260,6 +354,15 @@ impl Listener {
                                     connection,
                                     send,
                                     sequence: 0,
+                                    loss,
+                                    // Offset by seat, so that two sessions do
+                                    // not lose the same frames and "no two
+                                    // clients disagree" is a claim about worlds
+                                    // that really were delivered differently.
+                                    losses: Rng::from_seed(
+                                        loss.seed ^ (seat.index() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                                    ),
+                                    dropped: 0,
                                 });
                                 tokio::spawn(read_loop(seat, recv, events.clone()));
                             }
@@ -320,6 +423,17 @@ impl Listener {
         // has stopped sending state has nothing to wait for.
         for wire in wires.iter_mut().flatten() {
             let _ = wire.send.finish();
+        }
+        if !loss.is_lossless() {
+            let dropped: u32 = wires
+                .iter()
+                .flatten()
+                .map(|wire| wire.dropped)
+                .fold(0, u32::saturating_add);
+            println!(
+                "server: dropped {dropped} datagrams on purpose at {}%",
+                loss.datagram_percent
+            );
         }
         tokio::time::sleep(DRAIN).await;
         accepting.abort();

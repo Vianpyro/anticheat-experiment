@@ -50,6 +50,9 @@
 #![deny(missing_docs, missing_debug_implementations)]
 
 pub mod net;
+pub mod predict;
+pub mod term;
+pub mod ui;
 
 use std::collections::BTreeMap;
 
@@ -113,6 +116,9 @@ pub struct LocalWorld {
     /// not. Held apart from `entities` because a dead champion is not on the
     /// map — for its own team either — and folding a corpse in would make this
     /// world disagree with a teammate's about a square nobody is standing on.
+    ///
+    /// **Not hashed**, and that is a correction rather than an omission; see
+    /// [`LocalWorld::digest`].
     own_liveness: Liveness,
 }
 
@@ -142,7 +148,8 @@ impl LocalWorld {
         self.entities.is_empty()
     }
 
-    /// The 32-byte fingerprint of this world.
+    /// The 32-byte fingerprint of the part of this world two teammates are
+    /// supposed to agree about.
     ///
     /// Hand-written and exhaustively destructured, exactly as `sim`'s canonical
     /// encoding is and for the same reason: a field added to the local world and
@@ -150,6 +157,34 @@ impl LocalWorld {
     /// stopped fully comparing. `sim::digest_bytes` is the hash, so that the
     /// client and everything else in the workspace compute SHA-256 the same way
     /// rather than through a second implementation.
+    ///
+    /// # Why `own_liveness` is deliberately outside it
+    ///
+    /// This digest exists for one purpose: `docs/MILESTONES.md` M3's exit
+    /// criterion, which compares the reconciled worlds of three clients on one
+    /// team. That comparison is only meaningful over what the three are
+    /// *entitled to the same view of*, and `own_liveness` is the one field that
+    /// is not — it is this player's own hit points and its own respawn timer,
+    /// and `docs/ARCHITECTURE.md` is explicit that an ally's respawn timer is
+    /// information about a player rather than about the world and is withheld
+    /// from teammates on purpose.
+    ///
+    /// Hashing it made the criterion false the first time anybody took damage,
+    /// and it went unnoticed for a milestone because M3's scripted match
+    /// produces no damage at all: the three clients walk a lane and nothing
+    /// touches them, so their own hit points stayed equal by accident. M4's loss
+    /// tests walk them into a tower's range instead, and the criterion reported
+    /// `Blue0 disagrees with Blue1 about the world at tick 620` — with the two
+    /// worlds identical except for Blue0's own 555 hit points against Blue1's
+    /// 600, which every one of the three could see and only one of them was
+    /// hashing.
+    ///
+    /// Nothing is lost by the exclusion. A living champion is folded into
+    /// `entities` with the hit points every teammate is shown, and a dead one is
+    /// absent there — which is exactly what a teammate observes, because a dead
+    /// champion is not on the map for its own team either. What leaves the
+    /// digest is the respawn timer, which no teammate is entitled to and which
+    /// therefore had no business in a cross-client comparison.
     #[must_use]
     pub fn digest(&self) -> Digest {
         let LocalWorld {
@@ -157,14 +192,18 @@ impl LocalWorld {
             outcome,
             entities,
             events,
-            own_liveness,
+            // Bound and deliberately not hashed. Named rather than skipped with
+            // `..`, so that the exclusion is a decision somebody made and not a
+            // field somebody forgot: `..` here would let the *next* field be
+            // dropped by accident, which is the failure `sim::canonical` bans
+            // the pattern for.
+            own_liveness: _,
         } = self;
 
         let mut out = Vec::with_capacity(256);
-        out.extend_from_slice(b"moba/client/world/v1");
+        out.extend_from_slice(b"moba/client/world/v2");
         out.extend_from_slice(&tick.0.to_be_bytes());
         encode_outcome(&mut out, *outcome);
-        encode_liveness(&mut out, *own_liveness);
 
         out.extend_from_slice(&(entities.len() as u64).to_be_bytes());
         for (handle, sighting) in entities {
@@ -242,19 +281,6 @@ fn encode_outcome(out: &mut Vec<u8>, outcome: Outcome) {
     }
 }
 
-fn encode_liveness(out: &mut Vec<u8>, liveness: Liveness) {
-    match liveness {
-        Liveness::Alive { hp } => {
-            out.push(0);
-            out.extend_from_slice(&hp.to_raw().to_be_bytes());
-        }
-        Liveness::Dead { respawn_at } => {
-            out.push(1);
-            out.extend_from_slice(&respawn_at.0.to_be_bytes());
-        }
-    }
-}
-
 /// A headless client: a session, a local world, and a sequence number.
 #[derive(Clone, Debug)]
 pub struct Headless {
@@ -262,10 +288,27 @@ pub struct Headless {
     seed: u64,
     world: LocalWorld,
     seq: u32,
+    /// The highest sequence number of this client's own inputs that the server
+    /// says it has folded into the world.
+    ///
+    /// The field M3 could not build against and M4 added — see
+    /// `protocol::ServerMessage::View`. The headless client does not predict, so
+    /// it records the acknowledgement and nothing more; `Predicted` is what
+    /// consumes it.
+    applied_through: Option<u32>,
     /// Views discarded for being no newer than what the client already holds.
     /// The transport is reliable and ordered, so a non-zero count here means
     /// something upstream is wrong rather than that the network reordered.
     stale: u32,
+    /// The last view applied, kept whole for the renderer.
+    ///
+    /// `LocalWorld` is the *comparable* world — a merged entity map built for
+    /// M3's digest — and it deliberately forgets which handle was whose and what
+    /// the events were about. A renderer needs both, so it reads this instead.
+    /// It is the view the server sent, unmodified: nothing here accumulates
+    /// across ticks, because a client that remembered where an enemy used to be
+    /// would be reconstructing what the fog withheld (`crate::ui`).
+    last_view: Option<PlayerView>,
 }
 
 impl Default for Headless {
@@ -289,8 +332,34 @@ impl Headless {
                 own_liveness: Liveness::Alive { hp: Fx::ZERO },
             },
             seq: 0,
+            applied_through: None,
             stale: 0,
+            last_view: None,
         }
+    }
+
+    /// The last view the server sent, whole.
+    #[must_use]
+    pub const fn view(&self) -> Option<&PlayerView> {
+        self.last_view.as_ref()
+    }
+
+    /// The sequence number the next [`Headless::intend`] will use.
+    ///
+    /// A caller that has to record an intention *before* sending it — a
+    /// prediction, which must know the number the acknowledgement will name —
+    /// needs this. It is not an allocator: calling it twice returns the same
+    /// number, and only `intend` advances it.
+    #[must_use]
+    pub const fn next_seq(&self) -> u32 {
+        self.seq
+    }
+
+    /// The highest sequence number of this client's own inputs the server says
+    /// it has applied.
+    #[must_use]
+    pub const fn applied_through(&self) -> Option<u32> {
+        self.applied_through
     }
 
     /// The seat the server assigned, once it has.
@@ -369,10 +438,14 @@ impl Headless {
                 Ok(())
             }
             ServerMessage::Rejected(reason) => Err(ClientError::Rejected(reason)),
-            ServerMessage::View(view) => {
+            ServerMessage::View {
+                view,
+                applied_through,
+            } => {
                 if self.seat.is_none() {
                     return Err(ClientError::OutOfOrder);
                 }
+                self.applied_through = applied_through;
                 self.reconcile(&view);
                 Ok(())
             }
@@ -424,5 +497,6 @@ impl Headless {
             events: view.events.clone(),
             own_liveness: view.own.liveness,
         };
+        self.last_view = Some(view.clone());
     }
 }

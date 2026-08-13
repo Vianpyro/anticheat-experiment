@@ -21,7 +21,7 @@ rust-version.workspace = true
 # test, a doc), the minor for anything that can. When in doubt it is the minor:
 # the cost of an unnecessary bump is a line in a diff, and the cost of a missing
 # one is a replay that verifies against the wrong build.
-version = "0.5.0"
+version = "0.6.0"
 
 # Empty, and meant to stay empty. `docs/ARCHITECTURE.md` allows a fixed-point
 # crate and `serde` for the view types; this crate takes neither. The
