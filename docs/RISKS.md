@@ -643,34 +643,49 @@ has no display server and `winit` cannot open a window without one — a thread
 emits them on an absolute schedule at 125 Hz and the capture loop stamps each
 one as it drains it, which is `Session::device_event`'s first line.
 
+**And the first thing it measured was itself, which is why the number below is a
+different number.** The obvious statistic is the recorded *inter-arrival*
+distribution, and the first Windows run of this test reported a standard
+deviation of 2.356 ms against Linux's 0.039 — with eighteen samples flagged as
+platform duplicates. Neither number was about the client. An inter-arrival is the
+sum of two things, how regularly the events were produced and how promptly they
+were stamped, and Windows' default timer resolution is about 15.6 ms: a producer
+asking for 8 ms overshoots, then sends the overdue events back to back, and the
+distribution it generates is its own. **A measurement whose instrument is in the
+answer is R15 wearing a stopwatch.**
+
+Differencing against a timestamp the producer reads from the same clock removes
+that term exactly, and what is left is the delay the capture loop adds — which is
+what this residual *is*. That is what the table reports.
+
 | | R14's first run (idle, no renderer, no socket) | Rendering and talking, `release` | Rendering and talking, `dev` |
 | --- | --- | --- | --- |
 | Samples recorded / emitted | 1200 / 1200 | 1200 / 1200 | 1200 / 1200 |
-| Views reconciled, frames rasterised | none, none | 290, 532 | 290, 447 |
-| Median inter-arrival | 7.992 ms | 8.000 ms | 8.000 ms |
-| Mean | 8.000 ms | 8.000 ms | 8.000 ms |
-| **Standard deviation** | **0.247 ms** | **0.039 ms** | **0.761 ms** |
-| 95th percentile | — | 8.032 ms | 9.646 ms |
-| **99th percentile** | — | **8.081 ms** | **9.826 ms** |
-| Maximum | — | 8.736 ms | 11.026 ms |
+| Views reconciled, frames rasterised | none, none | 290, 532 | 290, 435 |
+| **Added latency, mean** | not isolated | **0.036 ms** | **0.240 ms** |
+| **…standard deviation** | not isolated | **0.028 ms** | **0.613 ms** |
+| …95th percentile | — | 0.045 ms | 2.034 ms |
+| **…99th percentile** | — | **0.058 ms** | **2.468 ms** |
+| …maximum | — | 0.944 ms | 3.428 ms |
+| Slowest single pass of the capture loop | — | 4.795 ms | 8.067 ms |
+| Recorded inter-arrival, standard deviation | 0.247 ms | 0.049 ms | 0.912 ms |
 
 **The conclusion, and it is the one the arithmetic supports rather than the one
-the numbers flatter.** In the profile a player runs, the client's own
-contribution to a timestamp is a standard deviation of **39 microseconds** and a
-worst case, over 1200 samples, of **0.74 ms above nominal**. Against the
-grandeurs M8 will look for — inter-arrival distributions and reaction latencies
-whose human spreads are tens of milliseconds — that is a fraction of a per cent
-of the signal, and the tail is bounded rather than heavy: there is no
-fifteen-millisecond mode, in either profile. The unoptimised build is twenty
-times worse and still under a millisecond of spread, which is worth recording
-because it is the upper end of what a slow frame costs: the band there is
-±2 ms, and 2 ms is what an unoptimised `rasterize` takes, so the mechanism is
-visible and it is bounded by the frame rather than unbounded.
+the numbers flatter.** In the profile a player runs, the delay this client adds
+between an event existing and being stamped has a standard deviation of **28
+microseconds**, a 99th percentile of **58 microseconds**, and a worst case over
+1200 samples of **0.94 ms**. Against the grandeurs M8 will look for —
+inter-arrival distributions and reaction latencies whose human spreads are tens
+of milliseconds — that is a fraction of a per cent of the signal, and the tail is
+bounded rather than heavy: there is no fifteen-millisecond mode in either
+profile. The unoptimised build is an order of magnitude worse and still under a
+millisecond of spread, and its tail is bounded by its own frame, which is the
+mechanism visible in the two rows at the bottom of the table.
 
 **So the residual is quantified and without consequence for the detectors in
 scope, and R14's timestamp half stops being a live risk.** What replaces it is a
-test that runs on every pull request and prints the distribution, so a
-regression is a number in a log rather than a discovery at M8.
+test that runs on every pull request and prints the distribution, so a regression
+is a number in a log rather than a discovery at M8.
 
 **Three things this does not establish**, because a table is exactly where a
 reader stops asking:
@@ -682,18 +697,21 @@ reader stops asking:
   that is in the covered half. The uncovered contribution is a roughly constant
   offset plus its own jitter, and a constant offset is invisible to every signal
   on M8's list, all of which are differences.
-- **It is one host.** These are numbers from one container on one machine. The
-  test prints them everywhere it runs and asserts only what is about the
-  mechanism rather than about the host — every event produces exactly one
-  sample, no two samples share a timestamp, and the 99th percentile is inside
-  four emission periods. Reading the clock once per frame instead of once per
-  event fails those immediately, with the frame period visible in the printed
-  distribution as a median of 0.000 ms and a 95th percentile of 18.124 ms.
+- **It is one host, and the assertion is deliberately not.** These are numbers
+  from one container. What the test asserts is machine-independent: every event
+  produces exactly one sample, no two samples share a timestamp, none is a
+  coincident duplicate, and **an event waits at most one pass of the capture loop
+  before it is stamped**. That last one is the residual stated as a property
+  rather than as a threshold — a latency above one pass is the loop falling
+  behind the device, which is the only way this design can write a delay into a
+  corpus. Reading the clock once per frame instead of once per event fails it and
+  the sample count together, with the frame written into the record as an added
+  latency of mean 8.195 ms and maximum 30.3 ms against a slowest pass of 4.8.
 - **`evdev` stays refused, and this measurement is why.** A per-platform input
   stack would buy a device timestamp on Linux and nothing on Windows, at the cost
   of a `/dev/input` permission each participant has to be granted and a corpus
   whose timestamps mean different things on the two platforms it is recorded on.
-  That was a defensible trade against an unmeasured residual. Against 39
+  That was a defensible trade against an unmeasured residual. Against 28
   microseconds it is not a trade at all. **This reopens only if a detector at M8
   turns out to depend on a quantity at the scale of a millisecond**, which none
   of the candidates in `MILESTONES.md` M8 does — and the reopening would then be

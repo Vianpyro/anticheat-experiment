@@ -1323,10 +1323,14 @@ Each is a test or a lint, not a convention:
    And the residual that leaves — a dequeue stamp carries the delay between the
    device and this process — is measured rather than feared since M5.
    `client/tests/jitter.rs` runs the capture loop while it rasterises real frames
-   and talks to a real server over QUIC, and reports the tail as well as the
-   spread: in `release`, a standard deviation of 0.039 ms and a worst case of
-   0.74 ms above nominal over 1200 samples emitted at 8 ms. `RISKS.md` R14
-   carries the table and what it does not cover.
+   and talks to a real server over QUIC, and isolates the delay the loop *adds*
+   by differencing against a timestamp the event source read from the same clock:
+   in `release`, a standard deviation of 0.028 ms and a worst case of 0.94 ms over
+   1200 samples. The isolation is not a refinement — the recorded inter-arrival
+   is the sum of the client's promptness and the source's regularity, and on a
+   host with a coarse sleep granularity the second term is all of it, which is
+   what the first Windows run of that test reported. `RISKS.md` R14 carries the
+   table and what it does not cover.
 
 13. **A replay is one file format, it is signed, and what is signed is the
    manifest.** `Recording` has no encoding; `replay::seal` is the only path to a
