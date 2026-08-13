@@ -85,6 +85,16 @@ it is the one that dies.
 
 **Decide:** M1, before the first fixture is committed.
 
+**The roster and the map belong to this risk too, and they were changed at M3
+for that reason.** A match is nine seats on a triangle now, not six on a lane.
+Nothing in the corpus died, because there is no corpus yet: M4 is the first
+recording session and M5 the first replay anyone keeps. Made after either of
+those, the same change would have invalidated every recorded human match and
+every replay, for a reason no verifier could report as anything but a digest
+mismatch. It was taken at the last moment at which it destroyed nothing, and
+that timing is the whole of the argument — `MILESTONES.md` says so where the
+milestone records it.
+
 **Hedge:** a `rules_hash` in the replay header covering the fixed-point
 parameters, tick rate, and balance constants. Verification refuses a mismatch
 loudly instead of resimulating into garbage. That converts a silent corruption
@@ -212,25 +222,61 @@ security portfolio. The obligation this creates is honesty: `SCOPE.md` and the
 class 5 documentation must say which protections come from the transport rather
 than claiming them.
 
-### Taken at M3, with one part of the hedge overruled by arithmetic
+### Taken at M3. The hedge was overruled by arithmetic, and then restored by it
 
-The hedge said "datagrams for state, reliable streams for session commands".
-State does not travel in datagrams, and the reason is the padding budget rather
-than a change of mind: a padded `View` frame is 1501 bytes and a QUIC datagram
-is bounded by the path MTU near 1200, so it does not fit in one. Everything
-travels on one bidirectional stream per session instead.
+The hedge said "datagrams for state, reliable streams for session commands", and
+that is what the transport does — but it did not, for most of M3, and the round
+trip is the useful part of this entry.
 
-What that costs is head-of-line blocking on a lost packet, which is real netcode
-and the wrong trade for a shipped MOBA. What it does not cost is the
-traffic-shape invariant: a constant number of bytes emitted at a constant period
-is packetised into a constant number of packets, so an observer still counts a
-constant. `ARCHITECTURE.md` records the arithmetic under "The padding budget",
-including what shrinking the frame below the MTU would cost — every route to it
-goes through a `sim` constant that is under `State::digest()`, which is R2.
+**What overruled it.** A padded `View` frame was 1501 bytes: a three-byte header
+plus a bound derived from the widest view the type could produce, whose two
+largest terms were the projectile arena (32 × 19 = 608) and the *tick's* event
+buffer (48 × 15 = 720). A QUIC datagram is bounded by the path MTU, near 1200,
+so the frame did not fit in one and everything moved to a single bidirectional
+stream per session. The traffic-shape invariant survived — a constant number of
+bytes at a constant period is packetised into a constant number of packets — and
+what it cost was head-of-line blocking: one lost packet stalls every frame
+behind it, at 30 Hz, while the client predicts. That is real netcode and the
+wrong trade for anything a client predicts from, and it was recorded here as the
+honest price of a bucket sized for a worst case.
+
+**What restored it was asking whether that worst case was reachable.** It was
+not, on the half that mattered. `MAX_EVENTS` is what a *tick* can record; a
+*frame* does not have to carry all of it, because an event held back for one
+frame arrives a thirtieth of a second later rather than not at all. So the view
+gained an event budget of its own — `MAX_EVENTS_PER_VIEW`, sixteen — with a
+per-recipient queue that defers the overflow in rule order, and the frame fell
+to 1096 bytes. It now travels as **two datagrams of 555 bytes**, each far inside
+any path MTU, and the session's own messages keep the reliable stream, which is
+the hedge as written.
+
+The invariant is stated more directly than it was rather than more weakly: it
+used to be an argument about QUIC's packetiser, and it is now a constant number
+of datagrams of a constant size at a constant period, carried by the type that
+produces them. Per player the traffic *fell*, from 360 kbit/s to 266.
+`ARCHITECTURE.md` carries the arithmetic under "The padding budget", including
+what is still not taken and why: the projectile arena stays at 32 because
+shrinking it to the occupancy the game's cooldowns actually permit would be
+sizing the bucket to the observed maximum, and capping the entity list would
+trade a length channel for a content channel.
+
+**What it costs now, stated because it is a real cost and a different one.**
+State delivery is unreliable. A client can miss a tick: a frame with a shard
+missing is abandoned when a newer frame starts arriving, and a view older than
+the one already applied is discarded. Both are counted rather than silent. M3's
+exit criterion said "identical digests at every checkpoint tick", which was a
+claim about a transport that retransmitted; it now asserts that no two clients
+ever disagree on a checkpoint they both received and that essentially everything
+was delivered. `MILESTONES.md` records the weakening. Trading "a lost packet
+stalls everything" for "a lost packet costs one tick" is the trade a 30 Hz game
+wants, and the criterion had to follow the transport rather than the other way
+round.
 
 The honesty obligation, discharged: packet-level replay and reordering are
-rejected by QUIC and not by this project. What is left for exploit class 5 is
-the application-level residue — idempotent session commands, and input sequence
+rejected by QUIC and not by this project — and with state on datagrams, QUIC
+does not *reorder* them either, it simply delivers what arrives, which is why
+the client counts what it discards. What is left for exploit class 5 is the
+application-level residue — idempotent session commands, and input sequence
 numbers that must be strictly increasing — and that lives in `Match::deliver`.
 The certificate is self-signed and handed to clients out of band, which they
 trust exactly; there is deliberately no verifier that accepts anything.
@@ -291,7 +337,7 @@ stands and is deliberately unused until a transport picks a codec (M3).
 ## R10 — Signature of `step`
 
 **Cheap to hedge now, annoying later.** `step(&State, &[Input]) -> State`
-allocates a fresh state per tick. At 3v3 and a handful of projectiles this is
+allocates a fresh state per tick. At 3v3v3 and a handful of projectiles this is
 irrelevant for the game and for CI; it becomes the bottleneck for the RL
 sub-project, which wants millions of steps per hour.
 

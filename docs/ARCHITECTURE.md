@@ -76,12 +76,13 @@ boundary.
 #![deny(clippy::float_arithmetic, clippy::arithmetic_side_effects)]
 
 pub struct Tick(pub u32);
-pub enum Seat { Blue0, Blue1, Blue2, Red0, Red1, Red2 }   // and there is no seventh
+pub enum Seat { Blue0, Blue1, Blue2, Red0, Red1, Red2, Green0, Green1, Green2 }
+pub enum Team { Blue, Red, Green }        // no `opponent()`: a team has two
 pub struct EntityId(pub u16);
 pub struct Fx(i32);                 // Q15.16: i32 read as a multiple of 2^-16
 pub struct FxVec2 { pub x: Fx, pub y: Fx }
 
-pub struct State { /* tick, rng, next_projectile_id, [Champion; 6], towers, projectiles, events, outcome */ }
+pub struct State { /* tick, rng, next_projectile_id, [Champion; 9], [Tower; 6], projectiles, events, outcome */ }
 
 pub struct Input {
     pub tick: Tick,               // tick this input applies to
@@ -115,6 +116,39 @@ impl State {
 pub fn new_state(seed: u64) -> State;
 ```
 
+### The map, and what three teams changed in the rules
+
+Three bases at the vertices of a triangle of circumradius 100, a lane along each
+edge, and each lane contested by exactly the two teams whose bases it joins. Two
+towers per team, a quarter of the way down each of the two lanes leaving its own
+base — so a lane carries one tower per contestant, at that contestant's own end,
+and the two teams meet between them rather than under one.
+
+The bases are constants rather than rotations of one another, and that is a
+decision with a cost: a rotation by 120 degrees needs `sqrt(3)/2`, which is not
+a fixed-point number, so a computed layout would be three approximations with a
+transcendental in the middle of the rules — precisely what `RISKS.md` R1 exists
+to keep out. Written down, they are exact values `rules_hash()` covers. What it
+costs is that the map is symmetric about `x = 0` and *not* under rotation: Blue
+sits at the apex and the other two are exact mirrors of each other. The
+asymmetry is worth about one raw unit of position on a map two hundred units
+across, and it is stated here rather than left for somebody to find.
+
+Two rules changed shape rather than value, and neither is cosmetic:
+
+- **`Team::opponent()` is gone.** A team has two of them. Every rule that used
+  it now compares team membership directly — a tower shoots the lowest-numbered
+  seat *not on its own team*, a projectile hits the first entity *not on its
+  owner's* — which is the form that stayed correct when the third team arrived
+  and needs no tie-break between the two enemies beyond the seat order that
+  already existed.
+- **The match is decided when one team is left standing**, not when a team has
+  lost both its towers. With two teams those are the same sentence; with three
+  they are not, and a team can be knocked out while two are still playing. An
+  eliminated team's champions stay on the map, exactly as an unoccupied seat's
+  do, because removing them would be a rule about how a knocked-out team behaves
+  and that is game design.
+
 ### Fixed point: the domain, and what happens outside it
 
 `Fx` is Q15.16 — an `i32` read as a multiple of `2^-16`. Representable range
@@ -128,7 +162,7 @@ operations do not overflow" is a claim *about*:
 
 | Quantity | Domain | Why that bound |
 | --- | --- | --- |
-| Coordinates, both axes | `[-128, 128]` | The product of two in-domain values is at most `16384`, comfortably inside the type. This is the bound that makes multiplication closed |
+| Coordinates, both axes | `[-128, 128]` | The product of two in-domain values is at most `16384`, comfortably inside the type. This is the bound that makes multiplication closed. The map is square and the *game* is a triangle inscribed in it: the domain is a property of the type and does not change shape when the layout does |
 | Per-tick displacement, per component | `[-16, 16]` | Two orders of magnitude above any speed in the rules. A displacement is added to a coordinate, so the sum stays inside the type |
 | Divisor, relative to dividend | `abs(a) <= abs(b)`, `b != 0` | Division is *not* closed on the coordinate domain: `128 / 2^-16` is far outside the type. The rules only ever divide a vector component by that vector's own length, where the quotient cannot exceed one, and that is the domain stated |
 | Direction to be normalised | length `>= 1/16` | Below that the integer square root has too few significant bits: `(2^-16, 2^-16)` normalises 41% too long. Shorter directions are discarded by the rules, not normalised |
@@ -144,7 +178,7 @@ alternatives were rejected for stated reasons:
   the behaviour this whole type exists to remove. A position that wraps
   teleports across the map; a position that saturates stops at the edge. Only
   one of those is debuggable, and neither is supposed to happen.
-- *Not panicking.* `step` runs inside an authoritative server for six players
+- *Not panicking.* `step` runs inside an authoritative server for nine players
   and a panic is a match everybody loses. A `checked_*` API returning `Option`
   would push an error path through every rule for a condition the domain already
   excludes. A total function has no failure path to get wrong.
@@ -169,8 +203,8 @@ supposed to have none.
 Rounding: multiplication and division truncate **toward zero**, not to nearest
 and not toward negative infinity. Toward zero keeps the type symmetric about the
 origin, so `(-a) * b == -(a * b)`; on a map whose origin is the middle of the
-lane, a rounding rule that drifts one way is a rounding rule that treats the two
-teams differently.
+triangle, a rounding rule that drifts one way is a rounding rule that treats one
+team differently from the others.
 
 ### `State::digest()` and the field somebody adds in eight months
 
@@ -294,7 +328,7 @@ is per field, and the absences are decisions rather than omissions.
 | `tick` | Needed to order and reconcile. Public by construction: the server emits one view per player per tick regardless of content, so the number is implied by the message existing |
 | `outcome` | The match ending, and who won, is a global fact the moment it happens. Withholding it hides the end of the game from the loser |
 | `own` — id, position, liveness, cooldowns | The player's own champion. Nothing here is secret *from this player*, and its respawn timer is its own |
-| `visible` — champion: id, position, hp | What an observer standing there would see. Team follows from the handle, which is the seat, and is public |
+| `visible` — champion: id, position, hp | What an observer standing there would see. Team follows from the handle, which is the seat, and is public — which is also the *only* thing in a view that may distinguish one enemy team from the other |
 | `visible` — tower: id, position, hp | The position is already derivable from the rules; the hit points are not, and are given only while the tower is in vision |
 | `visible` — projectile: id, position, velocity | Velocity is recoverable from two consecutive positions of the same projectile, so it leaks nothing and saves the client an interpolation guess |
 | `events` — cast, damage, death, each with `at` | The derived signals. They exist so that culling them is a real operation; `at` is the culling key |
@@ -360,9 +394,12 @@ The encoded size is **variable**, and that is not the finished state of the
 system: the traffic-shape invariant requires every `View` message to have the
 same encoded size at a constant cadence, because message length and message
 count leak the number of visible entities as surely as the entities would.
-Padding is the transport's job, the transport is M3, and
-`PlayerView::MAX_ENCODED_BYTES` — 1498, derived from the encoding rather than
-measured from a run — is the bound it will round up to.
+Padding is the transport's job and `PlayerView::MAX_ENCODED_BYTES` — 1093,
+derived from the encoding rather than measured from a run — is the bound it
+rounds up to. One of its terms is a transport constant expressed here:
+`MAX_EVENTS_PER_VIEW` is the events a *frame* has room for, which is fewer than
+a *tick* can record, and the difference is deferred by the transport rather than
+dropped. See "The padding budget".
 
 ### The `State` escape hatch, decided in advance
 
@@ -443,9 +480,12 @@ pub enum ServerMessage {
     View(PlayerView),                 // already culled, in this recipient's handles
 }
 
-pub struct ClientFrame([u8; CLIENT_FRAME_BYTES]);    // 24
-pub struct ServerFrame([u8; SERVER_FRAME_BYTES]);    // 1501
+pub struct ClientFrame([u8; CLIENT_FRAME_BYTES]);      // 24
+pub struct ServerFrame([u8; SERVER_FRAME_BYTES]);      // 1096
+pub struct ServerShard([u8; SERVER_DATAGRAM_BYTES]);   // 555, and there are two
+pub struct ShardAssembler { .. }     // puts a frame back together, or gives up
 pub struct HandleSpace { .. }        // one recipient's naming of the projectiles
+pub struct EventBacklog { .. }       // one recipient's undelivered events
 ```
 
 `claimed_at_ms` is attacker-controlled by definition. It is recorded, never
@@ -465,12 +505,15 @@ every `PlayerView`, so a client learns the match ended from the frame it was
 going to receive anyway, and the signed match record — evidence, not a
 notification — is M5's object.
 
-**Every frame is a fixed-size array, which is how the size half of the invariant
-stops being a test.** There is no encoder that can return a shorter frame and no
-bucketing scheme that compiles. Decoding is total on every byte string and
-refuses a non-zero byte in the padding: padding a receiver skips is a channel
-the sender can write into, and it would give one message two encodings, which is
-what lets two verifiers disagree about a recorded log.
+**Every frame is a fixed-size array, and so is every datagram that carries part
+of one.** That is how the size half of the invariant stops being a test: there
+is no encoder that can return a shorter frame, no bucketing scheme that
+compiles, and `ServerFrame::shards` returns `[ServerShard; SERVER_SHARDS]` so
+there is no way to emit a number of packets that follows the content either.
+Decoding is total on every byte string and refuses a non-zero byte in the
+padding: padding a receiver skips is a channel the sender can write into, and it
+would give one message two encodings, which is what lets two verifiers disagree
+about a recorded log.
 
 **The traffic-shape invariant: one message per player per tick, at a constant
 cadence, of a constant encoded size, independent of content.** Both halves are
@@ -497,65 +540,130 @@ recovering the number of nearby entities from message sizes *and* arrival times.
 #### The padding budget
 
 "The cost is bandwidth spent on nothing, which at 3v3 is not a cost" was the
-whole justification until M3. That is a claim with no number in it, so here is
-the number and the reasoning that fixes it.
+whole justification until M3. That is a claim with no number in it, so here are
+the numbers and the reasoning that fixes them.
 
-**The bucket is one bucket and it is the worst case.** `SERVER_FRAME_BYTES` is
-1501: a three-byte header plus `PlayerView::MAX_ENCODED_BYTES`, which is derived
-from the encoding rather than measured from a run. There is exactly one bucket
-because a scheme with several is only content-independent if the bucket is
-chosen without looking at the content — and a bucket chosen without looking at
-the content is one bucket with extra steps.
+**The bucket is one bucket and it is the worst case the type allows.**
+`SERVER_FRAME_BYTES` is a three-byte header plus
+`PlayerView::MAX_ENCODED_BYTES`, rounded up to a whole number of shards. There
+is exactly one bucket because a scheme with several is only content-independent
+if the bucket is chosen without looking at the content — and a bucket chosen
+without looking at the content is one bucket with extra steps.
 
-**What it costs, measured.** Over a thousand-tick six-player match in which the
-teams cross the map and fight, the encoded views come out at a median of 95
-bytes, a mean of 115, a 95th percentile of 155 and a maximum of 188. Padding
-each to 1498:
+**The frame is cut into a constant number of constant-size datagrams.** Two
+shards of 555 bytes, every tick, per player, whatever the match is doing. That
+is the padding scheme in one line — *constant cadence, constant count, constant
+size* — and it is a stronger statement than the one it replaces. The old frame
+travelled on a reliable stream and the invariant was carried by an argument
+about QUIC's packetiser ("a constant number of bytes at a constant period is
+packetised into a constant number of packets"); it is now a fact about
+`protocol::ServerFrame::shards`, which returns a fixed-size array of a newtype
+over a fixed-size array. An observer counts two packets of 555 bytes per player
+per tick and learns the tick rate and the number of connected players, both of
+which they already knew.
 
-| | Per player | Per match (6) |
+**The arithmetic.**
+
+| Part | Bytes |
+| --- | --- |
+| `tick`, `outcome`, `own`, two list lengths | 35 |
+| 8 champions + 6 towers, 15 bytes each | 210 |
+| `MAX_PROJECTILES` = 32 projectiles, 19 bytes each | 608 |
+| `MAX_EVENTS_PER_VIEW` = 16 events, 15 bytes each | 240 |
+| **`PlayerView::MAX_ENCODED_BYTES`** | **1093** |
+| plus a 3-byte frame header, rounded to 2 shards | **1096** |
+| on the wire: 2 × (7-byte shard header + 548) | **1110** |
+
+**What it costs, measured.** Over the thousand-tick nine-player fixture in which
+the teams walk their lanes and fight, the encoded views come out at a median of
+95 bytes, a mean of 107, a 95th percentile of 140 and a maximum of 190 — against
+a bound of 1093.
+
+| | Per player | Per match (9) |
 | --- | --- | --- |
-| Padded, at 30 Hz | 45.0 kB/s — **360 kbit/s** | 270 kB/s — 2.16 Mbit/s |
-| Unpadded, at the measured mean | 3.5 kB/s — 28 kbit/s | 21 kB/s — 166 kbit/s |
-| Inflation | **13×** | 13× |
+| Padded, at 30 Hz | 33.3 kB/s — **266 kbit/s** | 300 kB/s — 2.40 Mbit/s |
+| Unpadded, at the measured mean | 3.2 kB/s — 26 kbit/s | 29 kB/s — 231 kbit/s |
+| Inflation | **10×** | 10× |
 
 Upstream is negligible either way: a client frame is 24 bytes, one per tick, 5.8
 kbit/s per player.
 
-**Is 360 kbit/s acceptable?** For this project, yes, and the comparison worth
+For comparison, the frame this replaced was 1501 bytes at six players: 360
+kbit/s each and 2.16 Mbit/s for the match. Per player the new scheme is
+**cheaper** — 266 against 360 — and the match total rises only because there are
+half again as many players in it.
+
+**Is 266 kbit/s acceptable?** For this project, yes, and the comparison worth
 making is not to the unpadded stream but to what a game of this shape normally
-costs. A competitive shooter budgets a few hundred kbit/s per client; a MOBA
-much less. 360 kbit/s is inside that envelope, it is a constant rather than a
-peak, and the whole server is one process hosting matches counted in dozens
-(`SCOPE.md`: scale is out of scope). The bandwidth is the cheapest thing this
-project spends.
+costs. A competitive shooter budgets a few hundred kbit/s per client; a MOBA much
+less. It is inside that envelope, it is a constant rather than a peak, and the
+whole server is one process hosting matches counted in dozens (`SCOPE.md`: scale
+is out of scope). The bandwidth is the cheapest thing this project spends.
 
-**What it would take to spend less, and why none of it is taken.** The bound is
-dominated by two `sim` constants: the projectile arena at 32 × 19 = 608 bytes
-and the event buffer at 48 × 15 = 720, together 1328 of the 1498. Three ways to
-shrink it, all rejected:
+**Where the bound went, and the question that had not been asked.** The old
+bound was 1498 bytes, dominated by two `sim` constants: the projectile arena at
+32 × 19 = 608 and the event buffer at 48 × 15 = 720. The event half was never
+reachable in one *message*, and nobody had asked: `MAX_EVENTS` is what a **tick**
+can record, and a frame does not have to carry all of it, because an event held
+back for one frame is delivered a thirtieth of a second later rather than lost.
+So the view's event budget is its own constant, `MAX_EVENTS_PER_VIEW` = 16, and
+that is what took the frame under the MTU and made datagrams possible.
 
-- *Lower `MAX_PROJECTILES` or `MAX_EVENTS`.* They are array lengths inside
-  `State`, so they are under `State::digest()`. Changing either invalidates
-  every digest committed in this repository and every replay recorded under
-  them — `RISKS.md` R2's failure mode, for a bandwidth saving nobody needs.
+**What happens to the seventeenth event.** It is **deferred, not dropped**:
+`protocol::EventBacklog` is a per-recipient queue that delivers the overflow on
+the next frame, in the order the rules produced it. The queue is bounded at one
+tick's capacity and drops past that, with a counter so that "waiting" and "lost"
+are tellable apart from outside; reaching the bound needs a sustained rate above
+sixteen visible events per tick, which no reachable state under the game's
+constants produces. The encoder truncates at the same bound as a backstop — that
+is what keeps `MAX_ENCODED_BYTES` a property of the *encoding* rather than an
+obligation on every caller, so no framing code has a payload it cannot pad.
+
+**Deferral is not a side channel, and the argument is the one the handle space
+already makes.** The queue is fed from an already-culled `PlayerView`; it never
+sees the state, so there is nothing hidden for it to be a function of. Two
+states a player cannot tell apart produce the same entitled events, hence the
+same queue, hence the same bytes. What a deferral could in principle reveal is
+*timing* — an event a tick late says the previous tick was busy — and it says
+that to the recipient who was already shown sixteen events on that tick, so it is
+not information they did not have. To a third party it says nothing at all,
+because the frame is padded and the cadence is constant.
+
+**What is still not taken, and why.** Two of the three savings the old document
+rejected are rejected for the same reasons:
+
+- *Lower `MAX_PROJECTILES`.* It is an array length inside `State`, so it is
+  under `State::digest()`; and the arena is 55% of what is left of the bound
+  while the game's own cooldowns cap real occupancy at one projectile per seat.
+  Sizing it to that would be sizing the bucket to the observed maximum, which
+  reopens the channel the first time a fixture's constants or a balance change
+  put more in flight. The bucket is for the worst case the *type* allows.
 - *Cap the view instead of the state:* emit at most N entities and drop the
   rest. The size stays constant and the *contents* stop being: which entities
   survive the cap is a function of what is visible, so a client that stops
   seeing a distant projectile when a fight starts nearby has been told about the
-  fight. Trading a length channel for a content channel is not a saving.
+  fight. Trading a length channel for a content channel is not a saving. This is
+  precisely why the event budget defers rather than drops.
 - *Compress.* Compressed length is a function of content, which is the length
   channel with a fig leaf. Padding after compression would work and would save
   nothing, since the padding target is what determines the bandwidth.
 
-**The consequence for the transport, stated because it is a real cost.** 1501
-bytes does not fit in a QUIC datagram, which the path MTU holds near 1200. So
-the frames travel on a reliable stream instead, and a lost packet blocks the
-frames behind it — head-of-line blocking, which is the wrong netcode for a real
-MOBA and is the honest price of a bucket sized for the worst case rather than
-for the wire. The traffic-shape property survives it: a constant number of bytes
-at a constant period is packetised into a constant number of packets. If a
-future milestone wants datagrams, it has to shrink `MAX_ENCODED_BYTES` below the
-MTU first, and the paragraph above is the list of what that would cost.
+**The consequence for the transport, which is now a gain rather than a cost.**
+1110 bytes in two datagrams fit any path MTU, so state travels on QUIC datagrams
+and a lost packet costs the tick it belonged to instead of blocking every frame
+behind it. `RISKS.md` R6's original hedge — "datagrams for state, reliable
+streams for session commands" — is restored, and it is exactly what the code
+does: `Accepted` and `Rejected` are sent once and must arrive, so they keep the
+bidirectional stream, and so do the client's own frames, where head-of-line
+blocking costs one tick's intention that the sequence rule already treats as
+droppable.
+
+What that costs instead is stated rather than hidden: **state delivery is
+unreliable now.** A client can miss a tick. `ShardAssembler` abandons a frame
+whose shard never arrived the moment a newer frame starts, and counts it; a view
+older than the one already applied is discarded and counted. M3's exit criterion
+had to be weakened to match — see `MILESTONES.md` — and that weakening is the
+honest price of removing head-of-line blocking.
 
 #### Handles a recipient is given rather than told
 
@@ -804,28 +912,41 @@ Each is a test or a lint, not a convention:
 7. `cargo tree -p client` shows no path to `anticheat`.
 8. Every detector in `anticheat` has an exploit in `cheat-client` that fails
    against it in CI.
-9. Every `View` message has the same encoded size, and the server emits exactly
-   one per connected player per tick.
+9. Every `View` message has the same encoded size, travels as the same number
+   of equally sized datagrams, and the server emits exactly one per connected
+   player per tick.
 
-   The size half is carried by the *type*: `ServerFrame` wraps
-   `[u8; SERVER_FRAME_BYTES]`, so there is no encoder that could return a
-   shorter frame and no bucketing scheme that would compile. The cadence half
-   cannot be a type and is `server/tests/traffic.rs`, along with the property
-   that carries the most: two states a player cannot tell apart produce
-   byte-identical frames for that player — the transport's version of the
-   side-channel property in `sim/tests/view_properties.rs`, covering the
-   padding, the framing and the per-recipient handle space.
+   The size half is carried by the *types*: `ServerFrame` wraps
+   `[u8; SERVER_FRAME_BYTES]` and `ServerFrame::shards` returns
+   `[ServerShard; SERVER_SHARDS]`, so there is no encoder that could return a
+   shorter frame, no bucketing scheme that would compile, and no packet count
+   that could follow the content. The cadence half cannot be a type and is
+   `server/tests/traffic.rs`, along with the property that carries the most: two
+   states a player cannot tell apart produce byte-identical frames for that
+   player — the transport's version of the side-channel property in
+   `sim/tests/view_properties.rs`, covering the padding, the framing, the
+   per-recipient handle space and the per-recipient event backlog.
 
-   Both were exercised rather than trusted. Emitting a view only when its
-   content changed turns the cadence property red at `tick 1: 0 frames for 6
+   All of it was exercised rather than trusted. Emitting a view only when its
+   content changed turns the cadence property red at `tick 1: 0 frames for 9
    seats`; padding derived from the payload is refused by the decoder's padding
-   check. One mutation was **not** caught and is recorded beside the property
-   rather than assumed away: naming every projectile in the arena instead of
-   only the ones the recipient was shown — the leak the handle space exists to
-   close — passes the byte-equality property at 4096 cases, because its
-   antecedent is full entitlement equality and a hidden cast advances a
-   counter without changing anything the recipient is entitled to. A scripted
-   scenario covers it.
+   check; a sender that skipped a shard carrying nothing but padding — a packet
+   count that follows content — leaves the exit criterion at `Blue0 reached 0 of
+   10 checkpoints`, with 999 frames abandoned.
+
+   **The known blind spot is closed, and by the third team rather than by a
+   test.** Naming every projectile in the arena instead of only the ones the
+   recipient was shown — the leak the handle space exists to close — used to
+   pass the byte-equality property at 4096 cases, because its antecedent is full
+   entitlement equality and on a two-team map a fork nobody could tell apart was
+   almost always a fork in which nothing had happened. With three teams a whole
+   enemy team can act at a vertex a lane away while the observer's entitlement
+   is untouched, so hidden activity and equal entitlement stopped being
+   opposites: the same mutation now fails on the property's **first case**, at
+   `Blue0 was sent different bytes 1 ticks after a fork it cannot tell apart`.
+   The scripted scenario that was written to cover the gap stays, because a
+   property that happens to reach a channel is evidence about a generator and a
+   state built to expose it is evidence about the channel.
 
    None of this is a delivered defence. `SCOPE.md` reserves that word for a
    class with a matching exploit failing against it in CI, which is the M7

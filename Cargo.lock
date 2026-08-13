@@ -801,6 +801,7 @@ name = "sim"
 version = "0.5.0"
 dependencies = [
  "proptest",
+ "protocol",
 ]
 
 [[package]]

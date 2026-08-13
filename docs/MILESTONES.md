@@ -10,7 +10,8 @@ CI is not a delivered detector.**
 
 ## Current state
 
-**M0, M1, M2 and M3 are reached.** The workspace exists with
+**M0, M1, M2 and M3 are reached**, the last of them for a game that is now
+3v3v3 on a triangular map. The workspace exists with
 its seven crates; the toolchain is pinned; `ci`, `pr-hygiene` and `determinism`
 are the only workflows and none holds write permissions; `LICENSE`,
 `SECURITY.md` and `CONTRIBUTING.md` exist. The template's super-linter, its
@@ -52,7 +53,7 @@ be wrong, is in `RISKS.md` beside R1.
 
 **M2 is reached.** `sim::view::view_for` is the projection, `State` carries the
 events of the tick that produced it, and `sim/tests/visibility.rs` asserts the
-exit criterion over both M1 fixtures — six players, every tick, entity list and
+exit criterion over both M1 fixtures — every player, every tick, entity list and
 events alike. Two things about that test are the reason it counts as reached
 rather than written. It re-derives the visibility predicate instead of calling
 `sim`'s, so it is not a function agreeing with itself. And every assertion has a
@@ -94,15 +95,39 @@ from the criterion.
 
 **The traffic-shape invariant is where the milestone actually was.** Culling is
 worth nothing if message sizes and arrival times report the number of visible
-entities anyway. The size half is carried by a type — `ServerFrame` wraps a
-fixed array, so a bucketing scheme does not compile — and the cadence half is
-the shape of the tick loop: one frame per occupied seat, every tick, whatever
-happened. The property with teeth is neither of those: it is that two states a
-player cannot tell apart produce byte-identical frames for that player, which
-covers the padding, the framing and the handle space at once. `ARCHITECTURE.md`
-now carries the padding budget with the numbers in it — 1501 bytes a tick a
-player, 360 kbit/s, thirteen times the unpadded mean — instead of the sentence
-that used to stand in for them.
+entities anyway. The size half is carried by types — `ServerFrame` wraps a fixed
+array and `ServerFrame::shards` returns a fixed array of them, so neither a
+bucketing scheme nor a packet count that follows content compiles — and the
+cadence half is the shape of the tick loop: one frame per occupied seat, every
+tick, whatever happened. The property with teeth is neither of those: it is that
+two states a player cannot tell apart produce byte-identical frames for that
+player, which covers the padding, the framing, the handle space and the event
+backlog at once. `ARCHITECTURE.md` carries the padding budget with the numbers
+in it — two datagrams of 555 bytes a tick a player, 266 kbit/s, ten times the
+unpadded mean — instead of the sentence that used to stand in for them.
+
+That budget was re-cut once, and the question that re-cut it is worth recording
+because it had not been asked: **is the worst case the bound is derived from
+reachable?** `MAX_EVENTS` is what a *tick* can record, and a frame does not have
+to carry all of it, because an event held back for one frame arrives a
+thirtieth of a second later rather than not at all. Giving the view its own
+event budget took the frame from 1501 bytes to 1096, which fits two datagrams
+under any path MTU — so state travels on QUIC datagrams, the session keeps its
+reliable stream, and head-of-line blocking is gone. `RISKS.md` R6 records the
+round trip; the entity list was left alone, because capping *that* trades a
+length channel for a content channel.
+
+**The match is 3v3v3 on a triangular map, and the timing is the argument.**
+Three bases at the vertices, a lane along each edge, each lane contested by
+exactly two of the three teams. It landed at M3 rather than later because a
+corpus of human matches recorded at six seats is unusable at nine and so is
+every replay of M5: this was the last moment at which the change destroyed
+nothing. What three teams bought, besides a game that is more than a corridor,
+is a side-channel property that two teams cannot even state — a view must
+distinguish its two enemies only by what it shows — and it closed the byte-
+equality property's known blind spot for free, because hidden activity and equal
+entitlement stopped being opposites. What they cost is an exploit class with no
+technical defence, which `SCOPE.md` now carries as class 6.
 
 **Two side channels were closed, and one of them was not on the list.** The
 projectile-handle counter, which M2 recorded as still open, is closed by a
@@ -115,13 +140,26 @@ sensitive function in the project would have answered an unvalidated seat with a
 plausible view. It takes a six-valued `Seat` now, and the validation lives at
 the protocol decoder where the byte arrives.
 
-**A property that does not have the teeth it looks like it has.** Naming every
-projectile in the arena instead of only the ones a recipient was shown — exactly
-the leak the handle space exists to close — passes the byte-equality property at
-4096 cases. Its antecedent is full entitlement equality, and a hidden cast
-advances a counter without changing anything the recipient is entitled to. A
-scripted scenario covers it, and the limitation is documented beside the
-property rather than left for a reader to assume away.
+**A property that did not have the teeth it looked like it had, and the third
+team gave them to it.** Naming every projectile in the arena instead of only the
+ones a recipient was shown — exactly the leak the handle space exists to close —
+passed the byte-equality property at 4096 cases when there were two teams. Its
+antecedent is full entitlement equality, and on a two-team map a fork nobody
+could tell apart was almost always a fork in which nothing had happened: the
+antecedent and the leak were anti-correlated. With three teams an entire enemy
+team can act at a vertex a lane away while the observer's entitlement is
+untouched, and the same mutation now fails on the property's first case. The
+scripted scenario that was written to cover the gap stays: a property that
+happens to reach a channel is evidence about a generator, and a state built to
+expose it is evidence about the channel.
+
+**And a property that the two-team format could not express.** With two sides,
+"which enemy is this about" has one answer and no view can encode it. With three
+it can, so `sim/tests/view_properties.rs` asserts that two states differing only
+in *which* of an observer's two enemies performed which of two hidden plays
+produce byte-identical views. It was exercised by mutation — a counter kept per
+enemy team, leaked into the observer's own cooldowns — and reports `Blue0 can
+tell Red having acted from Green having acted, and is entitled to neither`.
 
 **One thing M3 could not build, which M4 has to answer.** Client-side prediction
 needs the client to know which of its inputs the server applied to which tick.
@@ -195,7 +233,9 @@ input domain.
 ## M2 — Visibility projection and fog · 1–2 weeks
 
 `view_for(&State, Seat) -> PlayerView` as a separate module, plus the view
-types. Vision sources: champions, towers. `step` never reads visibility.
+types. Vision sources: champions, towers. `step` never reads visibility. Vision
+is discs without occlusion, and stays that way until there is a maphack to test
+brushes against (`SCOPE.md`).
 
 **Exit:** across the M1 fixture, for every tick and every player, no `EntityId`
 outside that player's vision appears anywhere in `view_for`'s output — including
@@ -210,7 +250,7 @@ Reached. Two things the criterion did not say, which the work had to decide:
   meaning anything. They live in `State`, and therefore under the digest, for
   the reasons in `ARCHITECTURE.md`.
 - **The size assertion is a bound plus a comparison, not a bound alone.** With
-  six champions and four towers there is no dramatic difference between a leaked
+  nine champions and six towers there is no dramatic difference between a leaked
   full state and a legitimate view, so a constant on its own proves little. Each
   view is also encoded a second time under a vision radius wide enough to cover
   the map and required to be no larger than that — a projection that stopped
@@ -234,9 +274,16 @@ weekly schedule so an unrelated new CVE never blocks an unrelated PR), and
 Renovate — see `ENGINEERING.md` for why it arrives now and not at M0.
 
 **Exit:** three headless clients join one match, run 1000 ticks of scripted
-input, and (a) all three report identical digests of their reconciled local
-view at every checkpoint tick, (b) the server's authoritative digest matches an
-offline resimulation of the recorded input log, run as a separate process.
+input, and (a) no two of them ever report different digests of their reconciled
+local view at a checkpoint tick they both received, each having received at
+least nine tenths of the checkpoints, (b) the server's authoritative digest
+matches an offline resimulation of the recorded input log, run as a separate
+process.
+
+Half (a) said "all three report identical digests at every checkpoint tick"
+until state moved onto QUIC datagrams. The weakening and its price are recorded
+above and in `RISKS.md` R6; the observed loss on loopback is zero and the test
+prints it.
 
 Reached, in `client/tests/m3_exit.rs`, over the real transport. Two things the
 criterion did not say, which the work had to decide:
@@ -254,6 +301,18 @@ criterion did not say, which the work had to decide:
   `Blue1 disagrees with Blue0 about the world at tick 800`. An input left out of
   the log: `resim` refuses the file. A criterion that has never been red is a
   criterion nobody has verified.
+- **Half (a) is weaker than the sentence above, and the transport is why.**
+  State travels in QUIC datagrams now, so a client can legitimately miss a tick;
+  requiring all three to hold *every* checkpoint would be requiring the loss
+  rate to be zero, which is a property of the loopback rather than of this
+  project. What the test asserts instead is the claim the criterion was making —
+  **no two clients ever disagree about a checkpoint they both received** — plus
+  a floor of nine tenths of the checkpoints reached per client and a count of
+  the digests actually compared, so that a run in which the three shared no
+  checkpoint cannot pass by comparing nothing. On loopback the observed loss is
+  zero and the test prints it. This is a weakening, it is recorded rather than
+  absorbed, and it is the price of removing head-of-line blocking (`RISKS.md`
+  R6).
 
 ## M4 — Playable client · 4–6 weeks
 
@@ -287,7 +346,7 @@ itself:
   text. Acknowledged within 7 days, carried out within 30. No re-consent is
   needed to withdraw and no reason is asked for.
 - **What withdrawal actually destroys.** A match is one interleaved input log
-  for six players; deleting one participant's inputs leaves a log that no longer
+  for nine players; deleting one participant's inputs leaves a log that no longer
   resimulates, so surgical removal is not on offer. Withdrawal therefore
   destroys **every match that participant played in, in full**, together with
   their pseudonym mapping — which also means it destroys other participants'
@@ -295,9 +354,10 @@ itself:
   retracted. Both consequences are stated before recording, because a
   participant who learns them afterwards was not informed.
 
-**Exit:** three humans play a 3v3 match end to end on two operating systems; the
-match writes a replay; `replay verify` resimulates it to the server's final
-digest. The consent text exists, states the four points above, and was signed by
+**Exit:** three humans play a match end to end on two operating systems — one
+team of the three, with the other six seats unoccupied, which is a state the
+rules already handle and the fixtures already cover; the match writes a replay;
+`replay verify` resimulates it to the server's final digest. The consent text exists, states the four points above, and was signed by
 all three before the match rather than after.
 
 ## M5 — Replay integrity · 2 weeks
@@ -320,7 +380,10 @@ accepted. This is exploit class 2, and its exploits live in the cheat crate.
 ## M6 — Human match corpus · 2 weeks of work, calendar-bound
 
 This milestone gates every behavioral detector and it is bound by wall-clock
-availability of other people, not by your hours. **Start recruiting during M4.**
+availability of other people, not by your hours. **Start recruiting during M4**,
+and recruit for nine seats rather than six: the match is 3v3v3, so a recorded
+match needs nine people at once and the calendar cost of that is the thing this
+milestone is actually bound by.
 
 Work: operating the consent regime written at M4 — collecting a consent record
 per participant and honouring withdrawal on the stated timeline — a pseudonymous
@@ -329,7 +392,7 @@ player identity scheme, a documented telemetry schema (client-claimed timestamp
 input telemetry is personal information), a recording harness, and a held-out
 split fixed before any detector is written.
 
-**Exit:** at least 40 recorded matches from at least 6 distinct people, each
+**Exit:** at least 40 recorded matches from at least 9 distinct people, each
 with a consent record naming its retention date; a documented schema; a frozen
 train/holdout split; a written destruction procedure that has been executed once
 end to end on a discarded test recording; and a published summary statistic set.
