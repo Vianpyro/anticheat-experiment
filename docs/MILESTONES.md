@@ -10,8 +10,11 @@ CI is not a delivered detector.**
 
 ## Current state
 
-**M0, M1, M2 and M3 are reached**, the last of them for a game that is now
-3v3v3 on a triangular map. **M4 is built and not reached**: everything its
+**M0, M1, M2, M3 and M5 are reached**, and M3's is for a game that is now
+3v3v3 on a triangular map. M5 is out of order deliberately: its criterion is a
+table of tamper cases and a verifier, and neither of them needs a person, whereas
+M4's remaining clause and M6 are both waiting on a calendar. **M4 is built and
+not reached**: everything its
 criterion asks for except the three humans on two operating systems runs in
 `client/tests/m4_exit.rs`, and that clause is a fact about a calendar rather
 than a thing CI can stand in for. The client it will be played on is a window
@@ -181,8 +184,18 @@ accident.
 the third-party actions are SHA-pinned in the same change — `RISKS.md` R12 says
 the pins and the thing that maintains them land together or not at all.
 
-Next is M4, the playable client, which is the largest and least interesting
-milestone and the one that brings the consent regime with it.
+**And a class of defect was named rather than fixed four more times.** Four times
+in this project a test has been green because the condition it was about never
+occurred, and each discovery was accidental. `RISKS.md` R15 is that class, the
+four instances, and the hedge: every scripted fixture carries an assertion on
+what it actually reaches. The pass that entry describes found four hollow
+fixtures — including M3's own exit criterion, whose three clients covered four
+units of a hundred-and-seventy-three-unit lane and agreed about a world in which
+nothing happened — and one thin one. The floors are counted, printed, and red at
+zero.
+
+Next is M4's remaining clause and M6, both of which are waiting on people rather
+than on hours; M7 is the next milestone that is only work.
 
 ---
 
@@ -451,9 +464,126 @@ client's input capture was rebuilt first. M5 freezes a record format, and the
 client is what determines which telemetry exists to put in one — raw device
 deltas, what a timestamp actually is, how often a sample is taken. Deciding the
 format before knowing the source is deciding it twice, and the second time is
-after a corpus exists. Nothing of M5 was started: `Manifest`, signing and
-`VerifyError` are still M5's, and the client holds its trace in memory as a
-diagnostic that is explicitly not a record format (`client::input::InputTrace`).
+after a corpus exists.
+
+### M5 is reached
+
+`replay/tests/tamper.rs` runs the criterion. Nine rows rather than six — the six
+the criterion names, plus a rules-hash and a version case counted separately, and
+two rows for the attacker who cannot re-sign — each refused by a different check,
+with a genuine replay accepted before the table runs so that a suite in which
+everything fails cannot pass by failing.
+
+Five things the criterion did not say, which the work had to decide.
+
+**The structural decision is that there is exactly one file format.** The
+unsigned container M3 shipped is *gone*, not kept beside the signed one.
+`Recording` survives as the authority's in-memory product and has no encoding at
+all; `replay::seal` is the only path to a disk. Two formats would have been two
+things to parse and two things to verify, and — the argument that decided it — a
+question with no good answer the first time somebody hands you the weaker one: a
+reader that accepts both accepts the weaker, and a corpus holding both holds
+files nobody can tell apart at a glance. The cost is that M3's and M4's exit
+criteria had to learn to seal before they verify, which is the right cost, since
+what they now exercise is the artefact a person would actually keep.
+
+**What is signed is the manifest, and the manifest covers the log by carrying its
+digest.** `RISKS.md` R4 lists three failure modes and this answers all of them at
+once. The fields, and the *absences*, are in `replay/src/manifest.rs` field by
+field — because M5 freezes a format and whatever is missing here is missing from
+the whole corpus. The absences worth naming here: no events and no frames (a
+replay carries the seed and the log; resimulation derives the events, so there is
+no field for delivery order to get into); no telemetry above one intention per
+tick, so `client::input::InputTrace`'s kilohertz stream stays a separate artefact
+beside a replay rather than inside the one resimulation is a function of; no
+player identity beyond the pseudonym; and no client-reported version, because the
+client is assumed compromised and the build that matters is the one that resolved
+the match.
+
+**The outcome is a field, and that is what makes result forgery checkable.** It
+is the claim a replay is *submitted* to make — exploit class 2 is "unplayed
+match, edited replay", and what a forger wants to assert is that they won. Being
+a field means resimulation can contradict it, which is why "altered outcome
+record" has an error of its own rather than being a digest mismatch.
+
+**Six distinct errors are only possible against an attacker who can re-sign.**
+The naive tamper — editing bytes — is a signature failure every time, so a table
+built that way would have six rows and one answer. Every row except the two
+signature rows is therefore **re-signed with a key the registry accepts**, and
+what catches each is a different check: the checks run in order and each one
+catches the attacker who stopped one step short of the next. `replay/src/container.rs`
+carries the escalation as a table.
+
+**And the escalation ends where key custody begins.** An attacker holding an
+accepted key who adjusts every field consistently has not tampered with a replay:
+they have produced a replay of a different match, honestly simulated, and there
+is nothing in the bytes to distinguish it from one that was played. That is the
+boundary of what a signature over a self-consistent artefact can mean, and
+`the_escalation_ends_where_key_custody_begins` executes it rather than leaving it
+as a paragraph.
+
+### What resimulation establishes here, and what it does not
+
+`SCOPE.md`'s note on class 2 is the frame and this milestone does not widen it.
+**Resimulating the inputs of a fully authoritative server proves the server did
+not corrupt itself. It does not catch a cheating client** — every input in the
+log is one the server accepted, and a client that aimed with a script sent inputs
+that are in that log and that resimulate perfectly.
+
+What verification establishes about a file somebody hands you is four things:
+
+1. a key in your registry sealed this manifest;
+2. the log is the log the manifest names, in order and in full;
+3. that log, run through this build, reaches the state **and the result** the
+   manifest claims;
+4. the build verifying is the build the match was played under, or the failure
+   says so in its own error rather than as a digest mismatch.
+
+And what it does not establish: nothing about how anybody played; nothing against
+somebody holding a key; and nothing `sim` cannot reproduce, which is the
+comparability question below. **This is not a delivered defence.** `SCOPE.md`
+reserves that word for a class with a matching exploit failing against it in CI,
+and class 2's exploit is M7's — a cheat client that submits a replay of a match
+it did not play. The format is what that exploit will be run against.
+
+### The comparability trap, and what the comparison is actually worth
+
+Resimulation compares `sim` against `sim`, which is the same shape as M2's
+encoded-size bound — a test that re-executed one function on both sides and could
+not be made to fail. M2 escaped it by re-deriving the visibility predicate; there
+is no equivalent move here and pretending otherwise would be worse than saying
+so, because a second implementation of `step` is exactly what `ARCHITECTURE.md`
+refuses.
+
+So the honest statement is narrower than "the match was played correctly": **it
+is a check on the recording, not on the rules.** That was verified by mutation
+rather than argued. Doubling a champion's displacement inside `step` leaves the
+M5 verification green — both sides move together — and turns the tri-platform
+fixture red at `divergence first visible at tick 100`. Stamping a log entry with
+the wrong tick in `Match::recording` does the opposite: the fixture is untouched
+and `replay verify` reports `the log does not reproduce the state it claims`.
+What covers the rules is the committed digests; what M5 covers is that the
+recording is complete, ordered and unaltered.
+
+### The cross-platform case, which had never been run
+
+Every digest here was recorded on x86-64 Linux and checked on three targets, so
+the *simulation's* cross-platform claim has been evidence since M1. A replay is a
+**file**, and between `State::digest` and the bytes on a disk M5 adds three
+places a platform can differ: the manifest's encoding, the log's encoding, and
+the signature over them. A log recorded on one machine and verified on another is
+what a replay is *for*, and nothing had ever exercised it — the failure would
+have been a verifier on Windows reporting a digest mismatch on an honest replay
+from Linux, in the one milestone whose subject is telling those two apart.
+
+`replay/tests/sealed.rs` carries bytes sealed on Linux and committed, and the
+`determinism` workflow's `fixture` job requires byte equality with them on all
+three targets before verifying and resimulating them there. Two fields in it are
+pinned: the commit, because a committed fixture is not a build artefact, and the
+`sim` version at `0.0.0`, which no build has — so the blob survives the version
+bumps R13 demands of every change to `sim/`, and verifying it as *this* build
+must fail with `SimVersion`, which is R13's mechanism demonstrated against a real
+file.
 
 ## M6 — Human match corpus · 2 weeks of work, calendar-bound
 

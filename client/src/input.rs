@@ -360,6 +360,33 @@ impl InputTrace {
             }
         }
         gaps.sort_unstable();
+        // The one place this module does floating-point arithmetic on a
+        // timestamp, and it is a summary rather than a record: the samples keep
+        // their integer nanoseconds and nothing downstream of `stats` reaches
+        // the trace. A mean over a million `u64` nanosecond gaps overflows
+        // nothing here — the sum is bounded by the span — but it is computed in
+        // `f64` because the standard deviation beside it has to be.
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a summary of a distribution, never a recorded value"
+        )]
+        let (gap_mean_ns, gap_sd_ns) = {
+            if gaps.is_empty() {
+                (0.0, 0.0)
+            } else {
+                let count = gaps.len() as f64;
+                let mean = gaps.iter().map(|gap| *gap as f64).sum::<f64>() / count;
+                let variance = gaps
+                    .iter()
+                    .map(|gap| {
+                        let deviation = *gap as f64 - mean;
+                        deviation * deviation
+                    })
+                    .sum::<f64>()
+                    / count;
+                (mean, variance.sqrt())
+            }
+        };
 
         TraceStats {
             samples: self.samples.len(),
@@ -369,6 +396,8 @@ impl InputTrace {
                 _ => 0,
             },
             gaps_ns: Percentiles::of(&gaps),
+            gap_mean_ns,
+            gap_sd_ns,
             finest_count: smallest,
             finest_world_units: smallest.map(|counts| counts * WORLD_UNITS_PER_COUNT),
             travelled_counts: travelled,
@@ -382,6 +411,23 @@ impl InputTrace {
 /// A mean inter-arrival time is exactly the number that hides the failure this
 /// work is about: a stream that alternates between a burst and a stall has the
 /// same mean as one that ticks steadily, and only the spread tells them apart.
+///
+/// # Why there is a 99th percentile and not only a 95th
+///
+/// The two failures this record can have are different distributions and only
+/// one of them is visible at the 95th. Gaussian jitter of a fraction of a
+/// millisecond is harmless — it is a small fraction of the human variability
+/// `docs/MILESTONES.md` M8's detectors are looking for, and it widens a
+/// distribution without moving its shape. An occasional stall of ten or fifteen
+/// milliseconds is not harmless at all: at 125 Hz that is one sample in a
+/// hundred or fewer, so it does not reach the 95th percentile, and what it looks
+/// like in the record is a hand that hesitated. A detector calibrated on a
+/// corpus with those in it has been calibrated on the client's scheduler.
+///
+/// So the tail is reported at a resolution where a one-in-a-hundred event is
+/// visible, and [`TraceStats::gap_sd_ns`] is reported beside it, because "the
+/// spread is small" and "the tail is bounded" are two claims and the residual
+/// R14 leaves open needs both.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Percentiles {
     /// Smallest observation.
@@ -392,6 +438,9 @@ pub struct Percentiles {
     pub p50: u64,
     /// 95th percentile.
     pub p95: u64,
+    /// 99th percentile. The tail a long frame writes into, and the one a mean
+    /// and a 95th percentile both hide.
+    pub p99: u64,
     /// Largest observation.
     pub max: u64,
 }
@@ -413,6 +462,7 @@ impl Percentiles {
             p05: at(5),
             p50: at(50),
             p95: at(95),
+            p99: at(99),
             max: sorted.last().copied().unwrap_or(0),
         }
     }
@@ -429,6 +479,23 @@ pub struct TraceStats {
     pub span_ns: u64,
     /// Inter-arrival times, in nanoseconds.
     pub gaps_ns: Percentiles,
+    /// The mean inter-arrival time, in nanoseconds.
+    ///
+    /// Reported *beside* the order statistics and never instead of them, for
+    /// the reason [`Percentiles`] gives. It is here because the pair
+    /// (mean, standard deviation) is what a claim of the form "the noise this
+    /// client adds is a few per cent of the signal M8 is looking for" is
+    /// arithmetic about, and a claim with no number in it is what
+    /// `docs/RISKS.md` R14 was made of the first time.
+    pub gap_mean_ns: f64,
+    /// The population standard deviation of the inter-arrival times.
+    ///
+    /// The number `docs/RISKS.md` R14's timestamp half is closed against, or
+    /// not. Against a signal whose human spread is of the order of ten
+    /// milliseconds, a client-side spread under one is noise worth a few per
+    /// cent of it; anything approaching the signal is a covariate a detector
+    /// would have to model.
+    pub gap_sd_ns: f64,
     /// The smallest non-zero motion observed, in device counts. This is the
     /// spatial resolution of the record.
     pub finest_count: Option<f64>,

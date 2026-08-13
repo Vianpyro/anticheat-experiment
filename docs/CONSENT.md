@@ -42,14 +42,20 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 >
 > **2. What is collected, field by field.**
 >
-> For every match you play in, the recording holds:
+> For every match you play in, the replay file holds:
 >
 > | Field | What it is |
 > | --- | --- |
+> | `match_id` | A number that tells this match apart from another one |
 > | `seed` | The number the match's world was generated from |
 > | `rules_hash` | A fingerprint of the game's constants, so the match can be replayed correctly later |
+> | `sim_version`, `sim_commit` | Which build of the game resolved the match, so that a replay that no longer replays can be told from a replay that was edited |
+> | `started_at_unix_ms` | When the match began. This is what the destruction date below is counted from |
+> | `participants` | **Your pseudonym**, and those of the other people in the match, one per seat. Not your name — see the mapping below |
 > | `ticks` | How many thirtieths of a second the match lasted |
-> | `final_state_digest` | A fingerprint of how the match ended |
+> | `outcome` | Which team won, and on which tick, or that the match was still being played |
+> | `input_log_digest`, `final_state_digest` | Fingerprints of the inputs and of how the match ended |
+> | `server_identity`, and a signature | Which machine recorded the match, and a seal over everything above, so that nobody can alter a replay afterwards and present it as yours |
 >
 > And for **every input you make** — roughly one per thirtieth of a second while
 > you are playing:
@@ -66,7 +72,15 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 > The two timestamps are collected separately and deliberately: the difference
 > between them is one of the signals the project is studying.
 >
-> Beside the recordings, the project holds a **consent record** for you — your
+> **One input per thirtieth of a second, and no more.** Your mouse and keyboard
+> report far more often than that — several hundred times a second — and while
+> you are playing, the game on your own machine reads all of it. None of that
+> reaches a replay file: what is recorded is the one instruction the game acted
+> on in each thirtieth of a second, and the two timestamps above. If a future
+> part of this project ever needs the finer stream, it will be a separate thing
+> to be asked for separately, and this text will say so before it is collected.
+>
+> Beside the replays, the project holds a **consent record** for you — your
 > pseudonym, the date you consented, the date your data is destroyed, and
 > whether you agreed to publication — and a **pseudonym mapping**, which is the
 > one file that connects your pseudonym to you.
@@ -190,18 +204,49 @@ never told about.
 forgets the pseudonym mapping, or forgets one match, is caught by the audit and
 named in the failure.
 
-### The corpus cannot be committed by accident
+### There is no derived index for a withdrawal to miss
 
-`.gitignore` refuses `corpus/`, `*.replay`, `*.consent` and `*.identity`, and
-`ci` fails a pull request that tracks any of them. `docs/RISKS.md` R3 is about an
-irreversibility git makes literal: a recording committed once is in the history
-and in every fork, and deleting the file does not delete it.
+The way a destruction promise fails is not a match directory somebody forgot to
+unlink — `withdraw` removes those and the audit checks. It is a *derived*
+artefact that outlives what it was derived from: a summary, a cache, a list of
+who played what.
+
+Until M5 this corpus had exactly one. `store` took a participant list and wrote
+it into a `participants` file beside the recording, because a recording named
+seats and not people and there was nowhere else to put it. That file was an index
+in every sense that matters: derived from what an operator passed in, able to
+drift from the recording it sat next to, and able to be deleted while the
+telemetry it pointed at survived.
+
+A sealed replay carries its participants **inside the signature**, so the index
+has no reason to exist and it is gone. `Corpus::participants_of` reads the
+manifest; there is one place a pseudonym is written and one thing to delete. What
+guards against a future one is the audit's crudeness rather than a rule anybody
+has to remember: it reads every byte of every file under the root, so an index
+added quietly is reported the first time somebody withdraws, and
+`replay/tests/withdrawal.rs` plants one to prove it.
+
+### The corpus and the signing key cannot be committed by accident
+
+`.gitignore` refuses `corpus/`, `*.replay`, `*.consent`, `*.identity` and
+`*.signing-key`, and `ci` fails a pull request that tracks any of them.
+`docs/RISKS.md` R3 is about an irreversibility git makes literal: a recording
+committed once is in the history and in every fork, and deleting the file does
+not delete it. The signing key is refused for a second reason (`docs/RISKS.md`
+R4): whoever holds it can seal a replay this project's own verifier accepts.
+
+The **public** key is deliberately not refused, and that is a decision rather
+than an oversight. R4 requires every key, including every retired one, to stay
+published — a retired key that stops being published orphans every replay it ever
+sealed, which would be a way of destroying evidence by housekeeping.
 
 ### A match nobody consented to cannot be stored
 
-`Corpus::store` refuses a recording naming a participant with no consent record,
+`Corpus::store` refuses a replay naming a participant with no consent record,
 rather than accepting it and leaving the check for whoever operates the corpus at
-M6. Consent is a person-to-person act — `docs/ENGINEERING.md` lists admitting a
+M6. Since M5 it reads the names out of the replay's own manifest rather than
+being told them, so the check is against what the match actually says it was.
+Consent is a person-to-person act — `docs/ENGINEERING.md` lists admitting a
 participant among the things that stay manual — and this is the one part of it
 that a program can hold.
 

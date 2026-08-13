@@ -48,6 +48,17 @@ mod harness;
 const TICKS: u32 = 1000;
 const CHECKPOINT: u32 = 100;
 
+/// The tick the team turns for home.
+///
+/// Late enough that they arrive under Red's tower first. The lane is 173 units,
+/// Red's tower stands a quarter of the way down it from Red's base, and a
+/// champion covers `champion_speed` a tick — so the first shot lands at about
+/// tick 607 and this leaves a couple of hundred ticks of it before the walk
+/// back. Nobody dies: a champion has 600 hit points and the whole exposure
+/// costs about 135 of them, which is what makes this a match with damage in it
+/// rather than a match with a respawn in it.
+const TURN: u32 = 800;
+
 /// What one client came back with.
 #[derive(Debug)]
 struct Report {
@@ -62,6 +73,8 @@ struct Report {
     /// How many ticks the client rendered a position ahead of the last view.
     predicted_ahead: u32,
     frames_lost: u32,
+    /// What the match this client played actually contained.
+    reach: harness::Reach,
 }
 
 /// A client driven the way `client::play` drives one.
@@ -111,6 +124,7 @@ async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, Strin
     let mut predicted_ahead = 0u32;
     let mut exact = 0u32;
     let mut views = 0u32;
+    let mut reach = harness::Reach::default();
 
     loop {
         let Ok(frame) = wire.recv_state().await else {
@@ -126,6 +140,7 @@ async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, Strin
         let seen = prediction.get_or_insert_with(|| Prediction::anchored(&view));
         seen.observe(&view, headless.applied_through());
         views = views.saturating_add(1);
+        reach.observe(&headless);
         if seen.corrections().0 == 0 {
             exact = exact.saturating_add(1);
         }
@@ -138,10 +153,22 @@ async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, Strin
         // What the player would be asking for. A cast every eight seconds, which
         // is the skillshot's cooldown, and a change of destination once, so that
         // the standing order is exercised as an order rather than as a constant.
+        //
+        // The turn is at [`TURN`] and not at the halfway point it used to be at,
+        // and the reason is `docs/RISKS.md` R15. A team that turns for home at
+        // tick 500 covers a hundred of the lane's hundred and seventy-three
+        // units, which stops it **thirty units short of Red's tower**: the match
+        // this criterion ran over contained no damage at all, so the clause it
+        // shares with M3 — three teammates agreeing about the world — was again
+        // being checked on three teammates whose own hit points were equal by
+        // accident. That is the exact condition that hid `LocalWorld::digest`'s
+        // own-liveness bug for a milestone. Walking to `TURN` puts them under
+        // fire from about tick 607, and the counters below refuse a run in which
+        // it did not happen.
         let action = if tick % 240 == 60 {
             Action::Skillshot(along)
         } else {
-            if tick == 500 {
+            if tick == TURN {
                 standing = Action::Move(home);
             }
             standing
@@ -166,6 +193,7 @@ async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, Strin
         views,
         predicted_ahead,
         frames_lost,
+        reach,
     })
 }
 
@@ -183,18 +211,31 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
             seed: 0x00C0_FFEE_0D15_EA5E,
             players: 3,
         },
-        // Four milliseconds a tick rather than M3's one, and the number is
+        // Ten milliseconds a tick rather than M3's one, and the number is
         // measured rather than picked. At one millisecond three clients on one
         // machine cannot keep up: a third of the server's ticks run with no
         // input from a given client, the champion walks on its standing order
         // anyway, and the next view is two steps from the anchor where the
         // client drew one — 662 of 1000 views exact, worst correction exactly
-        // one tick of movement. At four milliseconds and above, all three
-        // clients are exact on every view of a thousand, and so they are at ten
-        // and at the game's own thirty-three. The compression that costs
-        // nothing is the one that keeps the criterion a statement about the
-        // prediction rather than about the loopback's scheduler.
-        Duration::from_millis(4),
+        // one tick of movement. The compression that costs nothing is the one
+        // that keeps the criterion a statement about the prediction rather than
+        // about the loopback's scheduler.
+        //
+        // **It was four, and giving the match something to happen in is what
+        // moved it.** Walking the team under Red's tower rather than turning
+        // them round at the halfway point — `docs/RISKS.md` R15, and the reason
+        // `TURN` is where it is — puts enemies and damage events in every view,
+        // so each tick costs a client more to receive and to reconcile. Four
+        // milliseconds was enough for the empty match and is not enough for this
+        // one on a CI runner: both `check` jobs reported `worst correction 13106
+        // raw units`, which is one tick of `champion_speed` to within a raw unit
+        // and is the documented shape of a client that fell behind rather than
+        // of a prediction that is wrong.
+        //
+        // The lesson is the one this file already had and had not had to spend:
+        // the period is a budget for the *client*, and a fixture that reaches
+        // more of the game spends more of it.
+        Duration::from_millis(10),
         TICKS,
     ));
 
@@ -242,6 +283,11 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
             report.predicted_ahead,
             report.frames_lost
         );
+        println!("{:?}: reach — {}", report.seat, report.reach.summary());
+
+        // `docs/RISKS.md` R15, before anything that is conditional on the match
+        // having contained something.
+        report.reach.assert_a_match_happened(report.seat);
 
         // Exact, on every view, over the real transport. `prediction.rs` makes
         // the same claim on a match driven one tick at a time, which is the test
@@ -278,6 +324,21 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
         );
     }
 
+    // …and they were on different hit points while they agreed, which is what
+    // makes the agreement below evidence rather than a coincidence. A tower
+    // shoots the lowest-numbered seat it can see, so this is one of the three
+    // bleeding and two beside it untouched.
+    let under_fire = reports
+        .iter()
+        .filter(|report| report.reach.hurt_views > 0)
+        .count();
+    assert!(
+        under_fire > 0 && under_fire < reports.len(),
+        "{under_fire} of the three clients were ever below full health, so the \
+         agreement asserted below is agreement between teammates whose own liveness \
+         never differed (docs/RISKS.md R15)"
+    );
+
     // The three clients agree about the world, which is M3's criterion and still
     // has to hold when a person is driving.
     let first = &reports[0];
@@ -311,17 +372,21 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
         recording.inputs.len()
     );
 
-    let path = std::env::temp_dir().join(format!("moba-m4-{}.replay", std::process::id()));
-    std::fs::write(&path, recording.encode()).expect("write the recording");
+    // Sealed, because since M5 there is one file format and it is signed: a
+    // criterion that wrote an unsigned container would be exercising a format
+    // this project no longer has. The key and the registry are the harness's.
+    let (path, keys) = harness::seal_to_disk(&recording, "moba-m4");
 
     let output = std::process::Command::new(harness::replay_binary())
         .arg("verify")
         .arg(&path)
+        .arg(&keys)
         .output()
         .expect("run the replay tool");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&keys);
 
     assert!(
         output.status.success(),

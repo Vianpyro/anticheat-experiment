@@ -46,4 +46,16 @@ winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "
 # one process, and the alternative is an eighth crate whose only content is a
 # test.
 [dev-dependencies]
+# `replay`, for the two exit criteria that have to seal a match before
+# `replay verify` can be asked to resimulate it. Since M5 this project has one
+# file format and it is signed, so a criterion that wrote an unsigned container
+# would be exercising a format that no longer exists.
+#
+# `docs/ARCHITECTURE.md` forbids `client` **`replay`'s signing keys**, and that
+# stands exactly as written: what it is about is a shipped client able to seal a
+# replay, and the key in `client/tests/harness` is a written-down constant in a
+# test binary. The enforced claim is about the *normal* graph — `cargo tree -p
+# client --edges normal` shows no path to `replay` either — and a dev-dependency
+# is not that. It is the same allowance `server` already has below.
+replay = { path = "../replay" }
 server = { path = "../server" }

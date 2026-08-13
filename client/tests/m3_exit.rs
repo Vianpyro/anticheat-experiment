@@ -75,6 +75,24 @@ const CHECKPOINT: u32 = 100;
 /// their own tower, cross into the dark, and arrive among the Red champions
 /// standing at their spawn under Red's tower — which is what puts entities into
 /// and out of the fog rather than leaving every view empty.
+///
+/// # The order is re-sent every tick, and that is a correction
+///
+/// This function used to fill the ticks between orders with `Action::Idle`, on
+/// the reading that a client with nothing new to say says nothing. `Idle` is
+/// not silence: it is a rule that **stops the champion**. So the three of them
+/// walked for one tick in every hundred and twenty, covered **four units of the
+/// hundred and seventy-three the paragraph above describes**, never left their
+/// own base, and never put a single entity into or out of anybody's fog. Every
+/// sentence above was false about the match that ran, and nothing failed,
+/// because the criterion this file states — three clients agreeing — is
+/// satisfied by three clients standing still and seeing only each other.
+///
+/// `docs/RISKS.md` R15 is the class of defect that is, and this is one of the
+/// four instances it records. The fix is the shape a person's client actually
+/// produces and the one `client::play` composes: a standing order re-sent every
+/// tick, with one-shot abilities that leave it alone. The counters in [`Report`]
+/// are what stop it from silently becoming untrue again.
 fn scripted(seat: Seat, tick: u32) -> Action {
     let home = sim::base_position(Seat::Blue0.team(), &sim::RULES);
     let target = sim::base_position(Seat::Red0.team(), &sim::RULES);
@@ -91,10 +109,8 @@ fn scripted(seat: Seat, tick: u32) -> Action {
         // On cooldown, so projectiles exist and the per-recipient handle spaces
         // have something to name.
         Action::Skillshot(along)
-    } else if tick.is_multiple_of(120) {
-        Action::Move(target.add(across.scale(Fx::from_int(file))))
     } else {
-        Action::Idle
+        Action::Move(target.add(across.scale(Fx::from_int(file))))
     }
 }
 
@@ -124,6 +140,7 @@ async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, Strin
         .map_err(|error| error.to_string())?;
 
     let mut checkpoints = BTreeMap::new();
+    let mut reach = harness::Reach::default();
     // Until the server finishes the stream, rather than until a tick count.
     // A client that stopped reading the moment it had what it came for would
     // leave the last frames unread, and the server — which waits for its peers
@@ -140,6 +157,7 @@ async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, Strin
         headless
             .receive(&frame)
             .map_err(|error| error.to_string())?;
+        reach.observe(&headless);
 
         let Tick(tick) = headless.world().tick();
         if tick.is_multiple_of(CHECKPOINT) {
@@ -164,6 +182,7 @@ async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, Strin
         stale_views: headless.stale(),
         incomplete_frames: incomplete,
         late_shards,
+        reach,
     })
 }
 
@@ -178,6 +197,8 @@ struct Report {
     incomplete_frames: u32,
     /// Shards that arrived after a newer frame had started.
     late_shards: u32,
+    /// What the match this client played actually contained.
+    reach: harness::Reach,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -227,7 +248,40 @@ async fn three_headless_clients_agree_and_the_log_resimulates() {
             report.late_shards,
             report.stale_views
         );
+        println!("{:?}: reach — {}", report.seat, report.reach.summary());
     }
+
+    // ---------------------------------------------------------------
+    // (0) the match this criterion is stated over actually happened
+    // ---------------------------------------------------------------
+    //
+    // `docs/RISKS.md` R15. Everything below is conditional on the three clients
+    // having played a match with something in it, and for two milestones they
+    // did not: the script stopped them on the tick after every order, so they
+    // stood at their own base for the whole run and agreed about a world that
+    // contained the three of them and nothing else. These floors are what make
+    // (a) a claim about the projection instead of a claim about an empty room.
+    for report in &reports {
+        report.reach.assert_a_match_happened(report.seat);
+    }
+
+    // And the three of them were on *different* health, which is the specific
+    // antecedent that hid `LocalWorld::digest`'s own-liveness bug for the whole
+    // of M3. A tower shoots the lowest-numbered seat it can see, so this is one
+    // of the three under fire and two beside it untouched — three teammates who
+    // must agree about the world and are entitled to disagree about their own
+    // hit points. "They agreed" means nothing unless this holds.
+    let under_fire = reports
+        .iter()
+        .filter(|report| report.reach.hurt_views > 0)
+        .count();
+    assert!(
+        under_fire > 0 && under_fire < reports.len(),
+        "{under_fire} of the three clients were ever below full health: the \
+         criterion is comparing three teammates whose own liveness never differed, \
+         which is the condition that hid `LocalWorld::digest` for a milestone \
+         (docs/RISKS.md R15)"
+    );
 
     // ---------------------------------------------------------------
     // (a) identical digests at every checkpoint both clients received
@@ -301,17 +355,21 @@ async fn three_headless_clients_agree_and_the_log_resimulates() {
         "the recording holds no inputs, so resimulating it proves nothing"
     );
 
-    let path = std::env::temp_dir().join(format!("moba-m3-{}.replay", std::process::id()));
-    std::fs::write(&path, recording.encode()).expect("write the recording");
+    // Sealed, because since M5 there is one file format and it is signed: a
+    // criterion that wrote an unsigned container would be exercising a format
+    // this project no longer has. The key and the registry are the harness's.
+    let (path, keys) = harness::seal_to_disk(&recording, "moba-m3");
 
     let output = std::process::Command::new(harness::replay_binary())
         .arg("verify")
         .arg(&path)
+        .arg(&keys)
         .output()
         .expect("run the replay tool");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&keys);
 
     assert!(
         output.status.success(),

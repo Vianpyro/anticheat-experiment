@@ -26,9 +26,9 @@ client   server --+---------+         |
 | --- | --- | --- | --- |
 | `sim` | The rules of the game. `State`, `Input`, `step`, `view_for`, fixed-point math, seeded RNG | Nothing in the workspace. Externally: a fixed-point crate; `serde` only for view types | Anything with a clock, an allocator strategy, I/O, async, threads, or floats |
 | `protocol` | The wire. Message types, framing, versioning, sequence numbers | `sim` (for `PlayerView`, `Input`, ids) | `server`, `client`, `anticheat`, any runtime |
-| `replay` | The replay container: format, signing, verification, resimulation. From M4, the corpus on disk and the commands that withdraw a participant from it and audit the result | `sim`, `protocol` | `server`, `client`, `anticheat`, any runtime |
+| `replay` | The replay container: format, signing, verification, resimulation. From M4, the corpus on disk and the commands that withdraw a participant from it and audit the result | `sim`; externally, an audited signature crate and a source of entropy for `keygen` | `server`, `client`, `anticheat`, any runtime |
 | `server` | Authority. Tick loop, the clock, sockets, sessions, fog application, telemetry capture, replay recording | `sim`, `protocol`, `replay`, `anticheat`, a runtime | `client`, `cheat-client` |
-| `client` | Presentation. Rendering, **input capture**, prediction, reconciliation | `sim`, `protocol`, a runtime, a window library and a framebuffer; plus `server` as a dev-dependency for the M3 exit harness | `server`, **`anticheat`**, `replay`'s signing keys |
+| `client` | Presentation. Rendering, **input capture**, prediction, reconciliation | `sim`, `protocol`, a runtime, a window library and a framebuffer; plus `server` and `replay` as dev-dependencies for the M3 and M4 exit harnesses | `server`, **`anticheat`**, `replay`'s signing keys |
 | `anticheat` | Detection. Feature extraction from telemetry, detectors, thresholds, evidence bundles | `sim`, `replay` | `server` (it is called by the server, not the reverse), `client`, any network or filesystem I/O |
 | `cheat-client` | The attacker, and the exploit suite | `protocol` only, plus `server` as a dev-dependency for the in-process harness | `sim` internals, `client`, `anticheat` |
 
@@ -992,38 +992,86 @@ run.
 
 ### `replay`
 
-At M3 this is a container, a reader that is total on hostile bytes, and
-`resimulate`. **No signature and no version stamp**: a recording proves that
-some server wrote the file and nothing about who, and two builds that reordered
-a rule resimulate differently with nothing in the file to say which was right
-(`RISKS.md` R13). A digest mismatch at M3 therefore means "these bytes do not
-describe that match" and cannot yet distinguish tampering from a build
-difference. It is a development artefact, not evidence; M5 is where that
-changes. `rules_hash` *is* carried, because its absence is a silent failure
-rather than a missing feature (`RISKS.md` R2).
+**One file format, and it is signed.** At M3 and M4 this crate held an unsigned
+container: it proved that some server wrote the file and nothing about who, and
+two builds that reordered a rule resimulated differently with nothing in the file
+to say which was right (`RISKS.md` R13). It was a development artefact and said
+so. M5 replaced it rather than adding beside it — `Recording` survives as the
+authority's in-memory product with **no encoding at all**, and `seal` is the only
+path to a disk.
 
-The `replay` binary is the tool: `replay verify <recording>` is M3's separate
-process and M4's exit criterion, and `replay withdraw` / `replay audit` are the
-consent regime's teeth. They share a binary because
-`docs/ENGINEERING.md` prefers five automations understood to fifteen endured and
-this document refuses a crate for a handful of commands; they operate on
-directories of the thing this crate defines. `docs/CONSENT.md` is what they
-implement.
+Keeping both was the alternative and it was rejected on one argument: a reader
+that accepts a signed and an unsigned container accepts the weaker one, and a
+corpus holding both holds files nobody can tell apart at a glance. The unsigned
+one is precisely the artefact somebody would later hand you as evidence.
+
+The `replay` binary is the tool: `replay verify <replay> <keys>` is M3's separate
+process and M4's exit criterion, `replay keygen` and `replay inspect` are the
+operator's, and `replay withdraw` / `replay audit` are the consent regime's
+teeth. They share a binary because `docs/ENGINEERING.md` prefers five automations
+understood to fifteen endured and this document refuses a crate for a handful of
+commands; they operate on directories of the thing this crate defines.
+`docs/CONSENT.md` is what they implement.
+
+**`verify` takes a key registry and there is no default.** A verification with no
+registry establishes nothing — a signature is internally consistent by
+construction, so "verified" without "verified as whose" is a word doing no work.
+The registry is a required argument, and there is deliberately no `--insecure`.
 
 ```rust
 pub struct Manifest {                  // this is what gets signed, not the log
-    pub match_id: Uuid,
-    pub server_identity: PublicKey,
+    pub match_id: MatchId,             // 16 bytes; no uuid crate for a 16-byte array
+    pub server_identity: VerifyingKey,
     pub seed: u64,
-    pub rules_hash: [u8; 32],
+    pub rules_hash: Digest,
     pub sim_version: [u16; 3],         // the `sim` crate version: major, minor, patch
     pub sim_commit: SimCommit,         // the commit that build came from, or Unknown
-    pub started_at: SystemTime,
-    pub participants: Vec<PlayerPseudonym>,
-    pub input_log_digest: [u8; 32],
-    pub final_state_digest: [u8; 32],
+    pub started_at_unix_ms: u64,
+    pub participants: [Option<Pseudonym>; PLAYER_COUNT],   // per seat
+    pub ticks: u32,
+    pub inputs: u64,                   // what makes "truncated" its own error
+    pub input_log_digest: Digest,
+    pub outcome: Outcome,              // the claim a forged replay exists to make
+    pub final_state_digest: Digest,
 }
 ```
+
+**The signature covers the manifest; the manifest covers the log by carrying its
+digest.** That is R4's three failure modes answered at once — a genuine log
+cannot be resubmitted under another match identity, no party without a registered
+identity can mint replays, and a replay is distinguishable from a copy of itself.
+The signed bytes are the magic, the format and the manifest, so a file cannot be
+re-labelled as another format's and re-parsed under different rules while keeping
+a signature that verifies. `replay::signed_bytes` is public, because "what is
+signed" is the question M5 exists to answer and a private function is the weakest
+place to answer it.
+
+**Two fields are decisions rather than fields.** `outcome` is in the manifest
+because it is the claim a replay is *submitted* to make — exploit class 2 is
+result forgery — and being a field is what lets resimulation contradict it, which
+is what gives "altered outcome record" an error of its own. `inputs` is the log's
+length, and it is what makes a shortened log a distinct answer from a different
+one.
+
+**And the absences are decisions too**, at more length in `replay/src/manifest.rs`
+because M5 freezes a format and whatever is missing is missing from the whole
+corpus. No events and no frames: a replay carries the seed and the log and
+resimulation derives the events, so there is no field for delivery order to get
+into. No telemetry above one intention per tick: `sim` consumes one per tick at
+30 Hz, so `client::input::InputTrace`'s kilohertz stream is a separate artefact
+beside a replay rather than inside the one resimulation is a function of — folding
+it in would have made the resimulation a function of something no rule reads. No
+player identity beyond the pseudonym. No score or derived summary, because a
+field restating a derivable fact is a field that can disagree with it. And no
+client version, because the client is assumed compromised and the build that
+matters is the one that resolved the match.
+
+**Sealing happens outside `Match`.** The authority has no clock, no socket and no
+identity — that is what makes it a function of its inputs and what every
+traffic-shape property is stated over — so a signing key inside it would be the
+first secret in the one component that is supposed to have none. `Match` produces
+a `Recording`; whoever holds the key produces a `Replay` from it and the session
+facts it cannot know.
 
 `rules_hash` covers the constants; `sim_version` and `sim_commit` cover the code
 that reads them, which is the gap `RISKS.md` R13 is about — two builds can agree
@@ -1033,6 +1081,12 @@ CI refuses a pull request that touches `sim/` without raising it. The commit is
 what makes a mismatch investigable rather than merely reportable, and it is
 allowed to be absent, because a locally built server is a real case and a
 manifest that lies about provenance is worse than one that admits it:
+
+The commit is stamped by `replay`'s build script, from `git rev-parse HEAD` and
+`git status --porcelain`, so a binary carries the commit it was *built* from
+rather than whatever the machine it runs on has checked out. No `.git`, no
+variable, and `Unknown`. Two `std::process` calls rather than a dependency, which
+is `docs/ENGINEERING.md`'s bar met exactly.
 
 ```rust
 pub enum SimCommit { Sha([u8; 20]), Dirty([u8; 20]), Unknown }
@@ -1045,16 +1099,43 @@ pub struct TimedInput {
     pub received_at_ms: u64,           // server-observed: the only real clock
 }
 
-/// Resimulates and checks the signature. The only defined way to assert that a
-/// match was played.
-pub fn verify(replay: &Replay, keys: &KeyRegistry) -> Result<Digest, VerifyError>;
+pub struct Build { pub rules_hash: Digest, pub sim_version: [u16; 3] }
+
+/// Resimulates and checks the seal. The only defined way to assert anything
+/// about a replay somebody handed you.
+pub fn verify(replay: &Replay, keys: &KeyRegistry, build: &Build) -> Result<Verified, VerifyError>;
 ```
 
-`VerifyError` distinguishes its cases (truncated, reordered, digest mismatch,
-unknown key, version mismatch) because M5's exit criterion is that each tamper
-case is rejected for the right reason. "This replay is from another build" is
-one of those cases and not a digest mismatch: the two have different answers,
-and a verifier that conflates them teaches its reader to distrust the loud one.
+`Build` is a parameter rather than two ambient constants because "this replay is
+from another build" has to be testable without changing the build under test.
+Every caller in this workspace passes `Build::current()` except two: the tamper
+suite, which constructs a mismatch, and the cross-platform fixture, whose version
+field is a constant of the fixture.
+
+**`VerifyError` has one variant per check and the checks run in order**, which is
+what makes M5's six tamper cases six answers rather than one reported six times:
+unknown key, signature, rules hash, sim version, truncated, input log, final
+digest, outcome. Each catches the attacker who stopped one step short of the
+next, and the naive attacker — who edits and cannot re-sign — is caught by the
+first two before any of the rest run. "This replay is from another build" is its
+own case and not a digest mismatch: the two have different answers, and a
+verifier that conflates them teaches its reader to distrust the loud one.
+
+**A retired key still verifies.** Retirement says what may be *sealed* from now
+on; a verifier reports it and does not act on it. `RISKS.md` R4: rotating without
+keeping the retired key published orphans every replay signed with it, which is
+destroying evidence by housekeeping.
+
+**What the whole apparatus does not establish** is in
+`replay/src/container.rs`'s header at length, and the short version belongs here
+too because it is the sentence a reader will otherwise supply for themselves:
+resimulating a fully authoritative server's own inputs proves the server did not
+corrupt itself, and catches **nothing about how anybody played**. A bot's inputs
+resimulate exactly. And the comparison is `sim` against `sim` — a mutation inside
+`step` moves both sides and reddens nothing here, while a mutation in
+`Match::recording` or in the container's encoding moves one and reddens
+immediately. It is a check on the recording, not on the rules; the committed
+tri-platform digests are what covers the rules.
 
 ### `anticheat`
 
@@ -1238,6 +1319,45 @@ Each is a test or a lint, not a convention:
    screen-space quantity for a capture to derive from; and `client::input::CLOCK`
    names in a type which clock a timestamp came from, so a platform that starts
    supplying a device time is a visible change rather than a silent one.
+
+   And the residual that leaves — a dequeue stamp carries the delay between the
+   device and this process — is measured rather than feared since M5.
+   `client/tests/jitter.rs` runs the capture loop while it rasterises real frames
+   and talks to a real server over QUIC, and isolates the delay the loop *adds*
+   by differencing against a timestamp the event source read from the same clock:
+   in `release`, a standard deviation of 0.016 ms and a worst case of 0.26 ms over
+   1200 samples. The isolation is not a refinement — the recorded inter-arrival
+   is the sum of the client's promptness and the source's regularity, and on a
+   host with a coarse sleep granularity the second term is all of it, which is
+   what the first Windows run of that test reported. `RISKS.md` R14 carries the
+   table and what it does not cover.
+
+13. **A replay is one file format, it is signed, and what is signed is the
+   manifest.** `Recording` has no encoding; `replay::seal` is the only path to a
+   disk; `verify` requires a key registry and has no permissive default. Eight
+   checks run in a fixed order and each has its own `VerifyError`, which is what
+   makes M5's six tamper cases six answers — `replay/tests/tamper.rs` runs them
+   against an attacker who *can* re-sign, because every edit is a signature
+   failure otherwise and the table would be one answer six times.
+
+   Two things this invariant is careful not to claim. It says nothing about how
+   anybody played: resimulating an authoritative server's own inputs catches a
+   broken server and not a cheating client (`SCOPE.md`, class 2), and the
+   matching exploit is M7's. And the comparison is `sim` against `sim` — verified
+   by mutation, not asserted: doubling a champion's displacement inside `step`
+   leaves the whole M5 suite green and turns the tri-platform fixture red at
+   `divergence first visible at tick 100`, while mis-stamping a log entry's tick
+   in `Match::recording` does the reverse. It is a check on the recording, not on
+   the rules.
+
+14. **A replay sealed on one target is byte-identical on the other two, and
+   verifies there.** The layer M5 adds above `State::digest`: a manifest's
+   encoding, a log's encoding and a signature over them are three new places a
+   platform can differ, and a log recorded on one machine and verified on another
+   is what a replay is for. `replay/tests/sealed.rs` carries bytes sealed on
+   Linux and committed, and the `determinism` workflow requires byte equality
+   with them on all three targets. Encoding the seed little-endian turns it red
+   with both hex strings printed.
 
 ## Deliberate non-abstractions
 

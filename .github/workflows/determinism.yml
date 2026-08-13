@@ -152,6 +152,22 @@ jobs:
         shell: bash
         run: cargo test -p sim --release --locked --test determinism -- --nocapture | tee determinism.log
 
+      # The layer M5 added, and the case none of the above reaches: a replay is
+      # a *file*, and between `State::digest` and the bytes on a disk there are
+      # three new places a platform can differ — the manifest's encoding, the
+      # log's encoding, and the signature over them. A log recorded on one
+      # platform and verified on another is what a replay is for, and until this
+      # step it had never been run. `replay/tests/sealed.rs` carries the bytes,
+      # sealed on Linux and committed, and every target requires byte equality
+      # with them and then verifies and resimulates them.
+      #
+      # In this job rather than a fourth one because it is the same claim as the
+      # fixture's over the same three targets, and `docs/ENGINEERING.md` counts
+      # automations rather than steps.
+      - name: Verify a replay sealed on another platform
+        shell: bash
+        run: cargo test -p replay --release --locked --test sealed -- --nocapture | tee sealed.log
+
       # The digests are echoed into the run summary so that a three-way
       # disagreement is one glance rather than three logs opened side by side.
       - name: Report the digests
@@ -163,6 +179,7 @@ jobs:
             echo ''
             echo '```'
             grep '^determinism:' determinism.log || echo 'no digest reported: the fixture did not run'
+            grep '^sealed:' sealed.log || echo 'no sealed replay reported: the cross-platform check did not run'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

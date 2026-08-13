@@ -101,6 +101,50 @@ pub use crate::state::{
 pub use crate::step::{step, step_with_rules};
 pub use crate::vec2::FxVec2;
 
+/// This crate's own version, as major, minor and patch.
+///
+/// `rules_hash()` covers the constants; this covers **the code that reads
+/// them**, which is the gap `docs/RISKS.md` R13 is about. Swap two steps of
+/// [`step`] and every constant, every hash and every type is unchanged while a
+/// champion who survived a tick now dies in it — so a replay recorded before the
+/// change resimulates to a different digest afterwards, and a verifier that had
+/// only `rules_hash` could report a digest mismatch and nothing else. M5's
+/// manifest carries this number beside `rules_hash` and rejects a mismatch as
+/// its own error, because "this replay is from another build" and "this replay
+/// was tampered with" must not look alike.
+///
+/// # Why it lives here and why it is not written out
+///
+/// `sim` is the crate that owns the number — it is the one crate in the
+/// workspace that does not inherit `workspace.package.version`, precisely so
+/// that the `sim-version` job can refuse a pull request that changes `sim/`
+/// without raising it. A second copy of the digits in `replay` would be a second
+/// thing to remember, which is the failure that mechanism exists to remove. So
+/// it is read from Cargo's own environment at compile time: the manifest is the
+/// source of truth and this is a view of it.
+pub const VERSION: [u16; 3] = [
+    parse_version_component(env!("CARGO_PKG_VERSION_MAJOR")),
+    parse_version_component(env!("CARGO_PKG_VERSION_MINOR")),
+    parse_version_component(env!("CARGO_PKG_VERSION_PATCH")),
+];
+
+/// One decimal component of a semantic version, at compile time.
+///
+/// Written out because there is nowhere else to get it: `str::parse` is not a
+/// `const fn`. It saturates rather than wrapping on a component above 65535,
+/// which is a version nobody will write and a failure mode worth naming anyway.
+const fn parse_version_component(text: &str) -> u16 {
+    let bytes = text.as_bytes();
+    let mut value: u16 = 0;
+    let mut at = 0;
+    while at < bytes.len() {
+        let digit = bytes[at].wrapping_sub(b'0');
+        value = value.saturating_mul(10).saturating_add(digit as u16);
+        at = at.saturating_add(1);
+    }
+    value
+}
+
 /// The SHA-256 of a byte string, under this crate's own implementation.
 ///
 /// Exposed for one reason and it is worth naming, because a hash function on a

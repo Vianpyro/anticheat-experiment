@@ -161,13 +161,24 @@ pub fn script() -> Vec<Vec<Input>> {
     log
 }
 
-/// A second fixture, whose only job is to kill somebody.
+/// A second fixture, whose job is to kill somebody and to land the spell the
+/// scripted match cannot.
 ///
-/// The scripted match above exercises movement, both abilities, basic attacks,
+/// The scripted match above exercises movement, the skillshot, basic attacks,
 /// tower fire, projectile collision, clamping and the hostile tail — but over
 /// thirty-three seconds of nine-way skirmishing it never quite finishes anyone
 /// off, and death and respawn would then be verified by unit tests on one
 /// platform and by nothing on three.
+///
+/// It also lands **no targeted spells at all**, and that sentence used to read
+/// "both abilities". The script issues the order about twenty-seven times and
+/// every one of them is a no-op, because `quarry_seat` names a champion at its
+/// own base a hundred and seventy-three units away and the spell has a range.
+/// Nothing said so: the digests agreed perfectly about a match in which one of
+/// the game's five actions never once executed. `docs/RISKS.md` R15 is that
+/// class of defect, and the two floors that now keep this paragraph honest are
+/// `the_fixture_reaches_the_rules_its_documentation_claims` and
+/// `the_duel_reaches_the_abilities_the_scripted_match_cannot`.
 ///
 /// Seat 0 walks alone down the Blue–Red lane; Red's three defenders focus it and
 /// the towers on that lane join in. Green sits at its own base and takes no

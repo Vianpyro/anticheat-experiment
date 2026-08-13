@@ -170,6 +170,41 @@ start time, participant pseudonyms, the input log digest, and the final state
 digest — rather than the log alone. Version the manifest from day one. Publish
 the public key alongside releases and keep every retired key published.
 
+### Taken at M5, with two things the hedge did not name
+
+The manifest is what is signed and it carries every field above, plus three the
+hedge did not ask for and the work found it needed: the **outcome**, because that
+is the claim a forged replay exists to make and a field is what lets resimulation
+contradict it; the **input count**, because it is what makes a shortened log a
+different answer from an altered one; and the **tick count**, because a verifier
+that took the match's length from the log would be taking it from the part an
+attacker shortens. The signed bytes are the magic, the format and the manifest,
+so a file cannot be re-labelled as another format's and re-parsed under different
+rules while keeping a signature that verifies.
+
+**Key rotation is implemented as this entry demands and the demand is the
+unobvious half.** A retired key still verifies what it sealed; the registry
+records its status and `verify` reports it. The tempting reading of "retired" is
+"refused", and that reading destroys evidence by housekeeping — every replay
+signed with the old key becomes unverifiable the day it is rotated.
+`a_retired_key_still_verifies_what_it_sealed` is the assertion.
+
+**The signing key gets the same treatment as the corpus, for a different reason.**
+`.gitignore` refuses `*.signing-key` and `ci` fails on a tracked one: whoever
+holds it can seal a manifest this project's own verifier accepts, so a committed
+key is a committed authority to mint evidence, with R3's irreversibility — history
+and forks. The **public** half is deliberately not refused, because this entry
+requires it to stay published.
+
+**And the limit this hedge cannot reach, stated because a table of eight
+refusals invites a reader to conclude more.** An attacker who holds a key the
+registry accepts, and who adjusts every field consistently, has produced a replay
+of a different match, honestly simulated. Nothing in the bytes distinguishes it
+from one that was played, because nothing in it is false. What lies past that
+point is key custody, not verification, and
+`the_escalation_ends_where_key_custody_begins` executes it rather than leaving it
+to a reader's charity.
+
 ## R5 — Serializability of `State`
 
 **Irreversible in practice because:** the moment one debug endpoint, one
@@ -475,6 +510,25 @@ declines to enter, and it would report a difference between two builds of
 identical source. A version plus a commit is a weaker guarantee that is actually
 true.
 
+### Taken at M5, and the version stopped being a number somebody types
+
+`sim::VERSION` is read from Cargo's own environment at compile time rather than
+written out in `replay`, so the crate manifest is the source of truth and there
+is no second copy of the digits to forget. `replay`'s build script stamps the
+commit from `git rev-parse HEAD` and `git status --porcelain`, so a binary
+carries the commit it was *built* from rather than whatever the machine it runs
+on has checked out — and a tarball with no `.git` produces `Unknown`, which is
+this entry's "a manifest that lies about provenance is worse than one that admits
+it" in the one place it can be enforced.
+
+Both are their own `VerifyError`, checked in order after the signature and before
+anything is resimulated, so a replay from another build costs nothing to reject
+and reports why. `replay/tests/sealed.rs` demonstrates it against a real file
+rather than a constructed one: the committed cross-platform fixture pins its
+version field at `0.0.0`, which no build has, so verifying it as *this* build
+must fail with `SimVersion` — and that assertion is stable across every bump this
+entry's mechanism will ever demand.
+
 ## R14 — Input fidelity is a property of the client, and the corpus inherits it
 
 **Reopened and re-decided before M5, and the entry below the fold is kept as it
@@ -541,31 +595,132 @@ device count — **0.05 world units**, 23 times finer than a cell across and 82
 times finer down, with the 3.55 anisotropy gone because the capture no longer
 touches a projection.
 
-### What R14 becomes: reduced, not closed, and moved rather than deleted
+### What R14 becomes: reduced, and its last live half now measured rather than feared
 
-Three things, and the middle one is why this entry stays open.
+Three things. The middle one was why this entry stayed open; the measurement
+below it is what closed it.
 
 - **The aim-resolution half is closed.** A curvature detector at M8 is now a
   detector that may be written against this corpus. That is a permission and not
   a promise: `SCOPE.md` still reserves "delivered" for a class with an exploit
   failing against it in CI, and nothing here says the detector will work.
-- **The timestamp half is reduced and still open, and this is the live risk.**
-  No platform in `ENGINEERING.md`'s matrix hands this client a device timestamp
-  through `winit` — the data exists on Wayland and macOS and the library discards
-  it, and on Windows it does not exist for raw mouse input at all. The client
-  records the *dequeue* time and `client::input::CLOCK` says so in a type rather
-  than substituting silently. The residual is real: a dequeue time carries kernel
-  and scheduler latency, which is jitter M8's timing detectors will have to
-  attribute. **The decision point is before M6**, because a corpus half of whose
-  timestamps are device times and half dequeue times has a covariate nobody can
-  remove afterwards — so if `winit` gains timestamps, or if reading `evdev`
-  directly is ever judged worth a second input stack and a per-participant device
-  permission, it happens before the first recording session or not at all.
+- **The timestamp half is quantified and closed as a live risk.** See the
+  section below, which is the measurement it was closed on. The substitution
+  itself stands and is unchanged: no platform in `ENGINEERING.md`'s matrix hands
+  this client a device timestamp through `winit` — the data exists on Wayland and
+  macOS and the library discards it, and on Windows it does not exist for raw
+  mouse input at all — so the client records the *dequeue* time and
+  `client::input::CLOCK` says so in a type rather than substituting silently.
+  What has changed is that the residual has a number on it instead of a worry.
 - **The general form is what the number is now attached to.** R14 was an entry
   about a renderer. It is an entry about the client: what a corpus can support is
   fixed by what the capture path records, and every claim of the form "this
   signal is untouched" has to name the mechanism that takes the sample, not the
   component that draws the screen.
+
+### The measurement that closed the timestamp half, run 2026-08-13
+
+The number above — a standard deviation of 0.247 ms on a stream emitted at 8 ms
+— was taken **on an idle container, with no renderer and no socket**, which is
+the condition under which the answer was always going to be flattering. A
+corpus is not recorded under that condition. So the measurement was repeated
+with the client doing its job, and it reports the tail rather than only the
+spread, because a Gaussian jitter of a quarter of a millisecond and an
+occasional stall of fifteen are two different things and only one of them
+matters: 0.25 ms of Gaussian noise against a human signal whose spread is of the
+order of ten milliseconds is a few per cent of the signal and destroys nothing,
+whereas one sample in a hundred arriving fifteen milliseconds late looks exactly
+like a hand that hesitated, and a detector calibrated on that has been
+calibrated on the client's scheduler.
+
+`client/tests/jitter.rs` is the instrument. What is real in it: the rasteriser,
+over the mark list of an actual view into an actual 1280×800 framebuffer; a
+`quinn` endpoint with a real server ticking at 30 Hz; real datagrams, real
+reassembly, real reconciliation; and the thread arrangement `client::gfx::play`
+uses, where one thread drains device events and draws while a `tokio` runtime
+beside it carries the socket. What is synthesised: the device events, because CI
+has no display server and `winit` cannot open a window without one — a thread
+emits them on an absolute schedule at 125 Hz and the capture loop stamps each
+one as it drains it, which is `Session::device_event`'s first line.
+
+**And the first thing it measured was itself, which is why the number below is a
+different number.** The obvious statistic is the recorded *inter-arrival*
+distribution, and the first Windows run of this test reported a standard
+deviation of 2.356 ms against Linux's 0.039 — with eighteen samples flagged as
+platform duplicates. Neither number was about the client. An inter-arrival is the
+sum of two things, how regularly the events were produced and how promptly they
+were stamped, and Windows' default timer resolution is about 15.6 ms: a producer
+asking for 8 ms overshoots, then sends the overdue events back to back, and the
+distribution it generates is its own. **A measurement whose instrument is in the
+answer is R15 wearing a stopwatch.**
+
+Differencing against a timestamp the producer reads from the same clock removes
+that term exactly, and what is left is the delay the capture loop adds — which is
+what this residual *is*. That is what the table reports.
+
+| | R14's first run (idle, no renderer, no socket) | Rendering and talking, `release` | Rendering and talking, `dev` |
+| --- | --- | --- | --- |
+| Samples recorded / emitted | 1200 / 1200 | 1200 / 1200 | 1200 / 1200 |
+| Views reconciled, frames rasterised | none, none | 290, 532 | 290, 435 |
+| **Added latency, mean** | not isolated | **0.041 ms** | **0.288 ms** |
+| **…standard deviation** | not isolated | **0.016 ms** | **0.690 ms** |
+| …95th percentile | — | 0.055 ms | 2.312 ms |
+| **…99th percentile** | — | **0.107 ms** | **2.709 ms** |
+| …maximum | — | 0.257 ms | 5.114 ms |
+| Slowest single pass of the capture loop | — | 6.013 ms | 9.163 ms |
+| Recorded inter-arrival, standard deviation | 0.247 ms | 0.051 ms | 1.033 ms |
+
+**The conclusion, and it is the one the arithmetic supports rather than the one
+the numbers flatter.** In the profile a player runs, the delay this client adds
+between an event existing and being stamped has a standard deviation of **16
+microseconds**, a 99th percentile of **107 microseconds**, and a worst case over
+1200 samples of **0.26 ms**. Against the grandeurs M8 will look for —
+inter-arrival distributions and reaction latencies whose human spreads are tens
+of milliseconds — that is a fraction of a per cent of the signal, and the tail is
+bounded rather than heavy: there is no fifteen-millisecond mode in either
+profile. The unoptimised build is more than an order of magnitude worse and
+still under a millisecond of spread, and its tail is bounded by its own frame,
+which is the mechanism visible in the two rows at the bottom of the table.
+
+**So the residual is quantified and without consequence for the detectors in
+scope, and R14's timestamp half stops being a live risk.** What replaces it is a
+test that runs on every pull request. What that test enforces is the property
+below — an event waits at most one pass of the capture loop — and the
+distribution is printed *when it fails*, or under `--nocapture` for whoever wants
+the number. So a regression is caught in CI and read on a developer's terminal,
+which is the right division: a threshold on a runner's timing would be a check
+that goes red for reasons that have nothing to do with this repository.
+
+**Three things this does not establish**, because a table is exactly where a
+reader stops asking:
+
+- **The synthesised half is not measured.** The kernel input stack and the
+  compositor are not in this loop, so the number is a **lower bound** on the real
+  residual. What it does cover is the mechanism the worry was actually about: a
+  long frame does not delay an event in the kernel, it delays the *drain*, and
+  that is in the covered half. The uncovered contribution is a roughly constant
+  offset plus its own jitter, and a constant offset is invisible to every signal
+  on M8's list, all of which are differences.
+- **It is one host, and the assertion is deliberately not.** These are numbers
+  from one container. What the test asserts is machine-independent: every event
+  produces exactly one sample, no two samples share a timestamp, none is a
+  coincident duplicate, and **an event waits at most one pass of the capture loop
+  before it is stamped**. That last one is the residual stated as a property
+  rather than as a threshold — a latency above one pass is the loop falling
+  behind the device, which is the only way this design can write a delay into a
+  corpus. Reading the clock once per frame instead of once per event fails it and
+  the sample count together, with the frame written into the record as an added
+  latency of mean 8.195 ms and maximum 30.3 ms against a slowest pass of 4.8 ms.
+- **`evdev` stays refused, and this measurement is why.** A per-platform input
+  stack would buy a device timestamp on Linux and nothing on Windows, at the cost
+  of a `/dev/input` permission each participant has to be granted and a corpus
+  whose timestamps mean different things on the two platforms it is recorded on.
+  That was a defensible trade against an unmeasured residual. Against 16
+  microseconds it is not a trade at all. **This reopens only if a detector at M8
+  turns out to depend on a quantity at the scale of a millisecond**, which none
+  of the candidates in `MILESTONES.md` M8 does — and the reopening would then be
+  a decision about that detector, taken before M6 or not at all, for the covariate
+  reason the paragraph above this one used to give.
 
 **One more thing this found, and it is the reason to measure rather than
 argue.** The first run of the new client reported a median inter-arrival of
@@ -631,3 +786,89 @@ and it is what made the replacement cheap: `Input`, `Action`, the protocol
 frames, the digest and the recording format did not change by a byte. What the
 entry above did not have was any statement about* when *a sample is taken, which
 is the half that was wrong — see the top of this section.)*
+
+---
+
+## R15 — A scripted fixture whose antecedent is never reached
+
+**Not irreversible, and it is here because it is the defect this project keeps
+producing.** Four times now a test has been green because the condition it was
+about never occurred, and each time the discovery was accidental — somebody
+changed something nearby and the case finally arrived. A test that stops being
+about anything looks, from the outside, exactly like a test that holds; there is
+no red, no warning, and no diff. The cost is not the failing assertion, it is
+every claim built on top of it in the interval, and the interval is measured in
+milestones.
+
+**The four, in the order they were found:**
+
+| # | The fixture | What its antecedent needed | What it did |
+| --- | --- | --- | --- |
+| 1 | `client/tests/m3_exit.rs`, the `replay` binary | The tool to exist | `cargo test --workspace` does not build binaries no test target needs; it existed locally only because a `--all-targets` build had happened first |
+| 2 | `sim::MAX_EVENTS` | To be a bound on a tick | The roster went from six seats to nine, the derivation moved from 48 to 60, and the constant stayed at 48 with the derivation living in prose |
+| 3 | `LocalWorld::digest` and M3's criterion | Two teammates on different hit points | M3's scripted match produced no damage; the three walked a lane and nothing touched them |
+| 4 | `client/tests/capture.rs` | Two aims that are not both saturated | The fixture walked far enough to hit the clamp, so "two windows give the same aim" was true of any two windows |
+
+**Why the existing defences do not catch it.** Property tests have a defence and
+it works: `sim/tests/view_properties.rs` and `server/tests/traffic.rs` both end
+in a test whose only job is to sample the generators and assert floors on what
+they reach — dead champions, respawns, forks a player cannot tell apart. Nothing
+equivalent existed for **scripted** fixtures, and all four instances above are
+scripted fixtures. A generator can be measured for what it produces; a script
+was assumed to produce what its comment said it produced.
+
+**Decide:** continuously, at the moment a fixture is written.
+
+**Hedge, and it is the same shape as the property-test one.** Every scripted
+fixture carries an assertion on what it *reaches* — damage produced, events
+emitted, saturations hit, limit cases crossed — printed with the run and set to
+fail when the count falls to zero. Not on what the fixture is *for*: on the
+antecedent of the assertions stated over it. And the number is printed even when
+it passes, because the value of the counter is that a reader sees `26
+skillshots, 0 targeted spells` and asks the question.
+
+### The pass that entry made, and what it found
+
+Run over every scripted fixture in the repository, 2026-08-13. Four were hollow,
+and three of the four had a doc comment asserting the opposite:
+
+- **M3's exit criterion ran on three champions standing still.** `m3_exit.rs`
+  filled the ticks between orders with `Action::Idle` on the reading that a
+  client with nothing new to say says nothing. `Idle` is a rule that **stops the
+  champion**: the three of them moved on one tick in a hundred and twenty,
+  covered **four units of the hundred and seventy-three** their own comment
+  describes, never left their base, and never put an entity into or out of
+  anybody's fog. The criterion — three clients agreeing — is satisfied by three
+  clients who can see nothing but each other.
+- **The lost-event tripwire had nothing to trip on.**
+  `client/tests/loss.rs::nothing_a_client_was_entitled_to_is_ever_dropped_rather_than_deferred`
+  seated three clients and ticked a thousand times **without sending an input**.
+  The match produced **zero events**, so `dropped == 0` was a statement about an
+  empty match, and an `EventBacklog` that dropped on the first overflow passed
+  it.
+- **`protocol`'s "busy" state carried no events.** `busy_state()` cast once and
+  then stepped twice, and `step` clears the event record at the top of every
+  tick — so the state it returned had none, for three milestones, under a doc
+  comment reading "and an event from the tick that produced it". Two tests paid
+  for it: no `VisibleEvent` ever survived a round trip, and "a view inside the
+  budget passes through unchanged" compared two empty lists.
+- **No fixture in the repository ever landed a targeted spell.** The scripted
+  match issues the order about twenty-seven times at a champion a lane away, and
+  the spell has a range, so it lands **none**; the fixture's documentation said
+  it exercised "both abilities". One of the game's five actions was executed by
+  nothing on any of the three platforms. The duel does land it — six times — and
+  that is now a floor rather than an accident.
+
+And one that was thin rather than hollow: **M4's exit match turned for home at
+tick 500**, a hundred units into a hundred-and-seventy-three-unit lane, which
+stops it thirty units short of Red's tower. It reproduced instance 3 above
+exactly — the criterion it shares with M3 was again being checked on three
+teammates whose hit points were equal by accident. The turn is at tick 800 now,
+the first shot lands at about tick 607, and the run asserts that one of the three
+was under fire and the others were not.
+
+**What the hedge does not do**, stated because the temptation is to read a
+counter as a proof: a reach assertion says the fixture arrived at the case, not
+that the case is the interesting one. It converts "this test is about nothing"
+into a red, which is the only failure mode listed above, and leaves "this test is
+about the wrong thing" exactly where it was.

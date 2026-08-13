@@ -620,6 +620,8 @@ fn report(stats: TraceStats) {
         moves,
         span_ns,
         gaps_ns,
+        gap_mean_ns,
+        gap_sd_ns,
         finest_count,
         finest_world_units,
         travelled_counts,
@@ -631,12 +633,19 @@ fn report(stats: TraceStats) {
         ms(span_ns) / 1e3
     );
     eprintln!(
-        "capture: inter-arrival ms  min {:.3}  p05 {:.3}  p50 {:.3}  p95 {:.3}  max {:.3}",
+        "capture: inter-arrival ms  min {:.3}  p05 {:.3}  p50 {:.3}  p95 {:.3}  \
+         p99 {:.3}  max {:.3}",
         ms(gaps_ns.min),
         ms(gaps_ns.p05),
         ms(gaps_ns.p50),
         ms(gaps_ns.p95),
+        ms(gaps_ns.p99),
         ms(gaps_ns.max)
+    );
+    eprintln!(
+        "capture: inter-arrival mean {:.3} ms, standard deviation {:.3} ms",
+        gap_mean_ns / 1e6,
+        gap_sd_ns / 1e6
     );
     eprintln!(
         "capture: clock {:?}; finest motion {} counts = {} world units; travelled {travelled_counts:.1} counts",
