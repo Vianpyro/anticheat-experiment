@@ -21,7 +21,7 @@
 //! The fourth is a fact about a calendar and three people. Nothing in CI can
 //! stand in for it and this file does not pretend to: what it substitutes is
 //! three clients driving the **same input path a person drives** — intentions
-//! composed the way `client::term` composes them, one per tick, a standing order
+//! composed the way `client::play` composes them, one per tick, a standing order
 //! that persists and one-shot abilities that do not disturb it, through
 //! `Prediction` and over the real QUIC transport. That establishes the machinery
 //! is right. It establishes nothing about whether three people can sit down and
@@ -64,7 +64,7 @@ struct Report {
     frames_lost: u32,
 }
 
-/// A client driven the way `client::term` drives one.
+/// A client driven the way `client::play` drives one.
 ///
 /// Not the M3 script. The point of this harness is that the input path a person
 /// uses is the path under test: a standing intention re-sent every tick, changed

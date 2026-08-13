@@ -28,7 +28,7 @@ client   server --+---------+         |
 | `protocol` | The wire. Message types, framing, versioning, sequence numbers | `sim` (for `PlayerView`, `Input`, ids) | `server`, `client`, `anticheat`, any runtime |
 | `replay` | The replay container: format, signing, verification, resimulation. From M4, the corpus on disk and the commands that withdraw a participant from it and audit the result | `sim`, `protocol` | `server`, `client`, `anticheat`, any runtime |
 | `server` | Authority. Tick loop, the clock, sockets, sessions, fog application, telemetry capture, replay recording | `sim`, `protocol`, `replay`, `anticheat`, a runtime | `client`, `cheat-client` |
-| `client` | Presentation. Rendering, input capture, prediction, reconciliation | `sim`, `protocol`, a runtime, a game framework; plus `server` as a dev-dependency for the M3 exit harness | `server`, **`anticheat`**, `replay`'s signing keys |
+| `client` | Presentation. Rendering, **input capture**, prediction, reconciliation | `sim`, `protocol`, a runtime, a window library and a framebuffer; plus `server` as a dev-dependency for the M3 exit harness | `server`, **`anticheat`**, `replay`'s signing keys |
 | `anticheat` | Detection. Feature extraction from telemetry, detectors, thresholds, evidence bundles | `sim`, `replay` | `server` (it is called by the server, not the reverse), `client`, any network or filesystem I/O |
 | `cheat-client` | The attacker, and the exploit suite | `protocol` only, plus `server` as a dev-dependency for the in-process harness | `sim` internals, `client`, `anticheat` |
 
@@ -769,9 +769,13 @@ whether a team that concedes loses is a rule, rules live in `sim` where a replay
 resimulates them, and a match outcome invented in the session layer is one no
 verifier could reproduce.
 
-The client at M3 is headless: input scripts in, digests out. Its reconciled
-local world is what it was told, with `own` folded into the entity list at a
-teammate's fidelity, which is what makes the three seats of a team comparable.
+The client at M3 was headless: input scripts in, digests out. That mode is still
+there behind `--headless`, because it fills a seat where there is no display and
+because it is what the exit-criterion harnesses drive; its reconciled local world
+is what it was told, with `own` folded into the entity list at a teammate's
+fidelity, which is what makes the three seats of a team comparable. The playable
+client is a window, and what it draws is the smaller half of it — see "The
+client's input path, and the renderer it chose" below.
 
 **What M3 discovered, and the shape M4 gave it.** Prediction needs the client to
 know *which of its inputs the server applied to which tick*, and at M3 nothing
@@ -800,6 +804,191 @@ know about the world **and** of what the recipient itself said — both things t
 recipient already has. The property's fork is constructed so that the two
 branches never differ in which seats spoke, which keeps every seat eligible for
 the comparison rather than retiring the ones a fork happened to separate.
+
+### The client's input path, and the renderer it chose
+
+`docs/RISKS.md` R14 recorded that a terminal quantises aim to a character cell
+and priced it: no aim-curvature detector at M8, everything timing-shaped
+untouched. The second half was wrong, and reading a real SGR trace is what said
+so. Three things, of which R14 named one:
+
+- **The quantisation is anisotropic.** A terminal is about 190 columns by 45
+  rows, and a cell is about twice as tall as it is wide. Over the window the map
+  was drawn to, one cell was **1.158 world units across and 4.111 down** — the
+  vertical resolution 3.55 times the coarser. That is a *directional* bias in
+  every aimed input, not merely a coarse one, and no analysis recovers a
+  direction from a grid that had a preferred one.
+- **The sampling rate was a function of pointer speed.** A terminal reports the
+  pointer only when it crosses into a new cell, so a fast sweep produces an
+  event per cell crossed and a slow creep produces almost none. Inter-arrival
+  times recorded that way measure how fast the pointer was moving. R14 claimed
+  the timing statistics — which is most of M8's list — were untouched; they were
+  contaminated at the source.
+- **There is no device timestamp in the trace at all.** A terminal escape
+  sequence carries coordinates and buttons and nothing else, so time could only
+  ever come from the moment the client read the byte, tty and scheduler latency
+  included.
+
+The first is a resolution problem with a resolution fix. The second is not: it
+is a property of *what the device reports*, and no renderer that reports
+positions on a grid can be fixed by making the grid finer. That is why the
+client changed rather than the camera.
+
+#### The library, chosen on control of the input device
+
+The dominant criterion is access to the pointing device, because the capture is
+what motivated the change; the rendering is a means. Availability was **read out
+of the sources rather than assumed**, which is the only reason the table below
+disagrees with the assumption this work started from.
+
+| Option | Raw device motion | Device timestamp | What it costs |
+| --- | --- | --- | --- |
+| **`winit` + `softbuffer`** | Yes, on X11, Wayland and Windows | **No** — see the next table | 79 crates against the client's existing 70, no system development package on any platform, no GPU at run time, and `client::draw::rasterize` stays a pure function of a slice so the renderer keeps its tests in a CI job with no display |
+| `winit` + `wgpu` | Identical — the same input layer | Identical | 44 more crates, a shader pipeline and a working adapter at run time, and a renderer that cannot be tested in CI because CI has no GPU |
+| SDL2 / SDL3 | Yes, in relative mouse mode | A `timestamp` field that **looks** like one and is not: SDL3's headers say it is "populated using `SDL_GetTicksNS()`", which is SDL's own clock read when SDL generated the event from the OS queue — a read time in nanosecond units | A C library to find or vendor on three platforms, and a field whose name invites precisely the silent substitution this work exists to refuse |
+| A higher-level framework (`macroquad`, `ggez`) | Pointer position, not raw motion | No | Fails the dominant criterion outright |
+| `evdev` on Linux beneath the window library | Yes | **Yes** — the kernel's `input_event.time`, switchable to `CLOCK_MONOTONIC` with `EVIOCSCLOCKID` | A second input stack; a `/dev/input` read permission each participant must be granted; and no Windows counterpart, so the corpus's timestamps would mean different things on the two platforms it is recorded on. Worse for M8 than a uniform second best |
+| Bevy | — | — | Excluded, and not on these grounds: a breaking-release cadence a solo project revisited intermittently cannot absorb, and a client-side ECS invites crossing the sim/render boundary that is this project's principal asset |
+
+**Decided: `winit` + `softbuffer`.** `winit` because it is the layer that
+surfaces unaccelerated device motion on every platform in the matrix —
+`XI_RawMotion`, `zwp_relative_pointer_v1`, `WM_INPUT`. `softbuffer` because the
+scene `SCOPE.md` fixes is nine discs, six towers and some projectiles, and the
+deciding argument is not the crate count but that a CPU rasteriser is a pure
+function of a slice: the renderer's assertions run in `ci` beside everything
+else, on a runner with no display and no GPU. A `wgpu` renderer would have moved
+those assertions to "nobody checks".
+
+**Reopening criteria**, any one of which is sufficient:
+
+- **`winit` gains an event timestamp.** The platform data exists on three of the
+  four backends and `winit` discards it; the day it stops,
+  `client::input::CLOCK` becomes `Device` where it can be. This has to happen
+  **before M6** or not at all, because a corpus half of whose timestamps are
+  device times and half dequeue times is a corpus with a covariate nobody can
+  remove.
+- **The scene stops being a fixture.** The CPU rasteriser is sized for what
+  `SCOPE.md` freezes. Anything that genuinely needs a GPU reopens the `wgpu`
+  comparison, and the crate count is then the smaller half of the argument.
+- **A pointing device rather than a motion device is wanted.** This client
+  integrates raw deltas, so the aim is a first-order integral of the device. A
+  detector that needs absolute pointing — a tablet, a touchscreen — is a
+  different measurement and a different capture path.
+
+#### Device timestamps, per platform, read rather than assumed
+
+This work began on the premise that `winit` exposes device events *and their
+timestamps*. The first half is true. The second is false on every platform, and
+the finding is recorded per platform because "the library does not do it" and
+"the platform cannot do it" are different facts with different futures.
+
+| Platform | Does the platform have a device timestamp? | Does it reach the client? |
+| --- | --- | --- |
+| Linux / Wayland | **Yes.** `zwp_relative_pointer_v1::relative_motion` carries `utime_hi`/`utime_lo`, microseconds, taken by the compositor from `libinput`, which takes it from the kernel's `evdev` event | **No.** `winit` destructures that event as `{ dx_unaccel, dy_unaccel, .. }`; the `..` is the timestamp |
+| Linux / X11 | **Partly.** `XIRawEvent.time` is an X server millisecond stamp taken when the server processed the event: nearer the device than this process is, and not the device's | **No.** `winit` reads it only to remember the connection's last-seen server time, for selections and activation |
+| Windows | **No.** `WM_INPUT`'s `RAWMOUSE` has no timestamp field at all. `GetMessageTime()` exists and is a millisecond queue-post time | **No.** `winit` does not surface it either |
+| macOS | **Yes.** `NSEvent::timestamp`, process uptime, taken when the event entered the window server | **No.** `winit` does not surface it |
+
+Verified against `winit` 0.30.13 and 0.31.0-beta.2: the string `timestamp` does
+not occur anywhere in the public event API of either.
+
+So the client stamps each sample when it **dequeues** the event from the
+platform, and `client::input::CLOCK` is a `Clock::Dequeue` constant that says so
+in a type rather than in a comment. Two things about that are the substance:
+
+- It is taken **per event, in the callback**, not once per rendered frame.
+  Stamping at frame time would give every event in a frame the same time and
+  write the renderer's jitter into the record — which is the exact signal M8's
+  timing detectors have to separate a bot's regularity from.
+- It is a substitution and it is named as one. `Clock` has a `Device` variant
+  that nothing currently produces, so a later build that gets a real device
+  timestamp records *which* it had, and a corpus spanning the change can be
+  split rather than silently pooled.
+
+#### One sample per device event, and never one per change
+
+`InputTrace::moved` appends unconditionally. The two designs the task allows are
+"record every device event as it arrives" and "sample at a fixed interval", and
+the first is taken: it is the device's own cadence, it needs no second clock,
+and fixed-interval sampling would be a *resampling* of a stream the client
+already holds in full — aliasing anything faster than its interval and able only
+to lose information. The forbidden third option, "record when the position
+changed", is the terminal's failure with a window in front of it.
+
+The consequence worth stating plainly: the recorded rate is now the **mouse's
+report rate**, 125 Hz to 1 kHz, and it is the same whether the hand is creeping
+or sweeping. A stationary hand records nothing, which is not speed dependence —
+it is the absence of motion to report.
+
+#### Two paths from one event, and a projection that runs one way
+
+The device delta goes to `InputTrace` verbatim — the platform's `f64` pair,
+unscaled and unrounded — and to `Aim`, which integrates it into the fixed-point
+world point `sim` consumes. The record is in the device's own counts, so a
+player's sensitivity setting does not scale their contribution to the corpus;
+the aim is in world units, because the rules are integers.
+
+The structural half is that **`client::draw` has no inverse projection.**
+`Viewport::pixel` maps world to pixel; nothing maps pixel to world. The terminal
+client's `Camera::world` was exactly that inverse and it was the function R14
+was about. `client/tests/capture.rs` asserts what the absence buys — the same
+device events under a 640×480 and a 3840×2160 window produce a byte-identical
+trace and an identical aim — and the aim's clamp is to `RULES.map_half_extent`,
+a rule constant, rather than to the window, which would have made a recorded aim
+a function of a monitor.
+
+The renderer is letterboxed for the same reason: a world distance is the same
+number of pixels whichever way it points, at any window shape, so the terminal's
+3.55:1 anisotropy cannot come back through the display.
+
+#### A platform artefact the measurement found
+
+`CursorGrabMode::Confined` — the obvious way to stop an invisible OS pointer
+wandering off the window — makes X11 deliver **every raw motion event twice**,
+about five microseconds apart. Measured against `winit` alone with none of this
+workspace involved: 50 synthesised device motions produce 50
+`DeviceEvent::MouseMotion` without the grab and 100 with it.
+
+It is invisible on screen and it is a second mode near zero in every
+inter-arrival distribution, so a corpus recorded under it would have calibrated
+M8's timing detectors on an X11 grab. The client does not take a grab, and the
+cost — the hidden OS pointer drifts, and a click after it has left the window
+goes elsewhere — is the cheaper of the two.
+
+Filtering the duplicates was the tempting fix and is the same mistake in a
+better disguise: a predicate on the contents of the record is what the cell
+crossing was. So the trace keeps everything it is given and
+`InputTrace::stats().coincident` reports whether what it was given was sound.
+
+#### Nothing below the client changed
+
+`Input`, `Action`, `ClientFrame`, `ServerFrame`, `State::digest()`, `rules_hash`
+and the recording format are **byte-for-byte what they were**. The aim is still
+an `FxVec2` in Q15.16 and the wire still carries 24 bytes up and 1102 down. What
+changed is the resolution of what reaches that type — a device count is 0.05
+world units where a character cell was 1.158 and 4.111 — and R14's own hedge is
+why that was free: it said the quantisation lived in one function and everything
+downstream carried full precision, and it did.
+
+#### The fallback that was recorded and not taken
+
+SGR-Pixels mode (`CSI ? 1016 h`) makes an xterm-compatible terminal report the
+pointer in pixels rather than in cells, which would improve both the
+quantisation and the speed-dependent cadence. It is recorded here because it is
+the fallback if a terminal client is ever kept for development, and it is **not
+taken**, because no terminal renderer is kept: `--headless` is what fills a seat
+where there is no display and it needs no pointer at all, and a second renderer
+would be a second capture path to keep honest for a corpus that has one.
+
+The statement that outlives the decision, and it is the one that matters: **a
+trace recorded through a terminal is unusable for the corpus in either mode.**
+In cell mode for the reasons above. In pixel mode because the resolution becomes
+the display's pixel grid rather than the device's counts, the report is still
+triggered by a change of position rather than by a device event — so the cadence
+still follows speed below one pixel — the coordinates are still integers clamped
+to the terminal's window, and support varies by terminal, so the corpus's
+resolution would be a property of which terminal each participant happened to
+run.
 
 ### `replay`
 
@@ -1028,11 +1217,35 @@ Each is a test or a lint, not a convention:
    and eventually in the RL environment, and any dependency is a place for
    `RISKS.md` R9 to enter. `--edges normal` so that `proptest`, which links into
    the test harness and never into the crate, does not trip it.
+12. **The client's input capture is a function of the device event stream and of
+   nothing the renderer knows.** The same device events, driven through two
+   clients differing only in window size — 640×480 against 3840×2160, a factor
+   of six in pixels per world unit — produce a byte-identical `InputTrace` and
+   an identical aim. Asserted in `client/tests/capture.rs`, alongside the two
+   properties that make the first one worth having: every device event produces
+   exactly one sample even when it moves the drawn aim by nothing, and the trace
+   is unchanged by how many frames were drawn between the events.
+
+   This is `RISKS.md` R14's successor stated as a property rather than as a
+   choice of renderer. A windowed client that read its aim off the drawn cursor
+   would have rebuilt R14 in pixels; one that sampled on redraw would have
+   rebuilt the speed-dependent cadence at the frame rate. Both mutations turn
+   this red — see the pull request that introduced it for the messages, and for
+   the third mutation that passed until the fixture stopped saturating the clamp.
+
+   Two supports rather than one, because a test is a claim about the code as
+   written: `client::draw` exposes no inverse projection at all, so there is no
+   screen-space quantity for a capture to derive from; and `client::input::CLOCK`
+   names in a type which clock a timestamp came from, so a platform that starts
+   supplying a device time is a visible change rather than a silent one.
 
 ## Deliberate non-abstractions
 
 One champion means a concrete `Champion` struct, not a trait. One transport
 means concrete types, not a `Transport` trait. Two message directions mean two
-enums, not a codec framework. `Detector` is a trait because there will be five
-of them and the server iterates over a collection — that is the bar an
-abstraction has to clear here.
+enums, not a codec framework. One client means one renderer: no `Renderer`
+trait, no backend abstraction, and `client::draw::Mark` is a flat enum the
+rasteriser matches exhaustively rather than a display list anything else could
+implement. `Detector` is a trait because there will be five of them and the
+server iterates over a collection — that is the bar an abstraction has to clear
+here.
