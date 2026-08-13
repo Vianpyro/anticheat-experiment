@@ -19,6 +19,16 @@
 *.identity
 *.withdrawn
 
+# M6 adds two shapes and neither is less personal than a replay. A session
+# record describes what somebody's match was played on — their mouse, their
+# platform, their machine's ability to keep the tick — and a session part is one
+# seat's half of it as the client wrote it out. Neither carries a pseudonym, and
+# that is exactly why they are here: `Corpus::audit` finds a withdrawn
+# participant by searching for their name, so a file that names nobody is a file
+# no audit of any pseudonym would ever report as committed.
+*.session
+*.session-part
+
 # The replay signing key, which arrives at M5.
 #
 # A different kind of secret from the corpus and refused for a different reason:
