@@ -206,12 +206,34 @@ distribution.
 
 **Decide:** M3, at the first line of `protocol`.
 
-**Hedge:** QUIC (`quinn`). Datagrams for state, reliable streams for session
-commands, transport-level encryption and anti-replay for free, and no
-hand-rolled cryptography — which is the failure mode to avoid in a security
-portfolio. The obligation this creates is honesty: `SCOPE.md` and the class 5
-documentation must say which protections come from the transport rather than
-claiming them.
+**Hedge:** QUIC (`quinn`). Transport-level encryption and anti-replay for free,
+and no hand-rolled cryptography — which is the failure mode to avoid in a
+security portfolio. The obligation this creates is honesty: `SCOPE.md` and the
+class 5 documentation must say which protections come from the transport rather
+than claiming them.
+
+### Taken at M3, with one part of the hedge overruled by arithmetic
+
+The hedge said "datagrams for state, reliable streams for session commands".
+State does not travel in datagrams, and the reason is the padding budget rather
+than a change of mind: a padded `View` frame is 1501 bytes and a QUIC datagram
+is bounded by the path MTU near 1200, so it does not fit in one. Everything
+travels on one bidirectional stream per session instead.
+
+What that costs is head-of-line blocking on a lost packet, which is real netcode
+and the wrong trade for a shipped MOBA. What it does not cost is the
+traffic-shape invariant: a constant number of bytes emitted at a constant period
+is packetised into a constant number of packets, so an observer still counts a
+constant. `ARCHITECTURE.md` records the arithmetic under "The padding budget",
+including what shrinking the frame below the MTU would cost — every route to it
+goes through a `sim` constant that is under `State::digest()`, which is R2.
+
+The honesty obligation, discharged: packet-level replay and reordering are
+rejected by QUIC and not by this project. What is left for exploit class 5 is
+the application-level residue — idempotent session commands, and input sequence
+numbers that must be strictly increasing — and that lives in `Match::deliver`.
+The certificate is self-signed and handed to clients out of band, which they
+trust exactly; there is deliberately no verifier that accepts anything.
 
 ## R7 — Publishing the cheat client
 
@@ -319,13 +341,28 @@ exist. That changes at M9, when `release` becomes the first job to hold
 moved tag mints signed releases and provenance attestations in this project's
 name, and the risk stops being survivable.
 
-**Decide:** M3. Pinning by commit SHA is the fix, and it is deliberately not
-taken now for the reason already stated in `ci.yml`: a SHA pin with nothing to
-bump it is a pin that rots into an unpatched action, and the project trades one
-silent failure for another. Renovate arrives at M3 and its `helpers:pinGitHubActionDigests`
-preset both rewrites the references to SHAs and keeps them moving, with the
-weekly grouped pull request as the review point. Pinning and the thing that
-updates the pins land together or not at all.
+**Decide:** M3. Pinning by commit SHA is the fix, and it was deliberately not
+taken earlier for the reason stated in `ci.yml`: a SHA pin with nothing to bump
+it is a pin that rots into an unpatched action, and the project would trade one
+silent failure for another. Renovate arrives at M3 and its
+`helpers:pinGitHubActionDigests` preset keeps the SHAs moving, with the weekly
+grouped pull request as the review point. Pinning and the thing that updates the
+pins land together or not at all.
+
+**Taken at M3.** Every third-party action is now referenced by commit SHA with
+its tag in a trailing comment, in the same change that adds `renovate.json`. The
+count of third-party actions is still two: the `supply-chain` workflow installs
+`cargo-deny` with `cargo install --locked` rather than through an action,
+because a tool that reads a lockfile is not worth a third supply-chain surface.
+
+One thing this does **not** yet establish, and it is the same shape of gap the
+determinism matrix had before its negative control: Renovate has not run. The
+configuration is committed and the preset is named, but until the app is
+installed on the repository and its first weekly pull request appears, "the pins
+are maintained" is a claim about a file rather than an observation. If that
+first pull request never arrives, the pins are on the clock `ENGINEERING.md`
+already describes — delete Renovate and the SHA pins must be replaced by tags in
+the same commit, so the pins never outlive the automation that maintains them.
 
 **Hedge until then:** the count of third-party actions stays at two, both from
 widely used publishers; no job gains a write permission before M9; and the M9

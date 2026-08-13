@@ -28,7 +28,7 @@ client   server --+---------+         |
 | `protocol` | The wire. Message types, framing, versioning, sequence numbers | `sim` (for `PlayerView`, `Input`, ids) | `server`, `client`, `anticheat`, any runtime |
 | `replay` | The replay container: format, signing, verification, resimulation | `sim`, `protocol` | `server`, `client`, `anticheat`, any runtime |
 | `server` | Authority. Tick loop, the clock, sockets, sessions, fog application, telemetry capture, replay recording | `sim`, `protocol`, `replay`, `anticheat`, a runtime | `client`, `cheat-client` |
-| `client` | Presentation. Rendering, input capture, prediction, reconciliation | `sim`, `protocol`, a game framework | `server`, **`anticheat`**, `replay`'s signing keys |
+| `client` | Presentation. Rendering, input capture, prediction, reconciliation | `sim`, `protocol`, a runtime, a game framework; plus `server` as a dev-dependency for the M3 exit harness | `server`, **`anticheat`**, `replay`'s signing keys |
 | `anticheat` | Detection. Feature extraction from telemetry, detectors, thresholds, evidence bundles | `sim`, `replay` | `server` (it is called by the server, not the reverse), `client`, any network or filesystem I/O |
 | `cheat-client` | The attacker, and the exploit suite | `protocol` only, plus `server` as a dev-dependency for the in-process harness | `sim` internals, `client`, `anticheat` |
 
@@ -44,6 +44,14 @@ also makes it replayable and testable without a server.
 into the real client's internals is not an exploit, it is a test double. The
 attacker's only legitimate surface is the protocol, so that is its only
 dependency. It reimplements whatever it needs.
+
+**`client` may have `server` as a dev-dependency, and only that.** M3's exit
+criterion is three clients and one server in one process, which needs both ends
+linked into one test binary; the alternative is an eighth crate whose only
+content is that test. It is the same allowance `cheat-client` has and for the
+same reason — a dev-dependency does not ship — and the enforced claim is about
+the *normal* graph: `cargo tree -p client --edges normal` shows no path to
+`server` or `anticheat`, checked in `ci`.
 
 **`sim` must not depend on anything in the workspace.** It is the verification
 kernel: the same `step` runs in the server, in replay verification, in the
@@ -327,12 +335,12 @@ rules reads a freed slot out of that. It is a thin channel and it is exactly the
 kind this project counts: `SCOPE.md`'s adversary model puts packet sizes and
 arrival times in the same category, and this is smaller than either.
 
-What the sort does **not** close, and what is therefore still open: projectile
-handles come from a match-global counter, so a gap between two visible handles
-says how many casts happened out of sight. Closing that needs a per-recipient
-handle space, which is a protocol decision with reconciliation consequences and
-belongs to M3 rather than to a test-coverage change. It is recorded here so that
-the sort is not mistaken for a complete answer.
+What the sort did **not** close was the counter behind the handles: they come
+from a match-global allocator, so a gap between two visible handles says how many
+casts happened out of sight. That was left to M3 because closing it is a protocol
+decision with consequences for reconciliation, and it is closed now —
+`protocol::HandleSpace` gives every recipient a naming of its own. See "Handles a
+recipient is given rather than told" below.
 
 #### Serialization, and why `serde` is not here yet
 
@@ -420,25 +428,49 @@ pull request that was about something else.
 ### `protocol`
 
 ```rust
-pub const VERSION: u16;
+pub const VERSION: u16;                              // in every frame's header
 
 pub enum ClientMessage {
-    Join { .. },
+    Join,                             // the server picks the seat, not the client
     Ready,
     Input { seq: u32, claimed_at_ms: u64, action: Action },  // client time: untrusted
     Surrender,
 }
 
 pub enum ServerMessage {
-    Accepted { player: PlayerId, seed: u64, rules_hash: [u8; 32] },
-    View(PlayerView),                 // already culled before encoding
-    Outcome(MatchRecord),
+    Accepted { seat: Seat, seed: u64, rules_hash: [u8; 32] },
+    Rejected(RejectReason),
+    View(PlayerView),                 // already culled, in this recipient's handles
 }
+
+pub struct ClientFrame([u8; CLIENT_FRAME_BYTES]);    // 24
+pub struct ServerFrame([u8; SERVER_FRAME_BYTES]);    // 1501
+pub struct HandleSpace { .. }        // one recipient's naming of the projectiles
 ```
 
 `claimed_at_ms` is attacker-controlled by definition. It is recorded, never
 trusted, and the divergence between it and the server's arrival timestamp is
 itself the signal for exploit class 4.
+
+**`Join` carries no seat and `ClientMessage` carries no state at all.** No
+position, no hit points, no tick the client believes it is on. Every one of
+those is something the server knows better, and a field a client can write is a
+field an attacker writes.
+
+**There is no `Outcome(MatchRecord)` message, and its absence is the invariant
+below rather than an omission.** This document sketched one; a message whose
+*existence* depends on what happened is a message an observer counts, which is
+exactly the channel the cadence half closes. The outcome is already a field of
+every `PlayerView`, so a client learns the match ended from the frame it was
+going to receive anyway, and the signed match record — evidence, not a
+notification — is M5's object.
+
+**Every frame is a fixed-size array, which is how the size half of the invariant
+stops being a test.** There is no encoder that can return a shorter frame and no
+bucketing scheme that compiles. Decoding is total on every byte string and
+refuses a non-zero byte in the padding: padding a receiver skips is a channel
+the sender can write into, and it would give one message two encodings, which is
+what lets two verifiers disagree about a recorded log.
 
 **The traffic-shape invariant: one message per player per tick, at a constant
 cadence, of a constant encoded size, independent of content.** Both halves are
@@ -459,11 +491,160 @@ message or they wait for the next one. "Nothing visible" and "six entities
 visible" must be indistinguishable to an observer who counts and times packets
 without reading them.
 
-The cost is bandwidth spent on nothing, which at 3v3 is not a cost. The exploit
-that must fail against this is scheduled in `MILESTONES.md` M7: recovering the
-number of nearby entities from message sizes *and* arrival times.
+The exploit that must fail against this is scheduled in `MILESTONES.md` M7:
+recovering the number of nearby entities from message sizes *and* arrival times.
+
+#### The padding budget
+
+"The cost is bandwidth spent on nothing, which at 3v3 is not a cost" was the
+whole justification until M3. That is a claim with no number in it, so here is
+the number and the reasoning that fixes it.
+
+**The bucket is one bucket and it is the worst case.** `SERVER_FRAME_BYTES` is
+1501: a three-byte header plus `PlayerView::MAX_ENCODED_BYTES`, which is derived
+from the encoding rather than measured from a run. There is exactly one bucket
+because a scheme with several is only content-independent if the bucket is
+chosen without looking at the content — and a bucket chosen without looking at
+the content is one bucket with extra steps.
+
+**What it costs, measured.** Over a thousand-tick six-player match in which the
+teams cross the map and fight, the encoded views come out at a median of 95
+bytes, a mean of 115, a 95th percentile of 155 and a maximum of 188. Padding
+each to 1498:
+
+| | Per player | Per match (6) |
+| --- | --- | --- |
+| Padded, at 30 Hz | 45.0 kB/s — **360 kbit/s** | 270 kB/s — 2.16 Mbit/s |
+| Unpadded, at the measured mean | 3.5 kB/s — 28 kbit/s | 21 kB/s — 166 kbit/s |
+| Inflation | **13×** | 13× |
+
+Upstream is negligible either way: a client frame is 24 bytes, one per tick, 5.8
+kbit/s per player.
+
+**Is 360 kbit/s acceptable?** For this project, yes, and the comparison worth
+making is not to the unpadded stream but to what a game of this shape normally
+costs. A competitive shooter budgets a few hundred kbit/s per client; a MOBA
+much less. 360 kbit/s is inside that envelope, it is a constant rather than a
+peak, and the whole server is one process hosting matches counted in dozens
+(`SCOPE.md`: scale is out of scope). The bandwidth is the cheapest thing this
+project spends.
+
+**What it would take to spend less, and why none of it is taken.** The bound is
+dominated by two `sim` constants: the projectile arena at 32 × 19 = 608 bytes
+and the event buffer at 48 × 15 = 720, together 1328 of the 1498. Three ways to
+shrink it, all rejected:
+
+- *Lower `MAX_PROJECTILES` or `MAX_EVENTS`.* They are array lengths inside
+  `State`, so they are under `State::digest()`. Changing either invalidates
+  every digest committed in this repository and every replay recorded under
+  them — `RISKS.md` R2's failure mode, for a bandwidth saving nobody needs.
+- *Cap the view instead of the state:* emit at most N entities and drop the
+  rest. The size stays constant and the *contents* stop being: which entities
+  survive the cap is a function of what is visible, so a client that stops
+  seeing a distant projectile when a fight starts nearby has been told about the
+  fight. Trading a length channel for a content channel is not a saving.
+- *Compress.* Compressed length is a function of content, which is the length
+  channel with a fig leaf. Padding after compression would work and would save
+  nothing, since the padding target is what determines the bandwidth.
+
+**The consequence for the transport, stated because it is a real cost.** 1501
+bytes does not fit in a QUIC datagram, which the path MTU holds near 1200. So
+the frames travel on a reliable stream instead, and a lost packet blocks the
+frames behind it — head-of-line blocking, which is the wrong netcode for a real
+MOBA and is the honest price of a bucket sized for the worst case rather than
+for the wire. The traffic-shape property survives it: a constant number of bytes
+at a constant period is packetised into a constant number of packets. If a
+future milestone wants datagrams, it has to shrink `MAX_ENCODED_BYTES` below the
+MTU first, and the paragraph above is the list of what that would cost.
+
+#### Handles a recipient is given rather than told
+
+Champion and tower handles are public: a champion's handle *is* its seat and a
+tower's position follows from the rules. Projectile handles are not. They come
+from a counter global to the match, so a client shown `1005` and later `1009`
+has learned that three skillshots were cast where it could not see them — a
+wider channel than the ordering one M2 closed, because that leaked the *order*
+of two legitimate sightings and this leaks a count of events the recipient was
+never shown.
+
+`protocol::HandleSpace` gives every recipient a naming of its own, allocated on
+first sight. **The design that was rejected is the tempting one:** a map with a
+free list, releasing a handle when its projectile expires. It closes the
+counting channel and opens a recycling one — a handle that comes back is
+observable, and a full free list counts the projectiles in flight including the
+invisible ones. So the local counter is monotone and never reuses; the map is
+pruned to the arena each tick, which bounds memory without touching the counter.
+
+Three consequences for reconciliation, all real:
+
+- **Handles are session-local.** Two clients cannot compare projectile handles,
+  and a handle means nothing outside the session that issued it. Everything that
+  has to correlate across sessions — the recorded log, the resimulator, the
+  input-log digest — correlates on `Input`s, which name no projectile.
+- **A reconnecting session gets a new space.** It is resynchronised like a
+  joining one, by being sent a `PlayerView` and nothing else, so it has already
+  thrown away the world it had; new handles are consistent with that rather than
+  an extra cost. M4 inherits the constraint.
+- **Two sessions agree only if they saw the same history.** The three seats of a
+  team receive the same visible set and the list is ordered by handle, so they
+  allocate in the same order — which is what lets M3's exit criterion compare
+  their reconciled worlds directly. A client that joined late is *supposed* to
+  disagree about the handles of projectiles it never saw.
+
+At exhaustion — about a day of continuous play at one skillshot per player per
+eight seconds — a projectile with no handle is omitted from that recipient's
+view. A degradation, and a function of that recipient's own history rather than
+of anything hidden.
+
+### `server` and `client`
+
+```rust
+// server: the authority has no clock, no socket and no runtime.
+impl Match {
+    pub fn join(&mut self) -> (Option<Seat>, ServerFrame);
+    pub fn deliver(&mut self, seat: Seat, bytes: &[u8], received_at_ms: u64)
+        -> Result<(), Violation>;
+    pub fn tick(&mut self) -> Vec<(Seat, ServerFrame)>;   // one per occupied seat, always
+    pub fn recording(&self) -> Recording;
+}
+pub mod net { /* quinn: the clock, the sockets, the certificate */ }
+```
+
+`Match` is driven rather than driving, and that is what makes the authority a
+function of its inputs — the thing the replay resimulates, the thing M7's
+exploit suite drives, and the thing the traffic properties are stated over. The
+clock and the sockets are in `net`.
+
+The seat comes from the session and never from the message; the tick comes from
+the server. `Surrender` frees the seat and does **not** decide the match:
+whether a team that concedes loses is a rule, rules live in `sim` where a replay
+resimulates them, and a match outcome invented in the session layer is one no
+verifier could reproduce.
+
+The client at M3 is headless: input scripts in, digests out. Its reconciled
+local world is what it was told, with `own` folded into the entity list at a
+teammate's fidelity, which is what makes the three seats of a team comparable.
+
+**What M3 discovered that M4 has to answer.** Client-side prediction cannot be
+built on this protocol. Prediction needs the client to know *which of its inputs
+the server applied to which tick*, and nothing tells it: the server buckets an
+intention into whichever tick it is about to run, and `PlayerView` carries no
+acknowledgement — no last-applied sequence number, and deliberately no standing
+order, because an order names an `EntityId` the player may no longer see. M4
+needs one more field or one more message, and choosing its shape is M4's
+decision rather than one M3 should make by accident.
 
 ### `replay`
+
+At M3 this is a container, a reader that is total on hostile bytes, and
+`resimulate`. **No signature and no version stamp**: a recording proves that
+some server wrote the file and nothing about who, and two builds that reordered
+a rule resimulate differently with nothing in the file to say which was right
+(`RISKS.md` R13). A digest mismatch at M3 therefore means "these bytes do not
+describe that match" and cannot yet distinguish tampering from a build
+difference. It is a development artefact, not evidence; M5 is where that
+changes. `rules_hash` *is* carried, because its absence is a silent failure
+rather than a missing feature (`RISKS.md` R2).
 
 ```rust
 pub struct Manifest {                  // this is what gets signed, not the log
@@ -612,8 +793,31 @@ Each is a test or a lint, not a convention:
 8. Every detector in `anticheat` has an exploit in `cheat-client` that fails
    against it in CI.
 9. Every `View` message has the same encoded size, and the server emits exactly
-   one per connected player per tick. Checked by the M7 traffic-analysis
-   exploit, which must fail to recover the visible-entity count from a recorded
+   one per connected player per tick.
+
+   The size half is carried by the *type*: `ServerFrame` wraps
+   `[u8; SERVER_FRAME_BYTES]`, so there is no encoder that could return a
+   shorter frame and no bucketing scheme that would compile. The cadence half
+   cannot be a type and is `server/tests/traffic.rs`, along with the property
+   that carries the most: two states a player cannot tell apart produce
+   byte-identical frames for that player — the transport's version of the
+   side-channel property in `sim/tests/view_properties.rs`, covering the
+   padding, the framing and the per-recipient handle space.
+
+   Both were exercised rather than trusted. Emitting a view only when its
+   content changed turns the cadence property red at `tick 1: 0 frames for 6
+   seats`; padding derived from the payload is refused by the decoder's padding
+   check. One mutation was **not** caught and is recorded beside the property
+   rather than assumed away: naming every projectile in the arena instead of
+   only the ones the recipient was shown — the leak the handle space exists to
+   close — passes the byte-equality property at 4096 cases, because its
+   antecedent is full entitlement equality and a hidden cast advances a
+   counter without changing anything the recipient is entitled to. A scripted
+   scenario covers it.
+
+   None of this is a delivered defence. `SCOPE.md` reserves that word for a
+   class with a matching exploit failing against it in CI, which is the M7
+   traffic-analysis exploit: recovering the visible-entity count from a recorded
    session's message sizes and arrival times.
 10. No `Serialize` impl for `State` exists behind any Cargo feature either — the
    only sanctioned constructors are `#[cfg(test)]`-gated, and no reconnection

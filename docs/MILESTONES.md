@@ -10,7 +10,7 @@ CI is not a delivered detector.**
 
 ## Current state
 
-**M0, M1 and M2 are reached.** The workspace exists with
+**M0, M1, M2 and M3 are reached.** The workspace exists with
 its seven crates; the toolchain is pinned; `ci`, `pr-hygiene` and `determinism`
 are the only workflows and none holds write permissions; `LICENSE`,
 `SECURITY.md` and `CONTRIBUTING.md` exist. The template's super-linter, its
@@ -85,9 +85,57 @@ dependency invariant — read from an empty `[dependencies]` table until now —
 a `cargo tree -p sim --edges normal` assertion in `ci`, and adding a path
 dependency on `protocol` turns it red.
 
-The other six crates are still empty. Next is M3, the server and the protocol,
-which is where the traffic-shape invariant lands: culling is worth nothing if
-message sizes and arrival times report the number of visible entities anyway.
+**M3 is reached.** `protocol` is the wire, `server` is the authority, `client`
+is headless, `replay` records and resimulates, and `client/tests/m3_exit.rs`
+runs the exit criterion end to end over QUIC in about a second.
+
+Four things about it are worth recording here, because none of them is legible
+from the criterion.
+
+**The traffic-shape invariant is where the milestone actually was.** Culling is
+worth nothing if message sizes and arrival times report the number of visible
+entities anyway. The size half is carried by a type — `ServerFrame` wraps a
+fixed array, so a bucketing scheme does not compile — and the cadence half is
+the shape of the tick loop: one frame per occupied seat, every tick, whatever
+happened. The property with teeth is neither of those: it is that two states a
+player cannot tell apart produce byte-identical frames for that player, which
+covers the padding, the framing and the handle space at once. `ARCHITECTURE.md`
+now carries the padding budget with the numbers in it — 1501 bytes a tick a
+player, 360 kbit/s, thirteen times the unpadded mean — instead of the sentence
+that used to stand in for them.
+
+**Two side channels were closed, and one of them was not on the list.** The
+projectile-handle counter, which M2 recorded as still open, is closed by a
+per-recipient handle space with a monotone counter that never reuses. The
+tempting alternative — a free list — closes the counting channel and opens a
+recycling one, which is written down beside the type so that nobody re-derives
+it. The one that was not on the list: `view_for` took a `PlayerId(pub u8)` whose
+documented domain was `0..6` and whose real domain was the byte, so the most
+sensitive function in the project would have answered an unvalidated seat with a
+plausible view. It takes a six-valued `Seat` now, and the validation lives at
+the protocol decoder where the byte arrives.
+
+**A property that does not have the teeth it looks like it has.** Naming every
+projectile in the arena instead of only the ones a recipient was shown — exactly
+the leak the handle space exists to close — passes the byte-equality property at
+4096 cases. Its antecedent is full entitlement equality, and a hidden cast
+advances a counter without changing anything the recipient is entitled to. A
+scripted scenario covers it, and the limitation is documented beside the
+property rather than left for a reader to assume away.
+
+**One thing M3 could not build, which M4 has to answer.** Client-side prediction
+needs the client to know which of its inputs the server applied to which tick.
+Nothing tells it: the server buckets an intention into whichever tick it is
+about to run, and `PlayerView` carries no acknowledgement. M4 needs a field or a
+message, and its shape is M4's decision rather than one M3 should have made by
+accident.
+
+`cargo-deny` and Renovate arrive with the dependency graph they exist for, and
+the third-party actions are SHA-pinned in the same change — `RISKS.md` R12 says
+the pins and the thing that maintains them land together or not at all.
+
+Next is M4, the playable client, which is the largest and least interesting
+milestone and the one that brings the consent regime with it.
 
 ---
 
@@ -189,6 +237,23 @@ Renovate — see `ENGINEERING.md` for why it arrives now and not at M0.
 input, and (a) all three report identical digests of their reconciled local
 view at every checkpoint tick, (b) the server's authoritative digest matches an
 offline resimulation of the recorded input log, run as a separate process.
+
+Reached, in `client/tests/m3_exit.rs`, over the real transport. Two things the
+criterion did not say, which the work had to decide:
+
+- **What each half proves.** (a) is a statement about the projection and the
+  handle space rather than about the network: the three clients are one team,
+  vision is a team property, so their local worlds agreeing is evidence that
+  nothing per-player leaked and that the handle spaces stayed in step. It would
+  not catch a leak the whole team receives. (b) proves the server did not
+  corrupt itself — `SCOPE.md` is explicit that resimulating a fully
+  authoritative server's own inputs catches a broken server and not a cheating
+  client — and what it does establish is that the recording is complete and
+  correctly ordered, which is the precondition everything at M5 rests on.
+- **It was checked by breaking it.** Team vision replaced by per-player vision:
+  `Blue1 disagrees with Blue0 about the world at tick 800`. An input left out of
+  the log: `resim` refuses the file. A criterion that has never been red is a
+  criterion nobody has verified.
 
 ## M4 — Playable client · 4–6 weeks
 
