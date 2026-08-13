@@ -465,10 +465,19 @@ fn an_event_a_frame_cannot_carry_waits_for_the_next_one() {
 }
 
 /// A view inside the budget is untouched, which is every view a match produces.
+///
+/// The `!is_empty` is the assertion: pass-through is trivially true of a view
+/// with nothing in it, and for three milestones that is what this compared — see
+/// [`busy_state`].
 #[test]
 fn a_view_inside_the_budget_passes_through_unchanged() {
     let mut backlog = EventBacklog::new();
     let view = view_for(&busy_state(), Seat::Blue0);
+    assert!(
+        !view.events.is_empty(),
+        "a view with no events passes through unchanged under a `shape` that \
+         drops every event (docs/RISKS.md R15)"
+    );
     assert!(view.events.len() <= MAX_EVENTS_PER_VIEW);
     assert_eq!(backlog.shape(&view), view);
     assert_eq!(backlog.deferred(), 0);
@@ -884,23 +893,79 @@ fn seen(view: PlayerView) -> ServerMessage {
     }
 }
 
-/// A state with something in every part of a view: entities in sight, a
-/// projectile in flight, and an event from the tick that produced it.
+/// A state with something in every part of a view: entities in sight, two
+/// projectiles in flight at different points along their path, and an event
+/// from the tick that produced it.
+///
+/// # The last clause used to be false, and it is one of `docs/RISKS.md` R15's
+///
+/// This function cast once at tick 0 and then stepped twice with nothing, so
+/// that the projectile would be somewhere other than on top of its caster. It
+/// worked — and `step` clears the event record at the top of every tick, so the
+/// state it returned carried **no events at all**, for three milestones, with a
+/// doc comment saying otherwise. What that cost is not hypothetical:
+/// `every_server_message_survives_a_round_trip` never round-tripped a single
+/// `VisibleEvent` through a real view, and
+/// `a_view_inside_the_budget_passes_through_unchanged` compared two event-free
+/// views — which an `EventBacklog::shape` that threw every event away passes.
+///
+/// A second cast, on the tick this state describes, is what makes the sentence
+/// true. [`the_busy_state_is_busy`] is what keeps it true.
 fn busy_state() -> State {
+    let cast = |seat: Seat, tick: u32| Input {
+        tick: Tick(tick),
+        seq: 0,
+        player: seat,
+        action: Action::Skillshot(FxVec2::new(Fx::ONE, Fx::ZERO)),
+    };
     let state = new_state(0xB005);
-    let mut state = step(
-        &state,
-        &[Input {
-            tick: Tick(0),
-            seq: 0,
-            player: Seat::Blue0,
-            action: Action::Skillshot(FxVec2::new(Fx::ONE, Fx::ZERO)),
-        }],
-    );
+    let mut state = step(&state, &[cast(Seat::Blue0, 0)]);
     for _ in 0..2 {
         state = step(&state, &[]);
     }
-    state
+    // The tick this state is *of*: a second projectile enters the arena and the
+    // cast that put it there is in the record, beside the first one still in
+    // flight three ticks down its path.
+    step(&state, &[cast(Seat::Blue1, 3)])
+}
+
+/// The fixture above contains what every test in this file assumes it contains.
+///
+/// `docs/RISKS.md` R15. Six tests here take a view of [`busy_state`] and assert
+/// something about the bytes it produces; every one of them is a weaker claim
+/// than it reads as if some part of that view is empty, and none of them says so
+/// when it is. This is the one test whose whole job is to fail in that case.
+#[test]
+fn the_busy_state_is_busy() {
+    let state = busy_state();
+    assert_eq!(
+        state.projectiles().count(),
+        2,
+        "the arena does not hold two projectiles"
+    );
+    assert!(
+        state.events().count() > 0,
+        "the state carries no events, so every view taken of it is missing the \
+         part of a `PlayerView` that culling is hardest about"
+    );
+
+    let view = view_for(&state, Seat::Blue0);
+    assert!(!view.visible.is_empty(), "Blue0 can see nothing");
+    assert!(
+        view.visible
+            .iter()
+            .any(|entity| matches!(entity, EntityView::Projectile { .. })),
+        "no projectile reaches Blue0's view, so the handle space has nothing to name"
+    );
+    assert!(
+        !view.events.is_empty(),
+        "Blue0's view carries no event, so a round trip taken over it round-trips \
+         no `VisibleEvent`"
+    );
+    assert!(
+        view.events.len() <= MAX_EVENTS_PER_VIEW,
+        "the fixture exceeds the frame budget, which is a different test's subject"
+    );
 }
 
 /// The worst case the *type* allows: every entity slot and every event slot

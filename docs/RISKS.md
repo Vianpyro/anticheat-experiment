@@ -631,3 +631,89 @@ and it is what made the replacement cheap: `Input`, `Action`, the protocol
 frames, the digest and the recording format did not change by a byte. What the
 entry above did not have was any statement about* when *a sample is taken, which
 is the half that was wrong — see the top of this section.)*
+
+---
+
+## R15 — A scripted fixture whose antecedent is never reached
+
+**Not irreversible, and it is here because it is the defect this project keeps
+producing.** Four times now a test has been green because the condition it was
+about never occurred, and each time the discovery was accidental — somebody
+changed something nearby and the case finally arrived. A test that stops being
+about anything looks, from the outside, exactly like a test that holds; there is
+no red, no warning, and no diff. The cost is not the failing assertion, it is
+every claim built on top of it in the interval, and the interval is measured in
+milestones.
+
+**The four, in the order they were found:**
+
+| # | The fixture | What its antecedent needed | What it did |
+| --- | --- | --- | --- |
+| 1 | `client/tests/m3_exit.rs`, the `replay` binary | The tool to exist | `cargo test --workspace` does not build binaries no test target needs; it existed locally only because a `--all-targets` build had happened first |
+| 2 | `sim::MAX_EVENTS` | To be a bound on a tick | The roster went from six seats to nine, the derivation moved from 48 to 60, and the constant stayed at 48 with the derivation living in prose |
+| 3 | `LocalWorld::digest` and M3's criterion | Two teammates on different hit points | M3's scripted match produced no damage; the three walked a lane and nothing touched them |
+| 4 | `client/tests/capture.rs` | Two aims that are not both saturated | The fixture walked far enough to hit the clamp, so "two windows give the same aim" was true of any two windows |
+
+**Why the existing defences do not catch it.** Property tests have a defence and
+it works: `sim/tests/view_properties.rs` and `server/tests/traffic.rs` both end
+in a test whose only job is to sample the generators and assert floors on what
+they reach — dead champions, respawns, forks a player cannot tell apart. Nothing
+equivalent existed for **scripted** fixtures, and all four instances above are
+scripted fixtures. A generator can be measured for what it produces; a script
+was assumed to produce what its comment said it produced.
+
+**Decide:** continuously, at the moment a fixture is written.
+
+**Hedge, and it is the same shape as the property-test one.** Every scripted
+fixture carries an assertion on what it *reaches* — damage produced, events
+emitted, saturations hit, limit cases crossed — printed with the run and set to
+fail when the count falls to zero. Not on what the fixture is *for*: on the
+antecedent of the assertions stated over it. And the number is printed even when
+it passes, because the value of the counter is that a reader sees `26
+skillshots, 0 targeted spells` and asks the question.
+
+### The pass that entry made, and what it found
+
+Run over every scripted fixture in the repository, 2026-08-13. Four were hollow,
+and three of the four had a doc comment asserting the opposite:
+
+- **M3's exit criterion ran on three champions standing still.** `m3_exit.rs`
+  filled the ticks between orders with `Action::Idle` on the reading that a
+  client with nothing new to say says nothing. `Idle` is a rule that **stops the
+  champion**: the three of them moved on one tick in a hundred and twenty,
+  covered **four units of the hundred and seventy-three** their own comment
+  describes, never left their base, and never put an entity into or out of
+  anybody's fog. The criterion — three clients agreeing — is satisfied by three
+  clients who can see nothing but each other.
+- **The lost-event tripwire had nothing to trip on.**
+  `client/tests/loss.rs::nothing_a_client_was_entitled_to_is_ever_dropped_rather_than_deferred`
+  seated three clients and ticked a thousand times **without sending an input**.
+  The match produced **zero events**, so `dropped == 0` was a statement about an
+  empty match, and an `EventBacklog` that dropped on the first overflow passed
+  it.
+- **`protocol`'s "busy" state carried no events.** `busy_state()` cast once and
+  then stepped twice, and `step` clears the event record at the top of every
+  tick — so the state it returned had none, for three milestones, under a doc
+  comment reading "and an event from the tick that produced it". Two tests paid
+  for it: no `VisibleEvent` ever survived a round trip, and "a view inside the
+  budget passes through unchanged" compared two empty lists.
+- **No fixture in the repository ever landed a targeted spell.** The scripted
+  match issues the order about twenty-seven times at a champion a lane away, and
+  the spell has a range, so it lands **none**; the fixture's documentation said
+  it exercised "both abilities". One of the game's five actions was executed by
+  nothing on any of the three platforms. The duel does land it — six times — and
+  that is now a floor rather than an accident.
+
+And one that was thin rather than hollow: **M4's exit match turned for home at
+tick 500**, a hundred units into a hundred-and-seventy-three-unit lane, which
+stops it thirty units short of Red's tower. It reproduced instance 3 above
+exactly — the criterion it shares with M3 was again being checked on three
+teammates whose hit points were equal by accident. The turn is at tick 800 now,
+the first shot lands at about tick 607, and the run asserts that one of the three
+was under fire and the others were not.
+
+**What the hedge does not do**, stated because the temptation is to read a
+counter as a proof: a reach assertion says the fixture arrived at the case, not
+that the case is the interesting one. It converts "this test is about nothing"
+into a red, which is the only failure mode listed above, and leaves "this test is
+about the wrong thing" exactly where it was.

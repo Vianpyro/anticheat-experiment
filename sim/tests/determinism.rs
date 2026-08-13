@@ -43,9 +43,9 @@ mod fixture;
 
 use fixture::{DUEL_RULES, DUEL_SEED, DUEL_TICKS, SEED, TICKS, duel_script, script};
 use sim::{
-    Action, Digest, EntityId, Fx, FxVec2, Input, Liveness, Outcome, RULES, Rules, Seat, State,
-    TOWER_COUNT, Tick, champion_entity_id, input_log_digest, new_state_with_rules, rules_hash,
-    step_with_rules, tower_entity_id,
+    Action, Digest, EntityId, Fx, FxVec2, Input, Liveness, Outcome, PLAYER_COUNT, RULES, Rules,
+    Seat, State, TOWER_COUNT, TOWER_ID_BASE, Tick, champion_entity_id, input_log_digest,
+    new_state_with_rules, rules_hash, step_with_rules, tower_entity_id,
 };
 
 /// Ticks between two recorded checkpoints.
@@ -157,6 +157,132 @@ fn the_fixture_reaches_its_recorded_digests() {
     );
 }
 
+/// Whether a handle names an entity a rule can act on.
+///
+/// Champions occupy `0..PLAYER_COUNT` and towers `TOWER_ID_BASE..+TOWER_COUNT`;
+/// everything else — including a projectile's handle, which no order may name —
+/// is a byte an attacker chose. Written out from the two ranges rather than
+/// asked of `sim`, because `State::resolve` is private and a test that called
+/// it would be asking the rules whether the rules think a handle is valid.
+fn names_something(handle: u16) -> bool {
+    let champion = (handle as usize) < PLAYER_COUNT;
+    let tower = handle >= TOWER_ID_BASE && ((handle - TOWER_ID_BASE) as usize) < TOWER_COUNT;
+    champion || tower
+}
+
+/// The fixture exercises the rules its own documentation says it exercises.
+///
+/// `docs/RISKS.md` R15, and this one is a belt beside a brace rather than a
+/// repair: the golden digests above already fail if the scripted match stops
+/// reaching something, because reaching less produces different bytes. What
+/// they cannot do is *say* what stopped being reached — a changed constant
+/// presents as ten changed hex strings and a decision about whether to
+/// regenerate them. This is the test that answers "regenerate what?", and it is
+/// also the one that fails when the answer is "the fixture no longer fights".
+///
+/// The counts are printed and the floors are set below what the run reaches, in
+/// the shape `sim/tests/visibility.rs` already uses: a floor at the observed
+/// value is a floor that goes red on an innocent change, and a floor of zero is
+/// not a floor.
+#[test]
+fn the_fixture_reaches_the_rules_its_documentation_claims() {
+    let mut state = new_state_with_rules(SEED, &RULES);
+    let mut casts = [0u32; 2];
+    let mut damage = 0u32;
+    let mut hostile_actions = 0u32;
+    let mut clamped_destinations = 0u32;
+
+    for inputs in &script() {
+        for input in inputs {
+            match input.action {
+                // The hostile tail: a handle naming nothing, a zero direction,
+                // a destination outside the world. Every one is a no-op or a
+                // clamp, and every one is a path nothing else in the fixture
+                // takes.
+                Action::Move(destination)
+                    if destination.x.abs() > RULES.map_half_extent
+                        || destination.y.abs() > RULES.map_half_extent =>
+                {
+                    clamped_destinations += 1;
+                    hostile_actions += 1;
+                }
+                Action::Skillshot(direction) if direction == FxVec2::ZERO => hostile_actions += 1,
+                Action::Attack(EntityId(handle)) | Action::Targeted(EntityId(handle))
+                    if !names_something(handle) =>
+                {
+                    hostile_actions += 1;
+                }
+                _ => {}
+            }
+        }
+        state = step_with_rules(&state, inputs, &RULES);
+        for event in state.events().iter() {
+            match event.kind {
+                sim::EventKind::Cast { ability, .. } => {
+                    casts[usize::from(ability == sim::Ability::Targeted)] += 1;
+                }
+                sim::EventKind::Damage { .. } => damage += 1,
+                sim::EventKind::Death { .. } => {}
+            }
+        }
+    }
+
+    let hurt_champions = state
+        .champions()
+        .iter()
+        .filter(|champion| {
+            matches!(champion.liveness, Liveness::Alive { hp } if hp < RULES.champion_max_hp)
+        })
+        .count();
+    let hurt_towers = state
+        .towers()
+        .iter()
+        .filter(|tower| tower.hp < RULES.tower_max_hp)
+        .count();
+
+    println!(
+        "fixture reach: {} skillshots, {} targeted spells, {damage} damage events, \
+         {hurt_champions} champions and {hurt_towers} towers below full health, \
+         {hostile_actions} hostile inputs ({clamped_destinations} of them clamped)",
+        casts[0], casts[1]
+    );
+
+    assert!(casts[0] > 0, "the fixture never casts a skillshot");
+    // And **not** a floor on the targeted spell, because writing this test found
+    // that there is nothing to put one under: the scripted match issues the
+    // order about twenty-seven times and lands it **zero** times, because the
+    // quarry it names is a lane away and the spell has a range. Its own
+    // documentation said the fixture "exercises movement, both abilities, …";
+    // that sentence was false for three milestones and is corrected where it was
+    // written. The duel is what covers the targeted spell, and
+    // `the_duel_reaches_the_abilities_the_scripted_match_cannot` is the floor.
+    assert_eq!(
+        casts[1], 0,
+        "the scripted match has started landing targeted spells, which is a better \
+         fixture than it was — move the floor here and update `tests/fixture`"
+    );
+    assert!(damage >= 20, "only {damage} damage events");
+    assert!(
+        hurt_champions >= 2,
+        "only {hurt_champions} champions finished below full health, so nothing \
+         reached a champion"
+    );
+    assert!(
+        hurt_towers >= 2,
+        "only {hurt_towers} towers finished below full health, so nothing ever \
+         attacked a structure"
+    );
+    assert!(
+        hostile_actions >= 5,
+        "only {hostile_actions} of the fixture's inputs were the hostile tail its \
+         documentation describes"
+    );
+    assert!(
+        clamped_destinations > 0,
+        "no destination outside the map was ever sent, so the clamp is untested here"
+    );
+}
+
 /// The fixture must still be a live match at the end.
 ///
 /// If a balance change ever decides the match at tick 300, the last seven
@@ -250,6 +376,47 @@ fn the_duel_kills_and_respawns_its_victim() {
     );
     assert!(respawns >= 1, "seat 0 never came back");
     assert!(moved_after_respawn, "seat 0 came back but could not move");
+}
+
+/// The duel lands both abilities, which is the half of the rules the scripted
+/// match cannot reach.
+///
+/// The two fixtures are a division of labour and it was an accidental one until
+/// this test named it. The scripted match sends its quarry a targeted spell from
+/// a hundred and seventy-three units away and the spell has a range, so it lands
+/// none at all; the duel's three defenders stand on top of their victim and land
+/// them. Without a floor here, the targeted spell is a rule that no fixture on
+/// any of the three platforms ever executes — which is `docs/RISKS.md` R15 in
+/// its purest form, since the digests would go on agreeing perfectly about a
+/// match that never casts it.
+#[test]
+fn the_duel_reaches_the_abilities_the_scripted_match_cannot() {
+    let mut state = new_state_with_rules(DUEL_SEED, &DUEL_RULES);
+    let mut casts = [0u32; 2];
+    let mut damage = 0u32;
+    for inputs in &duel_script() {
+        state = step_with_rules(&state, inputs, &DUEL_RULES);
+        for event in state.events().iter() {
+            match event.kind {
+                sim::EventKind::Cast { ability, .. } => {
+                    casts[usize::from(ability == sim::Ability::Targeted)] += 1;
+                }
+                sim::EventKind::Damage { .. } => damage += 1,
+                sim::EventKind::Death { .. } => {}
+            }
+        }
+    }
+    println!(
+        "duel reach: {} skillshots, {} targeted spells, {damage} damage events",
+        casts[0], casts[1]
+    );
+    assert!(casts[0] > 0, "the duel never casts a skillshot");
+    assert!(
+        casts[1] > 0,
+        "the duel never lands a targeted spell, so no fixture in this repository \
+         executes that rule on any platform"
+    );
+    assert!(damage >= 20, "only {damage} damage events");
 }
 
 /// Two runs in one process agree. Cheap, and it separates "the simulation is

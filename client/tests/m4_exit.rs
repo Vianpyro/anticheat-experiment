@@ -48,6 +48,17 @@ mod harness;
 const TICKS: u32 = 1000;
 const CHECKPOINT: u32 = 100;
 
+/// The tick the team turns for home.
+///
+/// Late enough that they arrive under Red's tower first. The lane is 173 units,
+/// Red's tower stands a quarter of the way down it from Red's base, and a
+/// champion covers `champion_speed` a tick — so the first shot lands at about
+/// tick 607 and this leaves a couple of hundred ticks of it before the walk
+/// back. Nobody dies: a champion has 600 hit points and the whole exposure
+/// costs about 135 of them, which is what makes this a match with damage in it
+/// rather than a match with a respawn in it.
+const TURN: u32 = 800;
+
 /// What one client came back with.
 #[derive(Debug)]
 struct Report {
@@ -62,6 +73,8 @@ struct Report {
     /// How many ticks the client rendered a position ahead of the last view.
     predicted_ahead: u32,
     frames_lost: u32,
+    /// What the match this client played actually contained.
+    reach: harness::Reach,
 }
 
 /// A client driven the way `client::play` drives one.
@@ -111,6 +124,7 @@ async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, Strin
     let mut predicted_ahead = 0u32;
     let mut exact = 0u32;
     let mut views = 0u32;
+    let mut reach = harness::Reach::default();
 
     loop {
         let Ok(frame) = wire.recv_state().await else {
@@ -126,6 +140,7 @@ async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, Strin
         let seen = prediction.get_or_insert_with(|| Prediction::anchored(&view));
         seen.observe(&view, headless.applied_through());
         views = views.saturating_add(1);
+        reach.observe(&headless);
         if seen.corrections().0 == 0 {
             exact = exact.saturating_add(1);
         }
@@ -138,10 +153,22 @@ async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, Strin
         // What the player would be asking for. A cast every eight seconds, which
         // is the skillshot's cooldown, and a change of destination once, so that
         // the standing order is exercised as an order rather than as a constant.
+        //
+        // The turn is at [`TURN`] and not at the halfway point it used to be at,
+        // and the reason is `docs/RISKS.md` R15. A team that turns for home at
+        // tick 500 covers a hundred of the lane's hundred and seventy-three
+        // units, which stops it **thirty units short of Red's tower**: the match
+        // this criterion ran over contained no damage at all, so the clause it
+        // shares with M3 — three teammates agreeing about the world — was again
+        // being checked on three teammates whose own hit points were equal by
+        // accident. That is the exact condition that hid `LocalWorld::digest`'s
+        // own-liveness bug for a milestone. Walking to `TURN` puts them under
+        // fire from about tick 607, and the counters below refuse a run in which
+        // it did not happen.
         let action = if tick % 240 == 60 {
             Action::Skillshot(along)
         } else {
-            if tick == 500 {
+            if tick == TURN {
                 standing = Action::Move(home);
             }
             standing
@@ -166,6 +193,7 @@ async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, Strin
         views,
         predicted_ahead,
         frames_lost,
+        reach,
     })
 }
 
@@ -242,6 +270,11 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
             report.predicted_ahead,
             report.frames_lost
         );
+        println!("{:?}: reach — {}", report.seat, report.reach.summary());
+
+        // `docs/RISKS.md` R15, before anything that is conditional on the match
+        // having contained something.
+        report.reach.assert_a_match_happened(report.seat);
 
         // Exact, on every view, over the real transport. `prediction.rs` makes
         // the same claim on a match driven one tick at a time, which is the test
@@ -277,6 +310,21 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
             report.predicted_ahead
         );
     }
+
+    // …and they were on different hit points while they agreed, which is what
+    // makes the agreement below evidence rather than a coincidence. A tower
+    // shoots the lowest-numbered seat it can see, so this is one of the three
+    // bleeding and two beside it untouched.
+    let under_fire = reports
+        .iter()
+        .filter(|report| report.reach.hurt_views > 0)
+        .count();
+    assert!(
+        under_fire > 0 && under_fire < reports.len(),
+        "{under_fire} of the three clients were ever below full health, so the \
+         agreement asserted below is agreement between teammates whose own liveness \
+         never differed (docs/RISKS.md R15)"
+    );
 
     // The three clients agree about the world, which is M3's criterion and still
     // has to hold when a person is driving.

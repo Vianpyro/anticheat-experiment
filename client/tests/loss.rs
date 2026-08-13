@@ -313,27 +313,46 @@ async fn the_state_channel_loses_ticks_and_never_loses_agreement() {
     }
 }
 
-/// The counter that must never move, at every rate.
+/// The counter that must never move, over a match that gives it every chance to.
 ///
 /// `EventBacklog` defers events a frame cannot carry and drops them only if the
 /// queue itself overflows. A non-zero drop count is a client that will never be
 /// told about something that happened to it — a correctness defect, not a
 /// capacity number — and `docs/ARCHITECTURE.md` says it is a tripwire rather
-/// than a budget. Datagram loss does not feed it (the backlog is upstream of the
-/// wire), and that is precisely why it is worth asserting here: if loss ever
-/// started reaching it, this is the test that would say so.
+/// than a budget.
+///
+/// # This test was asleep, and it is one of `docs/RISKS.md` R15's four
+///
+/// It used to seat three clients, take them ready, and tick a thousand times
+/// **without sending a single input**. Nine champions therefore stood at their
+/// bases for the whole match and the run produced **zero events of any kind**,
+/// so "nothing was dropped" was a statement about a match in which there was
+/// nothing to drop. Every mutation of `EventBacklog` passes it: one that drops
+/// on the first overflow, one that never defers, one that throws the queue away
+/// each tick.
+///
+/// What it does now is force the condition the assertion is about. Nine seats
+/// walk to the middle of the map, where one observer can see all of the others,
+/// and then every seat casts both of its abilities on the same tick as often as
+/// the cooldowns allow — which produces more events in a tick than a frame's
+/// [`sim::view::MAX_EVENTS_PER_VIEW`] budget can carry, so the overflow has to
+/// be deferred and the queue has to be exercised. The floor below is on the
+/// deferral, not on the drop: a run in which nothing was ever deferred is a run
+/// in which the drop counter was never asked a question.
 #[test]
 fn nothing_a_client_was_entitled_to_is_ever_dropped_rather_than_deferred() {
-    use protocol::{ClientFrame, ClientMessage};
+    use protocol::{ClientFrame, ClientMessage, ServerFrame, ServerMessage};
+    use sim::view::MAX_EVENTS_PER_VIEW;
+    use sim::{FxVec2, PLAYER_COUNT, champion_entity_id};
 
     let mut game = server::Match::new(MatchConfig {
         seed: 0x00C0_FFEE_0D15_EA5E,
-        players: 3,
+        players: PLAYER_COUNT,
     });
-    for _ in 0..3 {
+    for _ in 0..PLAYER_COUNT {
         assert!(game.join().0.is_some());
     }
-    for seat in [Seat::Blue0, Seat::Blue1, Seat::Blue2] {
+    for seat in Seat::ALL {
         game.deliver(
             seat,
             ClientFrame::encode(&ClientMessage::Ready).as_bytes(),
@@ -341,16 +360,120 @@ fn nothing_a_client_was_entitled_to_is_ever_dropped_rather_than_deferred() {
         )
         .expect("ready was refused");
     }
-    for _ in 0..TICKS {
+
+    let mut seq = 0u32;
+    let send = |game: &mut server::Match, seat: Seat, seq: u32, action: Action| {
+        let _ = game.deliver(
+            seat,
+            ClientFrame::encode(&ClientMessage::Input {
+                seq,
+                claimed_at_ms: 0,
+                action,
+            })
+            .as_bytes(),
+            0,
+        );
+    };
+
+    // The walk in. The middle of the triangle is inside no tower's range, which
+    // is what lets the nine of them stand together long enough to fight.
+    let middle = Action::Move(FxVec2::ZERO);
+    for _ in 0..640u32 {
+        for seat in Seat::ALL {
+            send(&mut game, seat, seq, middle);
+        }
+        seq = seq.saturating_add(1);
         let _ = game.tick();
     }
-    for seat in [Seat::Blue0, Seat::Blue1, Seat::Blue2] {
-        let (deferred, dropped) = game.events_owed(seat);
+
+    // …and then everything they have, whenever they have it. Two inputs a seat
+    // a tick is inside `server::MAX_INPUTS_PER_TICK`; the cooldowns turn most of
+    // them into no-ops and let the rest through together, which is what produces
+    // a tick busier than one frame can carry.
+    let mut produced = 0u64;
+    let mut delivered = 0u64;
+    let mut ticks_over_budget = 0u32;
+    let mut peak_deferred = 0usize;
+    for _ in 0..TICKS {
+        for seat in Seat::ALL {
+            let victim = if seat.team() == Seat::Red0.team() {
+                champion_entity_id(Seat::Blue0)
+            } else {
+                champion_entity_id(Seat::Red0)
+            };
+            send(
+                &mut game,
+                seat,
+                seq,
+                Action::Skillshot(sim::base_position(seat.team(), &sim::RULES).neg()),
+            );
+            send(
+                &mut game,
+                seat,
+                seq.saturating_add(1),
+                Action::Targeted(victim),
+            );
+            // And a standing order to keep hitting somebody, so the tick's event
+            // count is a rate rather than four bursts of it: three inputs a seat
+            // a tick, inside `server::MAX_INPUTS_PER_TICK`.
+            send(
+                &mut game,
+                seat,
+                seq.saturating_add(2),
+                Action::Attack(victim),
+            );
+        }
+        seq = seq.saturating_add(3);
+
+        let frames = game.tick();
+        let count = game.world().events().count();
+        produced = produced.saturating_add(count as u64);
+        if count > MAX_EVENTS_PER_VIEW {
+            ticks_over_budget = ticks_over_budget.saturating_add(1);
+        }
+        for (_, frame) in &frames {
+            match ServerFrame::decode(frame.as_bytes()) {
+                Ok(ServerMessage::View { view, .. }) => {
+                    delivered = delivered.saturating_add(view.events.len() as u64);
+                }
+                other => panic!("a tick produced {other:?} rather than a view"),
+            }
+        }
+        for seat in Seat::ALL {
+            peak_deferred = peak_deferred.max(game.events_owed(seat).0);
+        }
         assert_eq!(
-            dropped, 0,
-            "{seat:?} will never be told about {dropped} events that happened to it"
+            game.events_lost(),
+            0,
+            "the match dropped an event a client was entitled to"
         );
-        println!("{seat:?}: {deferred} events deferred, {dropped} lost");
     }
+
+    println!(
+        "backlog: {produced} events produced, {delivered} delivered across nine \
+         seats, {ticks_over_budget} ticks over the {MAX_EVENTS_PER_VIEW}-event frame \
+         budget, {peak_deferred} the deepest the queue ever got"
+    );
+
+    // The floors. Each one is an antecedent the assertion above needs.
+    assert!(
+        produced > 0,
+        "the match produced no events at all, so 'nothing was dropped' is a \
+         statement about an empty match (docs/RISKS.md R15)"
+    );
+    assert!(
+        ticks_over_budget > 0,
+        "no tick of the match produced more than {MAX_EVENTS_PER_VIEW} events, so \
+         the frame budget was never exceeded and the backlog was never used"
+    );
+    assert!(
+        peak_deferred > 0,
+        "nothing was ever deferred, so the drop counter was never asked a question"
+    );
+    assert!(
+        delivered > 0,
+        "no frame carried a single event, so deferring everything for ever would \
+         also pass this test"
+    );
     assert_eq!(game.events_lost(), 0, "the match lost events");
 }
