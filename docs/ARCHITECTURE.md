@@ -26,7 +26,7 @@ client   server --+---------+         |
 | --- | --- | --- | --- |
 | `sim` | The rules of the game. `State`, `Input`, `step`, `view_for`, fixed-point math, seeded RNG | Nothing in the workspace. Externally: a fixed-point crate; `serde` only for view types | Anything with a clock, an allocator strategy, I/O, async, threads, or floats |
 | `protocol` | The wire. Message types, framing, versioning, sequence numbers | `sim` (for `PlayerView`, `Input`, ids) | `server`, `client`, `anticheat`, any runtime |
-| `replay` | The replay container: format, signing, verification, resimulation | `sim`, `protocol` | `server`, `client`, `anticheat`, any runtime |
+| `replay` | The replay container: format, signing, verification, resimulation. From M4, the corpus on disk and the commands that withdraw a participant from it and audit the result | `sim`, `protocol` | `server`, `client`, `anticheat`, any runtime |
 | `server` | Authority. Tick loop, the clock, sockets, sessions, fog application, telemetry capture, replay recording | `sim`, `protocol`, `replay`, `anticheat`, a runtime | `client`, `cheat-client` |
 | `client` | Presentation. Rendering, input capture, prediction, reconciliation | `sim`, `protocol`, a runtime, a game framework; plus `server` as a dev-dependency for the M3 exit harness | `server`, **`anticheat`**, `replay`'s signing keys |
 | `anticheat` | Detection. Feature extraction from telemetry, detectors, thresholds, evidence bundles | `sim`, `replay` | `server` (it is called by the server, not the reverse), `client`, any network or filesystem I/O |
@@ -812,6 +812,14 @@ describe that match" and cannot yet distinguish tampering from a build
 difference. It is a development artefact, not evidence; M5 is where that
 changes. `rules_hash` *is* carried, because its absence is a silent failure
 rather than a missing feature (`RISKS.md` R2).
+
+The `replay` binary is the tool: `replay verify <recording>` is M3's separate
+process and M4's exit criterion, and `replay withdraw` / `replay audit` are the
+consent regime's teeth. They share a binary because
+`docs/ENGINEERING.md` prefers five automations understood to fifteen endured and
+this document refuses a crate for a handful of commands; they operate on
+directories of the thing this crate defines. `docs/CONSENT.md` is what they
+implement.
 
 ```rust
 pub struct Manifest {                  // this is what gets signed, not the log

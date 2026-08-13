@@ -111,6 +111,29 @@ jobs:
           fi
           echo "ok: sim's normal dependency graph is itself alone"
 
+      # docs/RISKS.md R3: the corpus never enters git history. `.gitignore`
+      # refuses these shapes, and this is what catches the `git add -f` that
+      # goes past it — the only way a recording can get in by hand.
+      #
+      # It checks *tracked* files rather than the working tree, because an
+      # untracked recording sitting in a checkout is exactly where a corpus is
+      # supposed to be if somebody points the tooling at the wrong directory,
+      # and failing CI for that would train the author to ignore this check.
+      #
+      # Deleting a committed file does not delete it, so this is a check that
+      # has to hold on the first commit rather than on the tenth.
+      - name: No corpus in git
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          found=$(git ls-files -- '*.replay' '*.consent' '*.identity' '*.withdrawn' 'corpus/**' || true)
+          if [[ -n "$found" ]]; then
+            echo "::error::a recording or a consent record is tracked in git (docs/RISKS.md R3)"
+            echo "$found"
+            exit 1
+          fi
+          echo "ok: no recording or consent record is tracked"
+
       # docs/ARCHITECTURE.md invariant 7: `client` must not depend on
       # `anticheat`. Shipping detector logic to the machine this project assumes
       # is compromised hands the attacker the thresholds, so the boundary is

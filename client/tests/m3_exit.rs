@@ -6,8 +6,8 @@
 //! > offline resimulation of the recorded input log, run as a separate process.
 //!
 //! Both halves are here, over the real transport: a `quinn` endpoint, three QUIC
-//! sessions, fixed-size frames on a stream, and at the end a `resim` process
-//! booted from the recording alone.
+//! sessions, fixed-size frames on a stream, and at the end a `replay verify`
+//! process booted from the recording alone.
 //!
 //! # What each half actually proves, and what it does not
 //!
@@ -44,8 +44,10 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::time::Duration;
+
+#[path = "harness/mod.rs"]
+mod harness;
 
 use client::{Headless, net::Wire};
 use server::{MatchConfig, net::Listener};
@@ -302,76 +304,21 @@ async fn three_headless_clients_agree_and_the_log_resimulates() {
     let path = std::env::temp_dir().join(format!("moba-m3-{}.replay", std::process::id()));
     std::fs::write(&path, recording.encode()).expect("write the recording");
 
-    let output = std::process::Command::new(resim_binary())
+    let output = std::process::Command::new(harness::replay_binary())
+        .arg("verify")
         .arg(&path)
         .output()
-        .expect("run resim");
+        .expect("run the replay tool");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let _ = std::fs::remove_file(&path);
 
     assert!(
         output.status.success(),
-        "resim refused the recording.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "replay verify refused the recording.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stdout.contains(&hex(&recording.final_state_digest)),
-        "resim did not report the server's own digest.\nstdout:\n{stdout}"
+        stdout.contains(&harness::hex(&recording.final_state_digest)),
+        "replay verify did not report the server's own digest.\nstdout:\n{stdout}"
     );
-}
-
-/// The `resim` binary, built if it is not there yet.
-///
-/// Found beside the test binary rather than through `CARGO_BIN_EXE_`, which
-/// Cargo only sets for a package's *own* binaries and `resim` belongs to
-/// `replay`.
-///
-/// It is built here because the obvious assumption is wrong, and CI is where
-/// that showed: `cargo test --workspace` does **not** build every binary in the
-/// workspace. It builds what each package's test targets need, and no test
-/// target needs `resim` — locally it existed only because a
-/// `cargo build --all-targets` had happened to run first, which is the shape of
-/// green that turns red on a clean checkout. Building it here makes the test
-/// self-contained on any machine, and the nested invocation is safe because the
-/// outer cargo is not holding the build lock while its tests run.
-///
-/// **Built every time, not only when missing.** The `if it exists, use it`
-/// version had a worse failure than the one it fixed: a `resim` left over from
-/// a previous build resimulates under the rules *it* was compiled with, so a
-/// change to `sim` makes the criterion compare a new server against an old
-/// verifier — which fails, correctly, for a reason that has nothing to do with
-/// the change. Cargo is a no-op when the binary is current, and the seconds it
-/// costs otherwise are seconds the alternative spends misleading somebody.
-fn resim_binary() -> PathBuf {
-    let mut path = std::env::current_exe().expect("the test binary has a path");
-    path.pop(); // deps/
-    path.pop(); // debug/ or release/
-    path.push(if cfg!(windows) { "resim.exe" } else { "resim" });
-
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the client crate has a parent directory")
-        .join("Cargo.toml");
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
-    let built = std::process::Command::new(cargo)
-        .args(["build", "--locked", "-p", "replay", "--bin", "resim"])
-        .arg("--manifest-path")
-        .arg(&workspace)
-        .status()
-        .expect("run cargo to build resim");
-    assert!(built.success(), "cargo could not build resim");
-    assert!(
-        path.exists(),
-        "resim was built but is not at {}",
-        path.display()
-    );
-    path
-}
-
-fn hex(digest: &Digest) -> String {
-    digest
-        .as_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }

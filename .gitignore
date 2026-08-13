@@ -1,2 +1,20 @@
 /target
 .env
+
+# The corpus, and everything shaped like a piece of it.
+#
+# `docs/RISKS.md` R3 is about an irreversibility that git makes literal: a
+# recording committed once is in the history and in every fork, and deleting the
+# file afterwards does not delete it. Retroactive consent from somebody who
+# played six months ago is, in practice, not obtainable, so the only workable
+# rule is that this never happens once.
+#
+# These patterns are the accident-proofing, not the policy: the corpus lives in
+# a directory outside the repository entirely (`docs/CONSENT.md`). The `ci`
+# check that fails on a *tracked* file of these shapes is what catches a
+# `git add -f`, which is the only way past a `.gitignore`.
+/corpus/
+*.replay
+*.consent
+*.identity
+*.withdrawn

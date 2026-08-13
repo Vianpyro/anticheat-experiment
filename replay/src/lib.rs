@@ -43,8 +43,19 @@
 //! nobody is watching. It arrives at M5 with the manifest, which does record
 //! the session that produced the file.
 
+//! # And the corpus, which arrives at M4 with the consent regime
+//!
+//! [`corpus`] is a directory of recordings and the consent records that make
+//! them lawful to hold, plus the command that destroys a participant's part of
+//! it and the command that fails if anything was left behind. It lives here
+//! rather than in a crate of its own because `docs/ARCHITECTURE.md` refuses an
+//! `xtask` crate and a corpus is a directory of the thing this crate defines;
+//! the alternative is an eighth crate whose whole content is `std::fs`.
+
 #![forbid(unsafe_code)]
 #![deny(missing_docs, missing_debug_implementations)]
+
+pub mod corpus;
 
 use sim::{Action, Digest, EntityId, Fx, FxVec2, Input, Seat, State, Tick, new_state, step};
 
