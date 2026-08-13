@@ -1,0 +1,75 @@
+name: supply-chain
+
+# `cargo-deny`, split across two triggers on purpose.
+#
+# Licenses, bans and sources are properties of *this* pull request's dependency
+# graph: if a change adds a crate under a licence the project does not accept,
+# the change is what caused it and the change is where it should be reported.
+#
+# Advisories are not. A CVE published in a transitive dependency has nothing to
+# do with the pull request in front of you, and `docs/ENGINEERING.md` is blunt
+# about the consequence: a red check you did not cause is the fastest way to
+# learn to ignore red checks. So they run weekly and block nothing.
+on:
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "deny.toml"
+      - ".github/workflows/supply-chain.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "deny.toml"
+      - ".github/workflows/supply-chain.yml"
+  schedule:
+    # Monday morning UTC. A weekly cadence rather than daily, because the
+    # response to an advisory here is a human reading it, and a report nobody
+    # reads on six of seven days is a report nobody reads.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-deny:
+    name: cargo-deny (${{ matrix.checks }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Two entries rather than one invocation, so that the run summary says
+        # which of the two kinds of finding it is without anyone opening a log.
+        include:
+          - checks: licenses bans sources
+            on_schedule: false
+          - checks: advisories
+            on_schedule: true
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # Installed from crates.io with `--locked` rather than through a
+      # third-party action. `docs/RISKS.md` R12 holds the count of third-party
+      # actions at two until Renovate is keeping SHA pins current, and a tool
+      # that reads the lockfile is not worth a third supply-chain surface.
+      - name: Install cargo-deny
+        if: >-
+          (github.event_name == 'schedule' && matrix.on_schedule) ||
+          (github.event_name != 'schedule' && !matrix.on_schedule) ||
+          github.event_name == 'workflow_dispatch'
+        run: cargo install cargo-deny --locked --version 0.20.2
+
+      - name: Check
+        if: >-
+          (github.event_name == 'schedule' && matrix.on_schedule) ||
+          (github.event_name != 'schedule' && !matrix.on_schedule) ||
+          github.event_name == 'workflow_dispatch'
+        run: cargo deny --locked check ${{ matrix.checks }}

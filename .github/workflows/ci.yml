@@ -26,19 +26,41 @@ jobs:
         os: [ubuntu-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       # The toolchain comes from rust-toolchain.toml: rustup installs it on the
       # first cargo invocation, so there is no toolchain action to keep in sync.
-      # Third-party actions are pinned by tag until Renovate lands at M3; SHA
-      # pins without something to bump them are pins that rot.
-      - uses: Swatinem/rust-cache@v2
+      #
+      # Third-party actions are pinned by commit SHA with the tag beside them in
+      # a comment. A tag is a mutable pointer and whoever controls the action's
+      # repository can move it (`docs/RISKS.md` R12); a SHA cannot be moved. The
+      # pins arrive in the same change as Renovate's configuration and not one
+      # commit earlier, because a SHA pin with nothing to bump it is an
+      # unpatched action wearing a security measure — R12 says the two land
+      # together or not at all, and this is them landing together.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - run: cargo fmt --check
 
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - run: cargo test --workspace --locked
+
+      # The property suites outside `sim`, at a budget a developer would not
+      # wait for. `determinism.yml` raises `PROPTEST_CASES` for `sim`'s own
+      # properties across three targets because those are determinism claims;
+      # these two are not, so they run once, here, on Linux.
+      #
+      # 4096 rather than the 16384 the determinism job uses, and the number is
+      # measured rather than picked: the traffic suite drives a whole match per
+      # case, and 4096 costs about twenty seconds against this job's five-minute
+      # budget. Raising it further buys sampling in a space the scripted
+      # scenarios beside those properties already cover deliberately.
+      - name: Property suites at CI's budget
+        if: runner.os == 'Linux'
+        env:
+          PROPTEST_CASES: 4096
+        run: cargo test -p protocol -p server --locked --test wire --test traffic
 
       # docs/RISKS.md R5: `State` must not be serializable, anywhere, ever.
       # Today the enforcement is stronger than this grep — `sim` has no
@@ -88,3 +110,26 @@ jobs:
             exit 1
           fi
           echo "ok: sim's normal dependency graph is itself alone"
+
+      # docs/ARCHITECTURE.md invariant 7: `client` must not depend on
+      # `anticheat`. Shipping detector logic to the machine this project assumes
+      # is compromised hands the attacker the thresholds, so the boundary is
+      # structural rather than a review habit.
+      #
+      # `--edges normal` deliberately, and it is doing real work here rather
+      # than only excluding a test harness: `client` has `server` as a
+      # dev-dependency for the in-process harness that runs M3's exit criterion,
+      # which is the allowance `cheat-client` already has for the same reason.
+      # The claim is about what `client` *links*, and a dev-dependency is not
+      # that.
+      - name: client links neither anticheat nor server
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          tree=$(cargo tree -p client --edges normal --locked)
+          echo "$tree"
+          if printf '%s\n' "$tree" | grep -qE '(^|[[:space:]])(anticheat|server) v[0-9]'; then
+            echo "::error::client gained a dependency on anticheat or server (docs/ARCHITECTURE.md)"
+            exit 1
+          fi
+          echo "ok: client links neither anticheat nor server"
