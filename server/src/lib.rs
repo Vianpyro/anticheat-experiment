@@ -52,6 +52,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs, missing_debug_implementations)]
 
+pub mod net;
+
 use protocol::{
     ClientFrame, ClientMessage, DecodeError, HandleSpace, RejectReason, ServerFrame, ServerMessage,
 };
