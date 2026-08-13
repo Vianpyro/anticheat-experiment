@@ -311,9 +311,26 @@ proptest! {
         // The tripwire, asserted rather than reported. A non-zero count here is
         // a client that will never be told about something that happened to it —
         // a correctness defect and not a capacity statistic
-        // (`docs/ARCHITECTURE.md`). This property drives a whole match per case
-        // at the `properties` job's budget, which makes it the widest search for
-        // the condition anywhere in the repository.
+        // (`docs/ARCHITECTURE.md`).
+        //
+        // **And it is asleep here, which is the honest thing to write down.**
+        // This comment used to claim that driving a whole match per case at the
+        // `properties` job's budget made it "the widest search for the condition
+        // anywhere in the repository". It was checked by mutation and it is not:
+        // `EventBacklog::shape` was changed to drop its overflow instead of
+        // deferring it, and this property stayed green on all 4096 cases. The
+        // reason is the generator — forty ticks of drawn actions from nine
+        // champions standing at three separate bases never puts sixteen visible
+        // events in one recipient's tick, so the frame budget is never exceeded
+        // and the queue never fills.
+        //
+        // It is kept because it costs nothing and would catch a drop in ordinary
+        // play, which is the case that would matter most. What actually reaches
+        // the condition are two scripted scenarios that walk nine champions into
+        // one place first: `server/tests/produced_not_delivered.rs` and
+        // `client/tests/loss.rs`, both of which the same mutation turns red.
+        // `docs/RISKS.md` R15 is why the sentence this replaces was worth
+        // deleting rather than leaving as a claim nobody had tested.
         prop_assert_eq!(
             game.events_lost(),
             0,
