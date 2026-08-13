@@ -134,6 +134,29 @@ jobs:
           fi
           echo "ok: no recording or consent record is tracked"
 
+      # docs/RISKS.md R4, and it arrives with the signature at M5. A replay
+      # signing key is a different kind of secret from the corpus and is refused
+      # for a different reason: whoever holds it can seal a manifest this
+      # project's own verifier accepts, so a committed one is a committed
+      # authority to mint evidence. Same irreversibility as R3's — git history
+      # and forks — so the check has to hold on the first commit rather than the
+      # tenth.
+      #
+      # The **public** half is deliberately not refused. R4 requires every key,
+      # including every retired one, to stay published, because a retired key
+      # that stops being published orphans every replay it sealed.
+      - name: No signing key in git
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          found=$(git ls-files -- '*.signing-key' || true)
+          if [[ -n "$found" ]]; then
+            echo "::error::a replay signing key is tracked in git (docs/RISKS.md R4)"
+            echo "$found"
+            exit 1
+          fi
+          echo "ok: no signing key is tracked"
+
       # docs/ARCHITECTURE.md invariant 7: `client` must not depend on
       # `anticheat`. Shipping detector logic to the machine this project assumes
       # is compromised hands the attacker the thresholds, so the boundary is

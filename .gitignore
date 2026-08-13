@@ -18,3 +18,19 @@
 *.consent
 *.identity
 *.withdrawn
+
+# The replay signing key, which arrives at M5.
+#
+# A different kind of secret from the corpus and refused for a different reason:
+# whoever holds it can seal a manifest this project's own verifier accepts, so a
+# committed one is a committed authority to mint evidence — and, like a
+# recording, a key committed once is in the history and in every fork and
+# deleting the file does not delete it. `replay keygen` writes the pair and says
+# so on the way out.
+#
+# The **public** half is deliberately not here. `docs/RISKS.md` R4 requires every
+# key, including every retired one, to stay published: a retired key that stops
+# being published orphans every replay it ever sealed, which is a way of
+# destroying evidence by housekeeping. So `*.public-key` is a file this
+# repository is meant to be able to carry.
+*.signing-key
