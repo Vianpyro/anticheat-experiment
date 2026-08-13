@@ -51,6 +51,8 @@
 
 pub mod net;
 pub mod predict;
+pub mod term;
+pub mod ui;
 
 use std::collections::BTreeMap;
 
@@ -298,6 +300,15 @@ pub struct Headless {
     /// The transport is reliable and ordered, so a non-zero count here means
     /// something upstream is wrong rather than that the network reordered.
     stale: u32,
+    /// The last view applied, kept whole for the renderer.
+    ///
+    /// `LocalWorld` is the *comparable* world — a merged entity map built for
+    /// M3's digest — and it deliberately forgets which handle was whose and what
+    /// the events were about. A renderer needs both, so it reads this instead.
+    /// It is the view the server sent, unmodified: nothing here accumulates
+    /// across ticks, because a client that remembered where an enemy used to be
+    /// would be reconstructing what the fog withheld (`crate::ui`).
+    last_view: Option<PlayerView>,
 }
 
 impl Default for Headless {
@@ -323,7 +334,25 @@ impl Headless {
             seq: 0,
             applied_through: None,
             stale: 0,
+            last_view: None,
         }
+    }
+
+    /// The last view the server sent, whole.
+    #[must_use]
+    pub const fn view(&self) -> Option<&PlayerView> {
+        self.last_view.as_ref()
+    }
+
+    /// The sequence number the next [`Headless::intend`] will use.
+    ///
+    /// A caller that has to record an intention *before* sending it — a
+    /// prediction, which must know the number the acknowledgement will name —
+    /// needs this. It is not an allocator: calling it twice returns the same
+    /// number, and only `intend` advances it.
+    #[must_use]
+    pub const fn next_seq(&self) -> u32 {
+        self.seq
     }
 
     /// The highest sequence number of this client's own inputs the server says
@@ -468,5 +497,6 @@ impl Headless {
             events: view.events.clone(),
             own_liveness: view.own.liveness,
         };
+        self.last_view = Some(view.clone());
     }
 }

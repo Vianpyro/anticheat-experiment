@@ -1,13 +1,24 @@
-//! The headless client's binary: input scripts in, digests out.
+//! The client binary: playable by default, scripted on request.
 //!
-//! `docs/MILESTONES.md` M3 asks for headless clients only, and this is one. It
-//! plays `Idle` every tick, which is a script, and prints the digest of its
-//! reconciled local world at every hundredth tick. Anything a human would
-//! recognise as playing is M4's.
+//! `docs/MILESTONES.md` M4 is the playable client, and this is where a person
+//! meets it. The terminal renderer is `client::term`; the pure part of it is
+//! `client::ui`, and prediction is `client::predict`.
 //!
-//! Usage: `moba-client <address> <certificate-hex>`, both printed by
-//! `moba-server` on startup. The certificate is passed in rather than fetched
-//! because the client trusts exactly that one; see `client::net`.
+//! The headless mode M3 shipped is still here behind `--headless`, because it is
+//! what a second pair of hands uses to fill a seat when there are eight people
+//! and nine seats, and because it is the only way to drive this binary in a
+//! terminal that is not a terminal.
+//!
+//! Usage:
+//!
+//! ```text
+//! moba-client <address> <certificate-hex>              # play
+//! moba-client <address> <certificate-hex> --headless   # idle, print digests
+//! ```
+//!
+//! Both are printed by `moba-server` on startup. The certificate is passed in
+//! rather than fetched because the client trusts exactly that one and nothing
+//! else; see `client::net`.
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -17,21 +28,32 @@ use sim::{Action, Tick};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let mut arguments = std::env::args().skip(1);
-    let (Some(address), Some(certificate)) = (arguments.next(), arguments.next()) else {
-        eprintln!("usage: moba-client <address> <certificate-hex>");
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let headless = arguments.iter().any(|argument| argument == "--headless");
+    let positional: Vec<&String> = arguments
+        .iter()
+        .filter(|argument| !argument.starts_with("--"))
+        .collect();
+
+    let [address, certificate] = positional.as_slice() else {
+        eprintln!("usage: moba-client <address> <certificate-hex> [--headless]");
         return ExitCode::from(2);
     };
     let Ok(address) = address.parse::<SocketAddr>() else {
         eprintln!("moba-client: {address} is not an address");
         return ExitCode::from(2);
     };
-    let Some(certificate) = unhex(&certificate) else {
+    let Some(certificate) = unhex(certificate) else {
         eprintln!("moba-client: the certificate is not hex");
         return ExitCode::from(2);
     };
 
-    match play(address, &certificate).await {
+    let played = if headless {
+        idle(address, &certificate).await
+    } else {
+        client::term::play(address, &certificate).await
+    };
+    match played {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("moba-client: {error}");
@@ -40,7 +62,12 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn play(address: SocketAddr, certificate: &[u8]) -> Result<(), String> {
+/// M3's client, unchanged: idle every tick, print a digest every hundredth.
+///
+/// It sends `Action::Idle`, which is a rule that means *stop* rather than a way
+/// of saying nothing — that is exactly what this mode wants, since it is filling
+/// a seat rather than playing it.
+async fn idle(address: SocketAddr, certificate: &[u8]) -> Result<(), String> {
     let mut wire = Wire::connect(address, certificate)
         .await
         .map_err(|error| error.to_string())?;
@@ -67,16 +94,7 @@ async fn play(address: SocketAddr, certificate: &[u8]) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         let Tick(tick) = headless.world().tick();
         if tick.is_multiple_of(100) {
-            println!(
-                "checkpoint {tick} {}",
-                headless
-                    .world()
-                    .digest()
-                    .as_bytes()
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>()
-            );
+            println!("checkpoint {tick} {}", hex(headless.world().digest()));
         }
         if wire.send(&headless.intend(Action::Idle, 0)).await.is_err() {
             break;
@@ -85,6 +103,14 @@ async fn play(address: SocketAddr, certificate: &[u8]) -> Result<(), String> {
     let (incomplete, stale) = wire.losses();
     println!("frames lost {incomplete} shards late {stale}");
     Ok(())
+}
+
+fn hex(digest: sim::Digest) -> String {
+    digest
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn unhex(text: &str) -> Option<Vec<u8>> {

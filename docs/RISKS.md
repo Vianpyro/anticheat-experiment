@@ -474,3 +474,46 @@ difference, which puts it in the reproducible-builds swamp `ENGINEERING.md`
 declines to enter, and it would report a difference between two builds of
 identical source. A version plus a commit is a weaker guarantee that is actually
 true.
+
+## R14 — Aim resolution is a property of the renderer, and the corpus inherits it
+
+**Expensive because the corpus is the artifact.** M4 ships a terminal client, so
+a player points with a character cell: at eighty to a hundred and twenty columns
+across two hundred and twenty world units, one cell is two to three units, which
+is wider than a champion. Every aimed input in the corpus is therefore quantised
+to a grid the renderer chose, and no later analysis recovers what the hand was
+doing between two cells.
+
+**What that costs, exactly.** `MILESTONES.md` M8 lists *aim-correction
+trajectory curvature* among the candidate behavioural signals. A corpus recorded
+through this renderer **cannot support a curvature detector at any threshold**,
+because the trajectories in it are the grid rather than the player. That is not
+a detector that would be weak; it is one whose null model is about a continuous
+pointing device that was not present. It must not be written against this
+corpus, and M8's document has to say so rather than report a bound.
+
+What is untouched is everything timing-shaped, which is most of M8's list:
+input inter-arrival distribution and quantisation *in time*, reaction latency
+floor, claimed-against-observed timestamp drift, and account-progression
+coherence. None of those reads a coordinate.
+
+**Decide:** M4, because the client is what records the corpus and M6 is when the
+recording happens. Reversing it after M6 means re-recording every match, which
+is the calendar cost `MILESTONES.md` M6 is already bound by.
+
+**Why the terminal anyway.** The alternative is a graphics stack, a font stack,
+a game framework and a display server in CI, for a game `SCOPE.md` calls a
+fixture — nine discs, six towers and some projectiles. `ENGINEERING.md`'s bar
+for a dependency is a reason a few lines of code would not satisfy, and a
+windowed renderer clears it only for the one signal named above. It is one
+dependency against four, on the milestone the documents already describe as the
+largest and least interesting.
+
+**Hedge, and it is a real one rather than a shrug.** The quantisation lives in
+`client::ui::Camera` and nowhere else: `Camera::world` is the only function that
+turns a pointer position into a world coordinate, and everything downstream —
+the intention, the protocol frame, the recorded log — carries a full-precision
+`FxVec2`. A pointing device with sub-cell resolution is therefore a change to
+one function and its tests, not to the protocol, the recording format or the
+rules. If a curvature detector is ever wanted, the order is: replace `Camera`,
+then record, and never the other way round.

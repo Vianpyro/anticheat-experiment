@@ -307,6 +307,18 @@ proptest! {
                 seat
             );
         }
+
+        // The tripwire, asserted rather than reported. A non-zero count here is
+        // a client that will never be told about something that happened to it —
+        // a correctness defect and not a capacity statistic
+        // (`docs/ARCHITECTURE.md`). This property drives a whole match per case
+        // at the `properties` job's budget, which makes it the widest search for
+        // the condition anywhere in the repository.
+        prop_assert_eq!(
+            game.events_lost(),
+            0,
+            "the match dropped events a client was entitled to"
+        );
     }
 
     /// **Size.** Every frame is one bucket wide, it is cut into the same
