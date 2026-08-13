@@ -764,18 +764,30 @@ Each is a test or a lint, not a convention:
    of the two grounds on which `MILESTONES.md` records M2 as reached rather than
    written.
 
-   What guards it is measured rather than asserted, and the measurement is less
-   flattering than the argument. Putting the truncating comparison back turns
-   `everything_inside_vision_is_named` red — the laxer specification admits a
-   champion the view withholds — but **only at the `properties` job's raised
-   case budget**; at proptest's development default of 256 the divergence
-   passes unnoticed. And `vision_flips_exactly_at_the_radius`, the property that
-   looks like it should be the one, does not catch it at any budget: its two
-   champions are separated along `x` alone, so the squared distance is a perfect
-   square and the integer square root is exact on it. The guard is completeness,
-   it lives in CI rather than on a developer's machine, and the obligation
-   stated at the top of that module is the real mechanism: a change to the rule
-   changes the specification in the same commit.
+   What guards it is measured rather than asserted, and the measurement was
+   less flattering than the argument. Putting the truncating comparison back
+   turns `everything_inside_vision_is_named` red — the laxer specification
+   admits a champion the view withholds — but **only at the `properties` job's
+   raised case budget**; at proptest's development default of 256 the
+   divergence passes unnoticed. And `vision_flips_exactly_at_the_radius`, the
+   property that looks like it should be the one, did not catch it at any
+   budget: its two champions were separated along `x` alone, so the squared
+   distance was a perfect square and the integer square root exact on it — the
+   property swept a boundary along the one axis where the question has an easy
+   answer.
+
+   **That is fixed, and it moves the guard off CI's budget.** The property
+   draws an offset vector rather than a separation, and its generator aims most
+   of its draws at the shell one raw unit thick outside the circle, where a
+   truncating comparison and an exact one disagree; it holds the rule *and* the
+   re-derived specification to the exact criterion. Truncation in
+   `sim::view::can_see` now fails it after three cases at the development
+   default, shrinking to `FxVec2 { x: 0.00001, y: 12.00000 }` against a radius
+   of `12.0` — the counter-example this document used to name from memory.
+   Truncation in the specification fails it after six. Completeness at CI's
+   budget remains the second guard, and the obligation stated at the top of
+   that module is still the mechanism rather than the backstop: a change to the
+   rule changes the specification in the same commit.
 
    The same criterion holds over states nobody scripted:
    `sim/tests/view_properties.rs` reaches them by simulation from a drawn seed

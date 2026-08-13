@@ -705,28 +705,47 @@ proptest! {
 
     /// The boundary itself, which no fixture ever aimed at.
     ///
-    /// Two champions are walked to points exactly `separation` apart, near the
+    /// Two champions are walked to points exactly `offset` apart, near the
     /// origin and out of every other source's reach, and the projection has to
     /// flip exactly at the radius: a champion at exactly
     /// `champion_vision_radius` is seen, and one a single raw unit — a
     /// sixty-five-thousandth of a world unit — further away is not.
+    ///
+    /// # The offset is a vector, and that is the whole of this property
+    ///
+    /// It used to be a scalar separation along `x`, and that made the property
+    /// a test of the one case where the question is easy. A squared distance
+    /// that is a perfect square has an *exact* integer square root, so on that
+    /// axis the truncating comparison and the exact one agree at every
+    /// separation and the property could not tell them apart — it went green
+    /// against a rule with the truncation put back in, at every case budget.
+    /// `docs/ARCHITECTURE.md` recorded that as a known blind spot and
+    /// `sim/tests/spec/mod.rs` named the counter-example, `(12.0, 0.00001)`
+    /// against a radius of `12.0`, which is off the axis by construction.
+    ///
+    /// So the offset is drawn as a direction rather than a distance, and
+    /// [`offsets`] aims most of its draws at the shell one raw unit thick just
+    /// outside the circle — the band where `isqrt` truncates a distance down
+    /// onto the radius. Both the rule and the specification are asserted
+    /// against the exact criterion, so either one adopting a truncating
+    /// comparison fails here, at proptest's development budget rather than at
+    /// CI's.
     #[test]
-    fn vision_flips_exactly_at_the_radius(separation in separations(), y in -10i32..=10) {
+    fn vision_flips_exactly_at_the_radius(offset in offsets()) {
         let rules = SPRINT_RULES;
-        let state = face_off(separation, Fx::from_int(y));
+        let state = face_off(offset);
         let watcher = Seat::Blue0;
         let watched = Seat::Red0;
 
         // The construction is only worth anything if the pair is alone: any
         // other source in range would decide the question instead of the
-        // separation.
+        // offset.
         let (near, far) = (
             state.champion(Seat::Blue0).position,
             state.champion(Seat::Red0).position,
         );
-        prop_assert_eq!(near.sub(far).length_squared_wide(),
-                        i64::from(separation.to_raw()) * i64::from(separation.to_raw()),
-                        "the two champions did not end up exactly {:?} apart", separation);
+        prop_assert_eq!(far.sub(near), offset,
+                        "the two champions did not end up exactly {:?} apart", offset);
         for other in [Seat::Blue1, Seat::Blue2, Seat::Red1, Seat::Red2] {
             let source = state.champion(other).position;
             let target = if other.team() == Team::Blue { far } else { near };
@@ -735,15 +754,29 @@ proptest! {
                 "{:?} is close enough to decide the question by itself", other
             );
         }
+        // And neither is a tower: they are the other vision source, they are
+        // fixed, and a run that drifted the pair into one of their discs would
+        // be answering a different question with this property's name on it.
+        for index in 0..TOWER_COUNT {
+            let target = if sim::tower_team(index) == Team::Blue { far } else { near };
+            prop_assert!(
+                !tower_position(index, &rules).within_range(target, rules.tower_vision_radius),
+                "tower {index} is close enough to decide the question by itself"
+            );
+        }
 
-        let inside = separation.to_raw() <= rules.champion_vision_radius.to_raw();
+        // The exact criterion, over `i64`: the circle itself counts as inside,
+        // and no integer square root takes part in the comparison.
+        let radius = i64::from(rules.champion_vision_radius.to_raw());
+        let inside = offset.length_squared_wide() <= radius * radius;
+
         let seen = reported_ids(&view_for_with_rules(&state, watcher, &rules))
             .contains(&champion_entity_id(Seat::Red0).0);
         prop_assert_eq!(
             seen,
             inside,
-            "separation {:?} against a radius of {:?}",
-            separation,
+            "offset {:?} against a radius of {:?}",
+            offset,
             rules.champion_vision_radius
         );
         // Vision is a team property and both sides are symmetric, so the same
@@ -751,6 +784,19 @@ proptest! {
         let mirrored = reported_ids(&view_for_with_rules(&state, watched, &rules))
             .contains(&champion_entity_id(Seat::Blue0).0);
         prop_assert_eq!(mirrored, inside, "the two sides disagree about one distance");
+
+        // The specification is held to the same criterion, and this is the half
+        // that was missing. `sim/tests/spec/mod.rs` re-derives the vision rule
+        // on purpose, so that no culling assertion is `view_for` agreeing with
+        // itself; the cost is that the two can drift, and until now the only
+        // thing that noticed a drift was `everything_inside_vision_is_named` at
+        // CI's raised budget. Here the drift is the whole target.
+        prop_assert_eq!(
+            team_sees(&state, Team::Blue, far, &rules),
+            inside,
+            "the specification and the exact criterion disagree at {:?}",
+            offset
+        );
     }
 
     /// Culling is monotone in the radius: widening vision can only add.
@@ -892,27 +938,56 @@ proptest! {
     }
 }
 
-/// Separations to test the boundary at: a raw unit either side of the radius,
-/// and a sweep across it.
-fn separations() -> impl Strategy<Value = Fx> {
-    let radius = RULES.champion_vision_radius.to_raw();
+/// Offsets to test the boundary at, drawn as a direction rather than as a
+/// distance along an axis.
+///
+/// Most of the weight goes on the construction that matters: a horizontal
+/// component anywhere across the circle, and a vertical component placed within
+/// a few raw units of the point that would put the offset exactly on it. That
+/// sweeps the band `radius² < dx² + dy² < (radius + 1)²` — the shell in which a
+/// truncating comparison says "inside" and an exact one says "outside", one
+/// part in 786 432 of the radius wide and invisible to any sampling that is not
+/// aimed at it.
+///
+/// Constructed, not filtered: `dy` is *computed* from `dx` so that every draw
+/// lands near the circle. A `prop_assume!` that kept only the draws that
+/// happened to fall in a shell this thin would reject every case and abort the
+/// run, which is the failure `sim/tests/properties.rs` records.
+fn offsets() -> impl Strategy<Value = FxVec2> {
+    let radius = i64::from(RULES.champion_vision_radius.to_raw());
     prop_oneof![
-        3 => (radius - 4..=radius + 4).prop_map(Fx::from_raw),
-        1 => (0..=20 * 65536i32).prop_map(Fx::from_raw),
+        6 => (
+            -RULES.champion_vision_radius.to_raw()..=RULES.champion_vision_radius.to_raw(),
+            -4i32..=4,
+            proptest::bool::ANY,
+        )
+            .prop_map(move |(dx, delta, below)| {
+                // The vertical component that would put the offset exactly on
+                // the circle, truncated: `dy0² + dx² <= radius²` and one more
+                // raw unit crosses it.
+                let squared = radius * radius - i64::from(dx) * i64::from(dx);
+                let dy0 = i32::try_from(squared.max(0).isqrt()).unwrap_or(i32::MAX);
+                let dy = dy0.saturating_add(delta);
+                FxVec2::new(Fx::from_raw(dx), Fx::from_raw(if below { -dy } else { dy }))
+            }),
+        // …and a sweep that is not about the boundary at all, so the property
+        // still says something about offsets nowhere near it.
+        1 => (-20 * 65536i32..=20 * 65536, -20 * 65536i32..=20 * 65536)
+            .prop_map(|(x, y)| FxVec2::new(Fx::from_raw(x), Fx::from_raw(y))),
     ]
 }
 
-/// Two champions, exactly `separation` apart at height `y` near the origin,
-/// with the other four walked into the corners of the map.
+/// Two champions, exactly `offset` apart near the origin, with the other four
+/// walked into the corners of the map.
 ///
 /// Reached rather than placed: the six champions are given move orders and
 /// walked there under [`SPRINT_RULES`], and `step_toward` lands exactly on a
-/// destination it can reach, which is what makes an *exact* separation
-/// something a simulation can produce.
-fn face_off(separation: Fx, y: Fx) -> State {
+/// destination it can reach, which is what makes an *exact* offset something a
+/// simulation can produce.
+fn face_off(offset: FxVec2) -> State {
     let rules = SPRINT_RULES;
-    let left = FxVec2::new(Fx::from_int(-6), y);
-    let right = FxVec2::new(Fx::from_int(-6).add(separation), y);
+    let left = FxVec2::new(Fx::from_int(-6), Fx::ZERO);
+    let right = left.add(offset);
     let destinations = [
         left,
         FxVec2::new(Fx::from_int(-128), Fx::from_int(-128)),

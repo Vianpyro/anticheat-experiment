@@ -53,21 +53,31 @@
 //!   at the `properties` job's `PROPTEST_CASES=16384` it fails. The shell is
 //!   one part in 786 432 of the vision radius, and finding a reachable state
 //!   that lands a champion inside it is a sampling problem.
-//! - **`vision_flips_exactly_at_the_radius` does not catch it at all**, at
-//!   either budget, and the reason is structural rather than a matter of
-//!   budget: `face_off` separates the two champions along `x` alone, so the
-//!   squared distance is a perfect square and the integer square root is exact
-//!   on it. The truncating predicate and the exact one agree at every
-//!   separation that property draws. It is the property that pins the boundary
-//!   *of the rule*; it is not the property that would catch this specification
-//!   drifting from it, and it would be wrong to claim otherwise.
+//! - **`vision_flips_exactly_at_the_radius` did not catch it at all**, at
+//!   either budget, and the reason was structural rather than a matter of
+//!   budget: `face_off` separated the two champions along `x` alone, so the
+//!   squared distance was a perfect square and the integer square root exact on
+//!   it. The truncating predicate and the exact one agree at every separation
+//!   that property drew, which made it a boundary sweep that only ever asked
+//!   the one question with an easy answer.
 //!
-//! So the honest statement is: the duplication is guarded, the guard is
-//! completeness rather than the boundary sweep, and it needs CI's case budget
-//! rather than a local `cargo test` to fire. The obligation that follows is
-//! stated rather than assumed: **a change to the visibility rule in
-//! `sim/src/view.rs` changes this module in the same commit.** The suite is the
-//! backstop, not the mechanism.
+//! **That last point has since been fixed, and it moves the guard.** The
+//! property draws an *offset* now rather than a separation along an axis, and
+//! most of its weight lands in the shell where the two predicates disagree; it
+//! holds both the rule and this module to the exact criterion. Putting the
+//! truncation back here now fails it in six cases at proptest's development
+//! default, at `the specification and the exact criterion disagree at
+//! FxVec2 { x: 11.47642, y: 3.50595 }`, and putting the truncation into
+//! `sim::view` instead fails it in three, shrinking to
+//! `FxVec2 { x: 0.00001, y: 12.00000 }` — the counter-example named two
+//! paragraphs above, found rather than remembered.
+//!
+//! So the honest statement is now: the duplication is guarded twice, by
+//! completeness at CI's budget and by the boundary property at a developer's,
+//! and only the second of those is a guard somebody will actually see fire
+//! before pushing. The obligation that follows is unchanged and still the real
+//! mechanism: **a change to the visibility rule in `sim/src/view.rs` changes
+//! this module in the same commit.** The suite is the backstop.
 //!
 //! # Two things about it that are specification and not implementation detail
 //!
