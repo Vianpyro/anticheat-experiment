@@ -14,7 +14,11 @@ CI is not a delivered detector.**
 3v3v3 on a triangular map. **M4 is built and not reached**: everything its
 criterion asks for except the three humans on two operating systems runs in
 `client/tests/m4_exit.rs`, and that clause is a fact about a calendar rather
-than a thing CI can stand in for. The workspace exists with
+than a thing CI can stand in for. The client it will be played on is a window
+rather than a terminal, changed after M4 was merged and before M5 was started
+for the reason `RISKS.md` R14 now records: the terminal's sampling rate followed
+the pointer's speed, so the timing statistics M8 rests on were contaminated at
+the source and not, as R14 claimed, untouched. The workspace exists with
 its seven crates; the toolchain is pinned; `ci`, `pr-hygiene` and `determinism`
 are the only workflows and none holds write permissions; `LICENSE`,
 `SECURITY.md` and `CONTRIBUTING.md` exist. The template's super-linter, its
@@ -396,10 +400,19 @@ Four things the criterion did not say, which the work had to decide:
   client with nothing new to ask for repeats its standing intention. That is
   also what keeps exactly one intention outstanding, which is the traffic under
   which the prediction is exact — the two facts are the same fact.
-- **The renderer is a terminal, and it quantises aim.** `RISKS.md` R14 carries
-  the decision and its price: a corpus recorded through this client cannot
-  support M8's aim-curvature detector, and everything timing-shaped is
-  untouched.
+- **The renderer was a terminal, and it quantised aim.** `RISKS.md` R14 carried
+  the decision and its price: no aim-curvature detector at M8, and everything
+  timing-shaped untouched. **The second half of that was wrong and the client
+  has been replaced before M5.** A terminal reports the pointer only when it
+  crosses into a new cell, so the sampling rate followed the pointer's speed and
+  the inter-arrival distribution — M8's *first* candidate signal — was
+  contaminated at the source; the cell was also anisotropic, 1.158 world units
+  across against 4.111 down, so the loss was directional. The client is a window
+  now, its capture path records the raw device delta with a per-event timestamp
+  and never passes through the renderer, and `RISKS.md` R14 carries the reversal,
+  the measurement and what remains open. It landed before M5 rather than after
+  because M5 freezes a record format and the client is what decides which
+  telemetry exists to put in one.
 - **The consent regime is code as well as text.** `docs/CONSENT.md` is the
   instrument; `replay withdraw` and `replay audit` are the mechanism, and
   `replay/tests/withdrawal.rs` exercises the audit by breaking the withdrawal
@@ -432,6 +445,15 @@ and a mismatch on either is its own `VerifyError` rather than a digest mismatch.
 inputs, altered outcome record, altered seed, unknown signing key, version or
 rules-hash mismatch — each rejected with a distinct error, and a genuine replay
 accepted. This is exploit class 2, and its exploits live in the cheat crate.
+
+**What arrived before M5 rather than in it, and why the order matters.** The
+client's input capture was rebuilt first. M5 freezes a record format, and the
+client is what determines which telemetry exists to put in one — raw device
+deltas, what a timestamp actually is, how often a sample is taken. Deciding the
+format before knowing the source is deciding it twice, and the second time is
+after a corpus exists. Nothing of M5 was started: `Manifest`, signing and
+`VerifyError` are still M5's, and the client holds its trace in memory as a
+diagnostic that is explicitly not a record format (`client::input::InputTrace`).
 
 ## M6 — Human match corpus · 2 weeks of work, calendar-bound
 

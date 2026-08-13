@@ -475,7 +475,115 @@ declines to enter, and it would report a difference between two builds of
 identical source. A version plus a commit is a weaker guarantee that is actually
 true.
 
-## R14 — Aim resolution is a property of the renderer, and the corpus inherits it
+## R14 — Input fidelity is a property of the client, and the corpus inherits it
+
+**Reopened and re-decided before M5, and the entry below the fold is kept as it
+was written.** The decision it records was taken at M4 and reversed here; the
+reversal is worth more than a rewrite, because what R14 got wrong is the
+instructive part and a risk register that quietly agrees with itself is not
+evidence about anything.
+
+### What R14 said, and which half of it was true
+
+R14 said aim was quantised to a character cell, that this killed the
+aim-curvature detector, and that **everything timing-shaped was untouched**. The
+first two are right. The third is wrong, and reading a real SGR trace is what
+said so:
+
+- **A terminal reports the pointer only when it crosses into a new cell.** The
+  sampling *rate* is therefore a function of the pointer's speed — an event per
+  cell crossed on a fast sweep, almost none on a slow creep. Inter-arrival times
+  recorded that way measure how fast the pointer was moving, not the rhythm of
+  the hand. That is `MILESTONES.md` M8's *first* candidate signal — "input
+  inter-arrival distribution and quantisation" — contaminated at the source, in
+  the same corpus R14 declared safe for it.
+- **The quantisation is anisotropic, so the loss is directional.** About 190
+  columns by 45 rows, and a cell about twice as tall as it is wide: over the
+  window the map was drawn to, **1.158 world units across and 4.111 down**, a
+  ratio of 3.55. R14 described a coarse grid; it was a coarse grid with a
+  preferred direction, which is a bias rather than a loss of precision.
+- **The trace carries no device timestamp at all.** An SGR sequence carries
+  coordinates and buttons. Time could only ever be the moment the client read
+  the byte, with tty and scheduler latency in it.
+
+The error in R14 is not the terminal. It is that R14 reasoned about the
+*renderer* — "aim is quantised to a cell" — and then made a claim about the
+*capture*, which is a different thing that happened to be implemented by the
+same component. The hedge it wrote was correct and narrow: the quantisation
+lived in one function, `Camera::world`, and everything downstream carried full
+precision. What it missed is that the same component also decided *when* a
+sample existed, and no amount of precision downstream recovers a sample that was
+never taken.
+
+### What replaced it
+
+A graphical client whose capture path never passes through the renderer;
+`ARCHITECTURE.md`, "The client's input path, and the renderer it chose", carries
+the library decision, the per-platform timestamp findings and the reopening
+criteria. In one line: the telemetry records the raw device delta with a
+per-event timestamp, one sample per device event unconditionally, and the
+simulation gets a fixed-point world point integrated from the same deltas.
+
+**Measured rather than asserted**, on a stream of 1200 synthesised device
+motions emitted at a constant 125 Hz with the pointer's speed changed twentyfold
+part way through:
+
+| | slow, 1 count per event | fast, 20 counts per event |
+| --- | --- | --- |
+| Recorded inter-arrival, median | 7.992 ms | 8.001 ms |
+| …mean, standard deviation | 8.000, 0.247 | 8.000, 0.226 |
+| The same path through the terminal's arithmetic | 34 reports from 800 events — **4.2 %** | 345 reports from 400 events — **86.2 %** |
+
+The last row is R14's second failure in one number: at the same hand rate, the
+terminal's event rate tracked the pointer's speed by a factor of twenty, and the
+new path's did not move at all. Spatial resolution over the same run is one
+device count — **0.05 world units**, 23 times finer than a cell across and 82
+times finer down, with the 3.55 anisotropy gone because the capture no longer
+touches a projection.
+
+### What R14 becomes: reduced, not closed, and moved rather than deleted
+
+Three things, and the middle one is why this entry stays open.
+
+- **The aim-resolution half is closed.** A curvature detector at M8 is now a
+  detector that may be written against this corpus. That is a permission and not
+  a promise: `SCOPE.md` still reserves "delivered" for a class with an exploit
+  failing against it in CI, and nothing here says the detector will work.
+- **The timestamp half is reduced and still open, and this is the live risk.**
+  No platform in `ENGINEERING.md`'s matrix hands this client a device timestamp
+  through `winit` — the data exists on Wayland and macOS and the library discards
+  it, and on Windows it does not exist for raw mouse input at all. The client
+  records the *dequeue* time and `client::input::CLOCK` says so in a type rather
+  than substituting silently. The residual is real: a dequeue time carries kernel
+  and scheduler latency, which is jitter M8's timing detectors will have to
+  attribute. **The decision point is before M6**, because a corpus half of whose
+  timestamps are device times and half dequeue times has a covariate nobody can
+  remove afterwards — so if `winit` gains timestamps, or if reading `evdev`
+  directly is ever judged worth a second input stack and a per-participant device
+  permission, it happens before the first recording session or not at all.
+- **The general form is what the number is now attached to.** R14 was an entry
+  about a renderer. It is an entry about the client: what a corpus can support is
+  fixed by what the capture path records, and every claim of the form "this
+  signal is untouched" has to name the mechanism that takes the sample, not the
+  component that draws the screen.
+
+**One more thing this found, and it is the reason to measure rather than
+argue.** The first run of the new client reported a median inter-arrival of
+0.38 ms for a stream emitted at 8 ms. An X11 pointer grab — `Confined`, the
+obvious way to keep an invisible OS pointer inside the window — makes the server
+deliver every raw motion event twice, five microseconds apart: 50 synthesised
+motions produce 50 `DeviceEvent::MouseMotion` without the grab and 100 with it,
+measured against `winit` alone. Invisible on screen, and a second mode near zero
+in every distribution M8 would read. The grab is gone and
+`InputTrace::stats().coincident` now reports the class of fault rather than
+filtering it, because filtering would be a predicate on the contents of the
+record — which is what the cell crossing was.
+
+---
+
+### The entry as it stood at M4, kept
+
+## R14 (as written at M4) — Aim resolution is a property of the renderer, and the corpus inherits it
 
 **Expensive because the corpus is the artifact.** M4 ships a terminal client, so
 a player points with a character cell: at eighty to a hundred and twenty columns
@@ -517,3 +625,9 @@ the intention, the protocol frame, the recorded log — carries a full-precision
 one function and its tests, not to the protocol, the recording format or the
 rules. If a curvature detector is ever wanted, the order is: replace `Camera`,
 then record, and never the other way round.
+
+*(End of the M4 entry. The hedge above was the one thing R14 got entirely right
+and it is what made the replacement cheap: `Input`, `Action`, the protocol
+frames, the digest and the recording format did not change by a byte. What the
+entry above did not have was any statement about* when *a sample is taken, which
+is the half that was wrong — see the top of this section.)*
