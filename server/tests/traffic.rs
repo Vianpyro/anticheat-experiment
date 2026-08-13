@@ -41,7 +41,10 @@ use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{FileFailurePersistence, TestRunner};
 
-use protocol::{ClientFrame, ClientMessage, SERVER_FRAME_BYTES, ServerFrame, ServerMessage};
+use protocol::{
+    ClientFrame, ClientMessage, MAX_DATAGRAM_BYTES, SERVER_DATAGRAM_BYTES, SERVER_FRAME_BYTES,
+    SERVER_SHARDS, ServerFrame, ServerMessage,
+};
 use server::{Match, MatchConfig};
 use sim::{
     Action, EntityId, Fx, FxVec2, MAX_PROJECTILES, PLAYER_COUNT, PROJECTILE_ID_BASE, RULES, Seat,
@@ -273,23 +276,30 @@ proptest! {
         }
     }
 
-    /// **Size.** Every frame is one bucket wide, and the width does not follow
-    /// the number of entities in it.
+    /// **Size.** Every frame is one bucket wide, it is cut into the same
+    /// datagrams however much it carries, and neither follows the number of
+    /// entities in it.
     ///
-    /// The first assertion cannot fail — `ServerFrame` is a fixed array — and is
-    /// here so the claim is visible where it is made. The one that carries
-    /// something is the second: the run has to *reach* views of different
-    /// content, or "the size did not vary" would be true of a match in which
-    /// nothing varied either.
+    /// The first two assertions cannot fail — `ServerFrame` is a fixed array and
+    /// `shards` returns a fixed array of fixed arrays — and are here so the claim
+    /// is visible where it is made. The one that carries something is the last:
+    /// the run has to *reach* views of different content, or "the size did not
+    /// vary" would be true of a match in which nothing varied either.
     #[test]
-    fn a_frame_is_the_same_size_whatever_it_carries(script in script(40)) {
+    fn a_frame_is_the_same_size_and_the_same_datagrams_whatever_it_carries(script in script(40)) {
         let mut game = seated(script.seed);
         let mut seq = [0u32; PLAYER_COUNT];
         let mut counts = std::collections::BTreeSet::new();
 
-        for batch in &script.batches {
+        for (number, batch) in script.batches.iter().enumerate() {
             for (_, frame) in advance(&mut game, batch, &mut seq) {
                 prop_assert_eq!(frame.as_bytes().len(), SERVER_FRAME_BYTES);
+                let shards = frame.shards(number as u32);
+                prop_assert_eq!(shards.len(), SERVER_SHARDS);
+                for shard in &shards {
+                    prop_assert_eq!(shard.as_bytes().len(), SERVER_DATAGRAM_BYTES);
+                    prop_assert!(SERVER_DATAGRAM_BYTES <= MAX_DATAGRAM_BYTES);
+                }
                 counts.insert(visible_count(&frame));
             }
         }
@@ -390,6 +400,8 @@ fn nothing_about_the_traffic_follows_the_number_of_visible_entities() {
     let mut game = seated(0x7AFF_1C00_0000_0001);
     let mut seq = [0u32; PLAYER_COUNT];
     let mut sizes = std::collections::BTreeSet::new();
+    let mut datagrams_per_tick = std::collections::BTreeSet::new();
+    let mut datagram_sizes = std::collections::BTreeSet::new();
     let mut frames_per_tick = std::collections::BTreeSet::new();
     let mut counts = std::collections::BTreeSet::new();
     let mut bytes_to_blue0: u64 = 0;
@@ -424,13 +436,19 @@ fn nothing_about_the_traffic_follows_the_number_of_visible_entities() {
         let frames = advance(&mut game, &Batch(batch), &mut seq);
         frames_per_tick.insert(frames.len());
         ticks += 1;
+        let mut datagrams_this_tick = 0usize;
         for (seat, frame) in &frames {
             sizes.insert(frame.as_bytes().len());
             counts.insert(visible_count(frame));
+            for shard in frame.shards(tick) {
+                datagrams_this_tick += 1;
+                datagram_sizes.insert(shard.as_bytes().len());
+            }
             if *seat == Seat::Blue0 {
                 bytes_to_blue0 += frame.as_bytes().len() as u64;
             }
         }
+        datagrams_per_tick.insert(datagrams_this_tick);
     }
 
     // The coverage the assertions below are conditional on.
@@ -469,6 +487,20 @@ fn nothing_about_the_traffic_follows_the_number_of_visible_entities() {
         std::collections::BTreeSet::from([PLAYER_COUNT])
     );
     assert_eq!(bytes_to_blue0, ticks * SERVER_FRAME_BYTES as u64);
+
+    // And the same statement one layer down, where the observer actually is.
+    // A frame is not one write any more: it is `SERVER_SHARDS` datagrams of
+    // `SERVER_DATAGRAM_BYTES`, and what an observer counts is those.
+    assert_eq!(
+        datagram_sizes,
+        std::collections::BTreeSet::from([SERVER_DATAGRAM_BYTES]),
+        "datagrams came in {} different sizes",
+        datagram_sizes.len()
+    );
+    assert_eq!(
+        datagrams_per_tick,
+        std::collections::BTreeSet::from([PLAYER_COUNT * SERVER_SHARDS])
+    );
 }
 
 /// The projectile-handle channel, closed at the frame the client actually

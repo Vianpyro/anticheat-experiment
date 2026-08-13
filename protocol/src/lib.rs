@@ -54,13 +54,17 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs, missing_debug_implementations)]
 
+mod events;
 mod frame;
 mod handles;
 mod message;
 mod wire;
 
+pub use crate::events::EventBacklog;
 pub use crate::frame::{
-    CLIENT_FRAME_BYTES, ClientFrame, DecodeError, HEADER_BYTES, SERVER_FRAME_BYTES, ServerFrame,
+    CLIENT_FRAME_BYTES, ClientFrame, DecodeError, HEADER_BYTES, MAX_DATAGRAM_BYTES,
+    SERVER_DATAGRAM_BYTES, SERVER_FRAME_BYTES, SERVER_SHARD_PAYLOAD_BYTES, SERVER_SHARDS,
+    SHARD_HEADER_BYTES, ServerFrame, ServerShard, ShardAssembler,
 };
 pub use crate::handles::HandleSpace;
 pub use crate::message::{ClientMessage, RejectReason, ServerMessage};
@@ -78,4 +82,4 @@ pub use crate::message::{ClientMessage, RejectReason, ServerMessage};
 /// the meaning of a byte changes, and `sim`'s own version — which moves when
 /// the *rules* change, `docs/RISKS.md` R13 — is a separate claim about a
 /// separate thing.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;

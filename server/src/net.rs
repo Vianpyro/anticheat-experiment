@@ -15,24 +15,37 @@
 //! - **No hand-rolled cryptography**, which is the failure mode a security
 //!   portfolio cannot afford.
 //!
-//! # Streams rather than datagrams, and the reason is the padding budget
+//! # Datagrams for state, one reliable stream for the session
 //!
-//! A `ServerFrame` is 1501 bytes. A QUIC datagram is bounded by the path MTU,
-//! which in practice is around 1200 bytes, so the padded frame does not fit in
-//! one and datagrams are out. The frames therefore travel on one bidirectional
-//! stream per session, back to back, and are read by length — every frame is
-//! the same length, so there is no delimiter to get wrong and no length prefix
-//! to leak anything.
+//! This is `docs/RISKS.md` R6's hedge as it was originally written, and it took
+//! a smaller frame to get back to it. A `ServerFrame` used to be 1501 bytes,
+//! which does not fit a QUIC datagram, so every frame travelled on a reliable
+//! stream and a lost packet blocked the frames behind it — head-of-line
+//! blocking at 30 Hz, which is the wrong netcode for anything a client
+//! predicts from.
 //!
-//! The traffic-shape invariant survives that unharmed, and it is worth saying
-//! why rather than assuming it: a constant number of bytes emitted at a constant
-//! period is packetised by QUIC into a number of packets that is a function of
-//! the byte count and the MTU, both of which are constants. What an observer
-//! counts is still a constant. The cost is head-of-line blocking on a lost
-//! packet, which is real netcode and the wrong trade for a shipped MOBA — and
-//! it is the honest consequence of a bucket sized for the worst case rather
-//! than for the wire. `docs/ARCHITECTURE.md` records it under the padding
+//! A frame is now cut into [`protocol::SERVER_SHARDS`] datagrams of exactly
+//! [`protocol::SERVER_DATAGRAM_BYTES`] bytes, each far inside any path MTU. A
+//! lost packet costs the tick it belonged to and nothing else: the client
+//! abandons the half-assembled frame when the next one starts arriving, and
+//! reads on.
+//!
+//! The traffic-shape invariant is not weakened by that, it is stated more
+//! directly than before. It used to be "a constant number of bytes at a
+//! constant period is packetised into a constant number of packets", which is
+//! an argument about QUIC's packetiser; it is now a constant number of
+//! datagrams of a constant size at a constant period, which is a fact about
+//! this file. `docs/ARCHITECTURE.md` records the arithmetic under the padding
 //! budget.
+//!
+//! **The session keeps its stream, and that split is the design.** `Accepted`
+//! and `Rejected` are sent once and must arrive, so they go on the one
+//! bidirectional stream; a client's own frames go the same way, because `Ready`
+//! and `Surrender` are session commands with the same requirement and an
+//! upstream frame is 24 bytes, where head-of-line blocking costs one tick's
+//! intention that the sequence rule already treats as droppable. State is the
+//! only traffic that is better lost than late, and state is the only traffic
+//! that travels unreliably.
 //!
 //! # The certificate
 //!
@@ -48,7 +61,8 @@
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use protocol::CLIENT_FRAME_BYTES;
+use bytes::Bytes;
+use protocol::{CLIENT_FRAME_BYTES, ServerFrame};
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
 use replay::Recording;
 use sim::{PLAYER_COUNT, Seat};
@@ -100,10 +114,16 @@ fn now_ms() -> u64 {
         })
 }
 
-/// How long the shutdown waits for a peer to read what it has already been
-/// sent. Bounded, because a client that has stopped reading must not be able to
-/// hold the server open.
-const DRAIN: Duration = Duration::from_secs(5);
+/// How long the shutdown gives the driver to put the last datagrams on the
+/// wire before the endpoint is closed.
+///
+/// There is nothing to *wait on* for a datagram: it is unacknowledged by
+/// construction, so `SendStream::stopped` has no counterpart here and a server
+/// that waited for one would wait for a client that is not reading a stream.
+/// So the drain is a bounded pause and not a handshake, and a frame that misses
+/// it is a frame lost exactly as any other datagram can be — which is the
+/// semantics the state channel already has.
+const DRAIN: Duration = Duration::from_millis(200);
 
 /// A bound endpoint waiting for a match to be played on it.
 #[derive(Debug)]
@@ -126,9 +146,34 @@ enum Event {
 /// One seated session's end of the wire.
 #[derive(Debug)]
 struct Wire {
-    /// Held so the connection is not closed by being dropped.
-    _connection: Connection,
+    /// The datagrams go here; it is also what keeps the connection from being
+    /// closed by being dropped.
+    connection: Connection,
+    /// The session's reliable half: the handshake out, every client frame in.
     send: SendStream,
+    /// Frames sent to this session, which is what its shards are numbered by.
+    /// A count of ticks, and therefore public: the cadence is one frame per
+    /// player per tick whatever happened.
+    sequence: u32,
+}
+
+impl Wire {
+    /// Sends one frame as its shards.
+    ///
+    /// A refused datagram is treated as a lost one — the frame is gone, the
+    /// session is not. The alternative is closing a session because the send
+    /// buffer was briefly full, which hands an attacker a way to end somebody
+    /// else's match by making their client stutter. The sequence advances
+    /// either way, so a frame that was never sent is a gap the receiver
+    /// abandons rather than a renumbering it cannot see.
+    fn send_frame(&mut self, frame: &ServerFrame) {
+        for shard in frame.shards(self.sequence) {
+            let _ = self
+                .connection
+                .send_datagram(Bytes::copy_from_slice(shard.as_bytes()));
+        }
+        self.sequence = self.sequence.saturating_add(1);
+    }
 }
 
 impl Listener {
@@ -211,7 +256,11 @@ impl Listener {
                             .map_err(|error| NetError::Connection(error.to_string()))?;
                         match seat {
                             Some(seat) => {
-                                wires[seat.index()] = Some(Wire { _connection: connection, send });
+                                wires[seat.index()] = Some(Wire {
+                                    connection,
+                                    send,
+                                    sequence: 0,
+                                });
                                 tokio::spawn(read_loop(seat, recv, events.clone()));
                             }
                             // Refused, and told why. The frame is already sent;
@@ -251,33 +300,29 @@ impl Listener {
                         let Some(wire) = wires[seat.index()].as_mut() else {
                             continue;
                         };
-                        if wire.send.write_all(frame.as_bytes()).await.is_err() {
-                            wires[seat.index()] = None;
-                        }
+                        wire.send_frame(&frame);
                     }
                     ran = ran.saturating_add(1);
                 }
             }
         }
 
-        // Shutdown, in the one order that does not throw the last ticks away.
-        // `Endpoint::close` sends a connection-close frame *immediately* and
-        // discards whatever is still unacknowledged, so closing before the
-        // peers have read leaves them with a stream that ended after zero
-        // bytes. Finish each stream, wait for the peer to have read it, and
-        // only then close.
+        // Shutdown. `Endpoint::close` sends a connection-close frame
+        // *immediately* and discards whatever has not gone out yet, so closing
+        // the moment the last tick ran would throw away the frames of that
+        // tick. Finish the streams so a client reading one sees a clean end,
+        // give the driver a bounded moment to flush the datagrams already
+        // queued, and only then close.
         //
-        // Every wait is bounded. A client that has stopped reading is a client
-        // that has crashed or is misbehaving, and a server that waits on one
-        // forever is a server one client can hang.
+        // The pause is what tells the clients the match is over: they are
+        // waiting on datagrams, not on the stream, so the connection closing
+        // under them is the signal. That is deliberate — a client whose server
+        // has stopped sending state has nothing to wait for.
         for wire in wires.iter_mut().flatten() {
             let _ = wire.send.finish();
         }
-        for wire in wires.iter_mut().flatten() {
-            let _ = tokio::time::timeout(DRAIN, wire.send.stopped()).await;
-        }
+        tokio::time::sleep(DRAIN).await;
         accepting.abort();
-        let _ = tokio::time::timeout(DRAIN, self.endpoint.wait_idle()).await;
         self.endpoint.close(0u32.into(), b"match over");
         Ok(game.recording())
     }

@@ -4,6 +4,22 @@
 //! types are newtypes over fixed-size arrays, which is what makes "every frame
 //! of a given direction is the same length" a property of the type rather than
 //! of a test somebody has to remember to write.
+//!
+//! # A server frame is cut into a constant number of constant-size shards
+//!
+//! A `View` frame does not travel as one write. It is cut into
+//! [`SERVER_SHARDS`] datagrams of exactly [`SERVER_DATAGRAM_BYTES`] bytes each,
+//! and that geometry is the whole padding scheme: *constant cadence, constant
+//! count, constant size*. An observer counts the same number of packets of the
+//! same length every tick whatever the match is doing, which is the property a
+//! single padded frame on a reliable stream also had — and this version has it
+//! without the reliable stream, so a lost packet costs one tick's frame instead
+//! of blocking every frame behind it.
+//!
+//! The shard is the unit the network sees, so the shard is where the size
+//! constraint has to hold: [`SERVER_DATAGRAM_BYTES`] is asserted against
+//! [`MAX_DATAGRAM_BYTES`] at compile time. `docs/ARCHITECTURE.md` carries the
+//! arithmetic under "The padding budget".
 
 use sim::view::PlayerView;
 use sim::{Digest, Seat};
@@ -28,13 +44,56 @@ pub const HEADER_BYTES: usize = 3;
 /// and it is made here rather than left implicit.
 pub const CLIENT_FRAME_BYTES: usize = HEADER_BYTES + 4 + 8 + 9;
 
+/// Datagrams one server frame is cut into.
+///
+/// Two, and the number is chosen rather than derived: it is the smallest count
+/// that puts a shard comfortably under every path MTU this project will meet,
+/// given a frame whose entity list alone is most of a kilobyte. One shard would
+/// work on a 1200-byte path and fail on a tunnelled one, and the failure mode of
+/// a datagram that does not fit is a frame that is never sent — a cadence gap,
+/// which is the half of the traffic invariant padding cannot repair.
+pub const SERVER_SHARDS: usize = 2;
+
+/// The largest datagram this protocol will put on the wire.
+///
+/// A budget rather than a measurement of any particular path. QUIC's own floor
+/// is a 1200-byte UDP payload and real paths are usually 1500 minus headers;
+/// 600 leaves room for a tunnel, an IPv6 header and a QUIC packet header
+/// several times over. It is asserted against, not aimed at: the constant below
+/// stops the build if the frame outgrows it, which is the day somebody has to
+/// choose between a third shard and a smaller view.
+pub const MAX_DATAGRAM_BYTES: usize = 600;
+
+/// A shard's own header: the protocol version, the frame it belongs to, and
+/// which shard of that frame it is.
+///
+/// The version is repeated here rather than read out of the frame's own header,
+/// which only shard zero carries. A shard from another protocol is then refused
+/// before it is put anywhere, which is the same "check before you parse" order
+/// the frame header already imposes; the cost is two bytes in a frame that is
+/// padded anyway.
+///
+/// The frame number is a per-session counter of frames sent, which is a count
+/// of ticks: public by construction, since the cadence is one frame per player
+/// per tick whatever happened.
+pub const SHARD_HEADER_BYTES: usize = 2 + 4 + 1;
+
+/// What a frame has to hold: the header plus the widest view the encoding can
+/// produce.
+const FRAME_MINIMUM: usize = HEADER_BYTES + PlayerView::MAX_ENCODED_BYTES;
+
+/// Bytes of frame in one shard. The frame is rounded up to a whole number of
+/// these, so the padding a receiver checks covers the rounding too.
+pub const SERVER_SHARD_PAYLOAD_BYTES: usize = FRAME_MINIMUM.div_ceil(SERVER_SHARDS);
+
 /// Every server frame is exactly this long.
 ///
 /// The bucket is the header plus [`PlayerView::MAX_ENCODED_BYTES`], which is
-/// derived from the view encoding rather than measured from a run. One bucket,
-/// sized for the worst case: see the crate documentation for why several
-/// buckets is not a cheaper version of the same property, and
-/// `docs/ARCHITECTURE.md` for what the padding costs in bandwidth.
+/// derived from the view encoding rather than measured from a run, rounded up
+/// to a whole number of shards. One bucket, sized for the worst case: see the
+/// crate documentation for why several buckets is not a cheaper version of the
+/// same property, and `docs/ARCHITECTURE.md` for what the padding costs in
+/// bandwidth.
 ///
 /// `Accepted` and `Rejected` are padded to the same width as a `View`. They
 /// are sent once, at the start of a session, where a distinguishable length
@@ -42,7 +101,15 @@ pub const CLIENT_FRAME_BYTES: usize = HEADER_BYTES + 4 + 8 + 9;
 /// just started — so this buys little. It costs one constant instead of two,
 /// and it means there is no second frame size in the system to reason about
 /// later.
-pub const SERVER_FRAME_BYTES: usize = HEADER_BYTES + PlayerView::MAX_ENCODED_BYTES;
+pub const SERVER_FRAME_BYTES: usize = SERVER_SHARDS * SERVER_SHARD_PAYLOAD_BYTES;
+
+/// Every datagram carrying part of a server frame is exactly this long.
+pub const SERVER_DATAGRAM_BYTES: usize = SHARD_HEADER_BYTES + SERVER_SHARD_PAYLOAD_BYTES;
+
+/// The constraint the whole scheme exists to satisfy. A frame that outgrows the
+/// shard geometry stops the build here rather than becoming a datagram the
+/// transport silently refuses to send.
+const _: () = assert!(SERVER_DATAGRAM_BYTES <= MAX_DATAGRAM_BYTES);
 
 /// Why a frame did not decode.
 ///
@@ -84,6 +151,13 @@ pub enum DecodeError {
     /// here or the frame is refused here, and nothing downstream has a case to
     /// handle.
     Seat(u8),
+    /// A shard that claims to be part of a frame it could not be part of.
+    ///
+    /// There are exactly [`SERVER_SHARDS`] shards in a frame, numbered from
+    /// zero, and a datagram naming any other index is refused rather than
+    /// clamped: a receiver that folded a bad index into a real one would let a
+    /// sender overwrite a shard it did not send.
+    ShardIndex(u8),
 }
 
 impl core::fmt::Display for DecodeError {
@@ -102,6 +176,12 @@ impl core::fmt::Display for DecodeError {
             Self::Body => write!(f, "payload did not parse"),
             Self::Padding => write!(f, "a byte after the payload was not zero"),
             Self::Seat(byte) => write!(f, "seat byte {byte} names no seat"),
+            Self::ShardIndex(index) => {
+                write!(
+                    f,
+                    "shard index {index}, of a frame that has {SERVER_SHARDS}"
+                )
+            }
         }
     }
 }
@@ -329,5 +409,189 @@ impl ServerFrame {
         };
         check_padding(payload, reader.consumed())?;
         Ok(message)
+    }
+
+    /// Cuts the frame into the datagrams that carry it.
+    ///
+    /// `sequence` names the frame within the session and is the same for all
+    /// [`SERVER_SHARDS`] shards; it is what lets a receiver tell this frame's
+    /// shards from the next one's, and what lets it abandon a frame whose shard
+    /// never arrived rather than sew two half-frames together.
+    ///
+    /// The return type is the invariant, in the same way [`ServerFrame`]'s own
+    /// is: there is no way for this function to produce a different number of
+    /// datagrams, or datagrams of a different size, for one message than for
+    /// another.
+    #[must_use]
+    pub fn shards(&self, sequence: u32) -> [ServerShard; SERVER_SHARDS] {
+        core::array::from_fn(|index| {
+            let mut bytes = [0u8; SERVER_DATAGRAM_BYTES];
+            bytes[0..2].copy_from_slice(&crate::VERSION.to_be_bytes());
+            bytes[2..6].copy_from_slice(&sequence.to_be_bytes());
+            // `SERVER_SHARDS` is small and this is its index, so the conversion
+            // cannot lose anything; it is written to saturate rather than to
+            // panic because a panic in the send path is a match everybody
+            // loses.
+            bytes[6] = u8::try_from(index).unwrap_or(u8::MAX);
+            let from = index * SERVER_SHARD_PAYLOAD_BYTES;
+            let to = from + SERVER_SHARD_PAYLOAD_BYTES;
+            bytes[SHARD_HEADER_BYTES..].copy_from_slice(&self.0[from..to]);
+            ServerShard(bytes)
+        })
+    }
+}
+
+/// One datagram: a shard header and a slice of exactly one frame.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ServerShard([u8; SERVER_DATAGRAM_BYTES]);
+
+impl core::fmt::Debug for ServerShard {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "ServerShard({SERVER_DATAGRAM_BYTES} bytes)")
+    }
+}
+
+impl ServerShard {
+    /// The datagram's bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; SERVER_DATAGRAM_BYTES] {
+        &self.0
+    }
+}
+
+/// Puts the shards of a frame back together, and gives up on the ones that will
+/// not be whole.
+///
+/// # What a missing shard costs, and why that is the trade
+///
+/// Datagrams are unreliable and unordered, so a frame is delivered only when
+/// all [`SERVER_SHARDS`] of its shards arrive. A frame with a shard missing is
+/// abandoned the moment a *newer* frame's first shard arrives: the recipient
+/// misses one tick and reads the next one, which is what a client that predicts
+/// wants. The alternative — waiting for the retransmission that a reliable
+/// stream would have made — is head-of-line blocking, and at 30 Hz it stalls
+/// every subsequent tick behind one lost packet.
+///
+/// # Ordering
+///
+/// Only the newest frame is held. A shard belonging to an older frame is
+/// discarded rather than buffered, because a view older than the one the client
+/// already applied is a view it would discard anyway
+/// (`client::Headless::reconcile`), and a reassembler that kept a window would
+/// be a second place where delivery order could turn into observable state.
+#[derive(Clone, Debug)]
+pub struct ShardAssembler {
+    /// The frame being assembled, if any, and which of its shards have arrived.
+    building: Option<u32>,
+    present: [bool; SERVER_SHARDS],
+    /// Whether that frame has already been handed out. Held so that a duplicate
+    /// shard is stale rather than the start of a second delivery of one tick.
+    delivered: bool,
+    buffer: [u8; SERVER_FRAME_BYTES],
+    /// Frames abandoned because a shard never arrived.
+    incomplete: u32,
+    /// Shards discarded for naming a frame that is no longer the newest.
+    stale: u32,
+}
+
+impl Default for ShardAssembler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ShardAssembler {
+    /// An assembler that has been given nothing.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            building: None,
+            present: [false; SERVER_SHARDS],
+            delivered: false,
+            buffer: [0u8; SERVER_FRAME_BYTES],
+            incomplete: 0,
+            stale: 0,
+        }
+    }
+
+    /// Frames abandoned because one of their shards never arrived.
+    #[must_use]
+    pub const fn incomplete(&self) -> u32 {
+        self.incomplete
+    }
+
+    /// Shards discarded for arriving after a newer frame had started.
+    #[must_use]
+    pub const fn stale(&self) -> u32 {
+        self.stale
+    }
+
+    /// Takes one datagram, and returns a frame once its last shard arrives.
+    ///
+    /// # Errors
+    ///
+    /// [`DecodeError`] for a datagram that is not a shard of this protocol: the
+    /// wrong length, another version, or an index no frame has. These come off
+    /// a socket, so they are refused rather than assumed away.
+    pub fn accept(&mut self, bytes: &[u8]) -> Result<Option<ServerFrame>, DecodeError> {
+        if bytes.len() != SERVER_DATAGRAM_BYTES {
+            return Err(DecodeError::Length {
+                expected: SERVER_DATAGRAM_BYTES,
+                actual: bytes.len(),
+            });
+        }
+        let version = u16::from_be_bytes([bytes[0], bytes[1]]);
+        if version != crate::VERSION {
+            return Err(DecodeError::Version {
+                expected: crate::VERSION,
+                found: version,
+            });
+        }
+        let sequence = u32::from_be_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]);
+        let index = usize::from(bytes[6]);
+        if index >= SERVER_SHARDS {
+            return Err(DecodeError::ShardIndex(bytes[6]));
+        }
+
+        match self.building {
+            // A shard of the frame already handed out, or of one superseded by
+            // a newer arrival. Either way there is nothing left to add it to.
+            Some(current) if current == sequence && self.delivered => {
+                self.stale = self.stale.saturating_add(1);
+                return Ok(None);
+            }
+            // A shard of the frame being assembled.
+            Some(current) if current == sequence => {}
+            Some(current) if sequence < current => {
+                self.stale = self.stale.saturating_add(1);
+                return Ok(None);
+            }
+            // A newer frame. Whatever was half-assembled is never completed.
+            Some(_) => {
+                if !self.delivered {
+                    self.incomplete = self.incomplete.saturating_add(1);
+                }
+                self.start(sequence);
+            }
+            None => self.start(sequence),
+        }
+
+        let from = index * SERVER_SHARD_PAYLOAD_BYTES;
+        let to = from + SERVER_SHARD_PAYLOAD_BYTES;
+        self.buffer[from..to].copy_from_slice(&bytes[SHARD_HEADER_BYTES..]);
+        self.present[index] = true;
+
+        if !self.present.iter().all(|have| *have) {
+            return Ok(None);
+        }
+        self.delivered = true;
+        Ok(Some(ServerFrame(self.buffer)))
+    }
+
+    fn start(&mut self, sequence: u32) {
+        self.building = Some(sequence);
+        self.present = [false; SERVER_SHARDS];
+        self.delivered = false;
+        self.buffer = [0u8; SERVER_FRAME_BYTES];
     }
 }

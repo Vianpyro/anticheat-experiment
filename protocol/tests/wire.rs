@@ -12,10 +12,11 @@ use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 
 use protocol::{
-    CLIENT_FRAME_BYTES, ClientFrame, ClientMessage, DecodeError, HEADER_BYTES, HandleSpace,
-    RejectReason, SERVER_FRAME_BYTES, ServerFrame, ServerMessage, VERSION,
+    CLIENT_FRAME_BYTES, ClientFrame, ClientMessage, DecodeError, EventBacklog, HEADER_BYTES,
+    HandleSpace, MAX_DATAGRAM_BYTES, RejectReason, SERVER_DATAGRAM_BYTES, SERVER_FRAME_BYTES,
+    SERVER_SHARDS, ServerFrame, ServerMessage, ShardAssembler, VERSION,
 };
-use sim::view::{EntityView, PlayerView, view_for};
+use sim::view::{EntityView, MAX_EVENTS_PER_VIEW, PlayerView, VisibleEvent, view_for};
 use sim::{
     Action, EntityId, Fx, FxVec2, Input, PROJECTILE_ID_BASE, Seat, State, Tick, champion_entity_id,
     new_state, rules_hash, step, tower_entity_id,
@@ -159,6 +160,291 @@ fn the_widest_possible_view_still_fits_one_frame() {
     assert_eq!(
         ServerFrame::decode(frame.as_bytes()),
         Ok(ServerMessage::View(view))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The shards, which are what the network actually sees
+// ---------------------------------------------------------------------------
+
+/// The traffic-shape invariant, at the layer that carries it.
+///
+/// A frame is one bucket, and the bucket is cut into a constant number of
+/// datagrams of a constant size. Like the frame-size assertion above, this
+/// cannot fail — `shards` returns an array of a newtype over a fixed array — and
+/// it is here so that the claim is visible where it is made. What can fail is
+/// the constraint underneath it, and that one is a `const` assertion in
+/// `protocol::frame`: a frame that outgrew the MTU budget would stop the build.
+#[test]
+fn a_frame_is_always_the_same_datagrams_whatever_it_carries() {
+    let quiet = ServerFrame::encode(&ServerMessage::Rejected(RejectReason::MatchFull));
+    let busy = ServerFrame::encode(&ServerMessage::View(widest_view()));
+
+    for frame in [&quiet, &busy] {
+        let shards = frame.shards(0);
+        assert_eq!(shards.len(), SERVER_SHARDS);
+        for shard in &shards {
+            assert_eq!(shard.as_bytes().len(), SERVER_DATAGRAM_BYTES);
+        }
+    }
+    // A const block, because the constraint is a compile-time one and clippy is
+    // right that a runtime assertion on two constants is theatre. The real
+    // enforcement is the identical assertion in `protocol::frame`; this is the
+    // reader's copy, beside the claim it belongs to.
+    const {
+        assert!(
+            SERVER_DATAGRAM_BYTES <= MAX_DATAGRAM_BYTES,
+            "a datagram is over the budget"
+        );
+    }
+}
+
+/// A frame cut into datagrams and put back together is the frame.
+#[test]
+fn a_frame_survives_being_cut_into_datagrams() {
+    let mut assembler = ShardAssembler::new();
+    for seat in Seat::ALL {
+        let message = ServerMessage::View(view_for(&busy_state(), seat));
+        let frame = ServerFrame::encode(&message);
+
+        let mut delivered = None;
+        for shard in frame.shards(seat.index() as u32) {
+            if let Some(whole) = assembler
+                .accept(shard.as_bytes())
+                .expect("a shard this crate produced was refused")
+            {
+                delivered = Some(whole);
+            }
+        }
+        let whole = delivered.expect("the last shard did not complete the frame");
+        assert_eq!(whole, frame);
+        assert_eq!(ServerFrame::decode(whole.as_bytes()), Ok(message));
+    }
+    assert_eq!(assembler.incomplete(), 0);
+}
+
+/// The shards of one frame may arrive in any order.
+///
+/// They are datagrams: QUIC neither orders nor retransmits them, so "the last
+/// one completes the frame" has to mean the last one to *arrive* and not the
+/// one with the highest index.
+#[test]
+fn the_shards_of_a_frame_may_arrive_in_any_order() {
+    let frame = ServerFrame::encode(&ServerMessage::View(view_for(&busy_state(), Seat::Blue0)));
+    let shards = frame.shards(7);
+
+    let mut assembler = ShardAssembler::new();
+    let mut delivered = None;
+    for shard in shards.iter().rev() {
+        if let Some(whole) = assembler.accept(shard.as_bytes()).expect("refused") {
+            delivered = Some(whole);
+        }
+    }
+    assert_eq!(delivered.as_ref(), Some(&frame));
+}
+
+/// **A frame with a shard missing is abandoned, not completed by the next
+/// one's.**
+///
+/// This is the property the whole scheme exists for. On a reliable stream a
+/// lost packet blocks every frame behind it; here it costs the tick it belonged
+/// to and nothing else, and the assembler must not paper over the gap by
+/// filling it from a later frame — that would hand the client a view sewn from
+/// two ticks, which is worse than a missing one.
+#[test]
+fn a_frame_with_a_missing_shard_is_abandoned_rather_than_sewn_to_the_next() {
+    let state = busy_state();
+    let first = ServerFrame::encode(&ServerMessage::View(view_for(&state, Seat::Blue0)));
+    let second = ServerFrame::encode(&ServerMessage::View(view_for(
+        &step(&state, &[]),
+        Seat::Blue0,
+    )));
+    assert_ne!(first, second, "the two ticks have to differ");
+
+    let mut assembler = ShardAssembler::new();
+    // Everything of the first frame except its last shard.
+    for shard in first.shards(1).iter().take(SERVER_SHARDS - 1) {
+        assert_eq!(assembler.accept(shard.as_bytes()), Ok(None));
+    }
+    assert_eq!(assembler.incomplete(), 0, "nothing is lost until it is");
+
+    let mut delivered = None;
+    for shard in second.shards(2) {
+        if let Some(whole) = assembler.accept(shard.as_bytes()).expect("refused") {
+            delivered = Some(whole);
+        }
+    }
+    assert_eq!(
+        delivered.as_ref(),
+        Some(&second),
+        "the second frame did not arrive whole"
+    );
+    assert_eq!(
+        assembler.incomplete(),
+        1,
+        "the abandoned frame was not counted, so a client cannot tell a lost \
+         tick from a tick that carried nothing"
+    );
+}
+
+/// A shard of a frame already delivered, or of one already superseded, is
+/// discarded rather than replayed.
+#[test]
+fn a_duplicated_or_late_shard_does_not_deliver_a_tick_twice() {
+    let frame = ServerFrame::encode(&ServerMessage::View(view_for(&busy_state(), Seat::Blue0)));
+    let shards = frame.shards(4);
+
+    let mut assembler = ShardAssembler::new();
+    let mut deliveries = 0;
+    for shard in shards.iter().chain(shards.iter()) {
+        if assembler
+            .accept(shard.as_bytes())
+            .expect("refused")
+            .is_some()
+        {
+            deliveries += 1;
+        }
+    }
+    assert_eq!(deliveries, 1, "one frame was delivered twice");
+    assert_eq!(assembler.stale(), SERVER_SHARDS as u32);
+
+    // …and one belonging to an older frame, arriving after a newer one has
+    // started, is discarded too.
+    let older = ServerFrame::encode(&ServerMessage::Rejected(RejectReason::MatchFull)).shards(3);
+    assert_eq!(assembler.accept(older[0].as_bytes()), Ok(None));
+    assert_eq!(assembler.stale(), SERVER_SHARDS as u32 + 1);
+}
+
+/// A datagram that is not a shard of this protocol is refused.
+#[test]
+fn a_datagram_that_is_not_a_shard_is_refused() {
+    let frame = ServerFrame::encode(&ServerMessage::View(view_for(&busy_state(), Seat::Blue0)));
+    let good = frame.shards(0)[0];
+
+    let mut assembler = ShardAssembler::new();
+    for length in 0..SERVER_DATAGRAM_BYTES {
+        assert_eq!(
+            assembler.accept(&good.as_bytes()[..length]),
+            Err(DecodeError::Length {
+                expected: SERVER_DATAGRAM_BYTES,
+                actual: length
+            })
+        );
+    }
+
+    let mut other_protocol = *good.as_bytes();
+    other_protocol[0..2].copy_from_slice(&(VERSION + 1).to_be_bytes());
+    assert_eq!(
+        assembler.accept(&other_protocol),
+        Err(DecodeError::Version {
+            expected: VERSION,
+            found: VERSION + 1
+        })
+    );
+
+    for index in SERVER_SHARDS as u8..=u8::MAX {
+        let mut wrong_index = *good.as_bytes();
+        wrong_index[6] = index;
+        assert_eq!(
+            assembler.accept(&wrong_index),
+            Err(DecodeError::ShardIndex(index))
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The event backlog
+// ---------------------------------------------------------------------------
+
+/// A view carrying `count` identical deaths, and nothing else.
+///
+/// Built by hand rather than reached by simulation, and that is the honest
+/// thing to do here: the overflow this exercises is not reachable in a scripted
+/// match under the game's constants — which is the argument that the budget is
+/// generous — so a test that insisted on reaching it would be testing the
+/// balance numbers instead of the queue.
+fn view_with_events(tick: u32, count: usize) -> PlayerView {
+    PlayerView {
+        tick: Tick(tick),
+        outcome: sim::Outcome::InProgress,
+        own: sim::view::OwnView {
+            id: champion_entity_id(Seat::Blue0),
+            position: FxVec2::ZERO,
+            liveness: sim::Liveness::Alive { hp: Fx::ONE },
+            cooldowns: sim::Cooldowns::default(),
+        },
+        visible: Vec::new(),
+        events: (0..count)
+            .map(|nth| VisibleEvent::Death {
+                entity: EntityId(nth as u16),
+                at: FxVec2::ZERO,
+            })
+            .collect(),
+    }
+}
+
+/// The event a frame has no room for waits for the next frame, in order.
+#[test]
+fn an_event_a_frame_cannot_carry_waits_for_the_next_one() {
+    let overflow = 5;
+    let mut backlog = EventBacklog::new();
+
+    let first = backlog.shape(&view_with_events(1, MAX_EVENTS_PER_VIEW + overflow));
+    assert_eq!(first.events.len(), MAX_EVENTS_PER_VIEW);
+    assert_eq!(backlog.deferred(), overflow);
+    assert_eq!(backlog.dropped(), 0, "nothing is lost, only delayed");
+
+    // The next frame carries the remainder, and it is the *remainder*: the
+    // events come out in the order the rules produced them, so a client is
+    // never shown a later event before an earlier one.
+    let second = backlog.shape(&view_with_events(2, 0));
+    assert_eq!(second.events.len(), overflow);
+    let delivered: Vec<u16> = first
+        .events
+        .iter()
+        .chain(&second.events)
+        .map(|event| match event {
+            VisibleEvent::Death { entity, .. } => entity.0,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        delivered,
+        (0..(MAX_EVENTS_PER_VIEW + overflow) as u16).collect::<Vec<_>>()
+    );
+    assert_eq!(backlog.deferred(), 0);
+
+    // Everything else in the view is passed through, not reshaped.
+    assert_eq!(second.tick, Tick(2));
+    assert_eq!(second.own, view_with_events(2, 0).own);
+}
+
+/// A view inside the budget is untouched, which is every view a match produces.
+#[test]
+fn a_view_inside_the_budget_passes_through_unchanged() {
+    let mut backlog = EventBacklog::new();
+    let view = view_for(&busy_state(), Seat::Blue0);
+    assert!(view.events.len() <= MAX_EVENTS_PER_VIEW);
+    assert_eq!(backlog.shape(&view), view);
+    assert_eq!(backlog.deferred(), 0);
+}
+
+/// The queue is bounded, and past the bound it drops rather than growing.
+///
+/// An unbounded queue is an allocator an attacker can drive; the bound is one
+/// tick's event capacity, and reaching it takes a sustained rate above the
+/// frame budget that no reachable state produces. The drop counter is the
+/// tripwire that would say otherwise.
+#[test]
+fn the_backlog_is_bounded_and_says_when_it_drops() {
+    let mut backlog = EventBacklog::new();
+    for tick in 0..8 {
+        let _ = backlog.shape(&view_with_events(tick, sim::MAX_EVENTS));
+    }
+    assert!(backlog.deferred() <= sim::MAX_EVENTS);
+    assert!(
+        backlog.dropped() > 0,
+        "a sustained overflow filled no queue, so the bound is not the bound"
     );
 }
 
@@ -562,7 +848,11 @@ fn busy_state() -> State {
 /// what the encoding can produce, not for what a run happened to produce.
 fn widest_view() -> PlayerView {
     let mut visible = Vec::new();
-    for seat in [Seat::Blue1, Seat::Blue2, Seat::Red0, Seat::Red1, Seat::Red2] {
+    // Every champion but the recipient's own, which travels in `own` and is
+    // never in the entity list. Derived from the roster rather than listed, so
+    // that a seat added to the game widens this view without anybody editing
+    // it — which is the only way this test keeps testing the widest case.
+    for seat in Seat::ALL.into_iter().filter(|seat| *seat != Seat::Blue0) {
         visible.push(EntityView::Champion {
             id: champion_entity_id(seat),
             position: FxVec2::ZERO,
@@ -602,7 +892,7 @@ fn widest_view() -> PlayerView {
                 amount: Fx::ONE,
                 at: FxVec2::ZERO,
             };
-            sim::MAX_EVENTS
+            sim::view::MAX_EVENTS_PER_VIEW
         ],
     }
 }

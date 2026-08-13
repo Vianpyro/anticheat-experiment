@@ -55,7 +55,7 @@
 //! — one message per player per tick, whatever happened — is a statement about
 //! a server loop and cannot be made by a projection at all.
 
-use crate::event::{Ability, Event, EventKind, MAX_EVENTS};
+use crate::event::{Ability, Event, EventKind};
 use crate::fx::Fx;
 use crate::rules::{RULES, Rules};
 use crate::state::{
@@ -63,6 +63,58 @@ use crate::state::{
     TOWER_COUNT, Team, Tick, champion_entity_id, tower_entity_id, tower_position,
 };
 use crate::vec2::FxVec2;
+
+/// Events one view may carry, and therefore the ones a frame can.
+///
+/// # Why the frame has a smaller event budget than the tick does
+///
+/// [`crate::MAX_EVENTS`] is what one *tick* can record; this is what one
+/// *message* can carry, and they are different numbers for a reason that lives
+/// outside this crate. The transport pads every frame to
+/// [`PlayerView::MAX_ENCODED_BYTES`] and cuts it into a constant number of
+/// datagrams that must each fit the path MTU, so the event budget is what is
+/// left of a datagram after the entity list — and the entity list cannot be
+/// capped, because which entities survive a cap is a function of what is
+/// visible and trading a length channel for a content channel is not a saving
+/// (`docs/ARCHITECTURE.md`, the padding budget). Sixteen is what the geometry
+/// leaves: two datagrams under 600 bytes each.
+///
+/// # What happens to the seventeenth event
+///
+/// It is **deferred, not dropped**: `protocol::EventBacklog` holds a
+/// per-recipient queue and delivers the overflow on the next frame, in the
+/// order the rules produced it. No event is lost until the queue itself
+/// overflows, which takes a sustained rate no reachable state produces.
+///
+/// That is not a side channel, and the argument is the one the per-recipient
+/// handle space already makes: the queue is a function of the events this
+/// recipient was *entitled* to see, and of nothing else. Two states a player
+/// cannot tell apart produce the same entitled events, hence the same queue,
+/// hence the same bytes.
+///
+/// The cap is enforced twice, and the two halves do different jobs.
+/// [`PlayerView::encode`] writes at most this many events, which is what makes
+/// the bound above a property of the *encoding* rather than a promise every
+/// caller has to keep — there is no view that encodes to more than
+/// [`PlayerView::MAX_ENCODED_BYTES`], so no framing code has a failure path.
+/// The backlog is what makes the truncation unreachable, so that the game does
+/// not silently lose a cue.
+pub const MAX_EVENTS_PER_VIEW: usize = 16;
+
+/// The budget is smaller than a tick's capacity, which is the whole reason the
+/// backlog exists. If they ever coincide, the deferral is dead code and the
+/// comment above it is a lie, so this stops the build instead.
+const _: () = assert!(MAX_EVENTS_PER_VIEW < crate::event::MAX_EVENTS);
+
+/// Bytes in the parts of the encoding that are always present: `tick`,
+/// `outcome`, `own`, and the two list lengths.
+const FIXED_BYTES: usize = 4 + 6 + 21 + 2 + 2;
+/// Bytes in a champion or tower entry: tag, handle, position, hit points.
+const ENTITY_ENTRY_BYTES: usize = 1 + 2 + 8 + 4;
+/// Bytes in a projectile entry: tag, handle, position, velocity.
+const PROJECTILE_ENTRY_BYTES: usize = 1 + 2 + 8 + 8;
+/// Bytes in the widest event, which is damage: tag, handle, amount, place.
+const EVENT_ENTRY_BYTES: usize = 1 + 2 + 4 + 8;
 
 /// Everything one player may know about one tick.
 ///
@@ -609,14 +661,23 @@ impl PlayerView {
     /// | `outcome` | 1 + 1 + 4 = 6 | 1 |
     /// | `own` | 2 + 8 + (1 + 4) + 6 = 21 | 1 |
     /// | `visible` length | 2 | 1 |
-    /// | champion or tower entry | 1 + 2 + 8 + 4 = 15 | 5 + 4 |
-    /// | projectile entry | 1 + 2 + 8 + 8 = 19 | [`crate::MAX_PROJECTILES`] |
+    /// | champion or tower entry | 1 + 2 + 8 + 4 = 15 | [`PLAYER_COUNT`] − 1 + [`TOWER_COUNT`] |
+    /// | projectile entry | 1 + 2 + 8 + 8 = 19 | [`MAX_PROJECTILES`] |
     /// | `events` length | 2 | 1 |
-    /// | widest event (damage) | 1 + 2 + 4 + 8 = 15 | [`crate::MAX_EVENTS`] |
+    /// | widest event (damage) | 1 + 2 + 4 + 8 = 15 | [`MAX_EVENTS_PER_VIEW`] |
     ///
-    /// Five champions rather than six: the sixth is the player's own, which is
-    /// in `own` and never in `visible`.
-    pub const MAX_ENCODED_BYTES: usize = 1498;
+    /// One champion short of the roster: a player's own is in `own` and never
+    /// in `visible`.
+    ///
+    /// It is an expression rather than a literal, so that a change to the
+    /// roster or to the arenas moves it without anyone re-doing the sum by
+    /// hand. The widths are still written out, and they are still a claim about
+    /// the encoding below rather than a fact the compiler checks — which is
+    /// what `the_worst_case_view_encodes_to_exactly_the_bound` is for.
+    pub const MAX_ENCODED_BYTES: usize = FIXED_BYTES
+        + (PLAYER_COUNT - 1 + TOWER_COUNT) * ENTITY_ENTRY_BYTES
+        + MAX_PROJECTILES * PROJECTILE_ENTRY_BYTES
+        + MAX_EVENTS_PER_VIEW * EVENT_ENTRY_BYTES;
 
     /// The canonical wire encoding of this view.
     ///
@@ -653,10 +714,18 @@ impl PlayerView {
         for entity in visible {
             entity.encode_into(&mut out);
         }
-        u16::try_from(events.len())
+        // At most `MAX_EVENTS_PER_VIEW`, so that the bound above is a property
+        // of this function rather than an obligation on its caller: a framing
+        // layer that pads to `MAX_ENCODED_BYTES` must have no input that
+        // exceeds it. The transport never reaches the truncation — its
+        // per-recipient backlog defers the overflow instead — and that
+        // separation is the point: this half keeps the encoding total, the
+        // other half keeps the game lossless.
+        let shown = events.len().min(MAX_EVENTS_PER_VIEW);
+        u16::try_from(shown)
             .unwrap_or(u16::MAX)
             .encode_into(&mut out);
-        for event in events {
+        for event in events.iter().take(shown) {
             event.encode_into(&mut out);
         }
         out
@@ -700,7 +769,10 @@ impl PlayerView {
         }
 
         let events_len = usize::from(u16::decode_from(&mut cursor)?);
-        if events_len > MAX_EVENTS {
+        // Against what a *frame* can carry rather than against what a tick can
+        // record: the encoder writes no more than this, so anything above it is
+        // a frame nothing in this workspace produced.
+        if events_len > MAX_EVENTS_PER_VIEW {
             return None;
         }
         let mut events = Vec::with_capacity(events_len);
@@ -927,7 +999,9 @@ impl Decode for VisibleEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{EntityView, PlayerView, VisibleEvent, view_for, view_for_with_rules};
+    use super::{
+        EntityView, MAX_EVENTS_PER_VIEW, PlayerView, VisibleEvent, view_for, view_for_with_rules,
+    };
     use crate::event::{Ability, MAX_EVENTS};
     use crate::fx::Fx;
     use crate::input::{Action, Input};
@@ -1174,7 +1248,7 @@ mod tests {
     #[test]
     fn the_worst_case_view_encodes_to_exactly_the_bound() {
         let mut visible = Vec::new();
-        for seat in [Seat::Blue1, Seat::Blue2, Seat::Red0, Seat::Red1, Seat::Red2] {
+        for seat in Seat::ALL.into_iter().filter(|seat| *seat != Seat::Blue0) {
             visible.push(EntityView::Champion {
                 id: champion_entity_id(seat),
                 position: FxVec2::ZERO,
@@ -1201,7 +1275,7 @@ mod tests {
                 amount: Fx::ONE,
                 at: FxVec2::ZERO,
             };
-            MAX_EVENTS
+            MAX_EVENTS_PER_VIEW
         ];
         let view = PlayerView {
             tick: Tick(1),
@@ -1219,6 +1293,56 @@ mod tests {
             events,
         };
         assert_eq!(view.encode().len(), PlayerView::MAX_ENCODED_BYTES);
+    }
+
+    /// The event budget is a property of the encoding, not a promise the caller
+    /// makes.
+    ///
+    /// A tick can record more events than one frame can carry
+    /// (`MAX_EVENTS_PER_VIEW` against [`MAX_EVENTS`]), and the transport's
+    /// per-recipient backlog is what keeps the overflow from being lost. This
+    /// is the other half: whatever the caller hands over, the bytes stay inside
+    /// the bound, so no framing layer has a payload it cannot pad. Truncating
+    /// here is unreachable from the server, and it is what makes that true
+    /// rather than hoped.
+    #[test]
+    fn the_encoding_carries_no_more_events_than_a_frame_has_room_for() {
+        let overfull = vec![
+            VisibleEvent::Death {
+                entity: EntityId(0),
+                at: FxVec2::ZERO,
+            };
+            MAX_EVENTS
+        ];
+        let view = PlayerView {
+            tick: Tick(1),
+            outcome: Outcome::InProgress,
+            own: OwnView {
+                id: champion_entity_id(Seat::Blue0),
+                position: FxVec2::ZERO,
+                liveness: Liveness::Alive { hp: Fx::ONE },
+                cooldowns: Cooldowns::default(),
+            },
+            visible: Vec::new(),
+            events: overfull,
+        };
+        let encoded = view.encode();
+        assert!(encoded.len() <= PlayerView::MAX_ENCODED_BYTES);
+        let (decoded, read) = PlayerView::decode(&encoded).expect("the bound was not encodable");
+        assert_eq!(read, encoded.len());
+        assert_eq!(decoded.events.len(), MAX_EVENTS_PER_VIEW);
+    }
+
+    /// …and a frame claiming more events than that is refused rather than
+    /// half-read.
+    #[test]
+    fn a_view_claiming_more_events_than_a_frame_holds_is_refused() {
+        let view = view_for(&new_state(3), Seat::Blue0);
+        let mut bytes = view.encode();
+        let events_len_at = bytes.len() - 2;
+        let too_many = u16::try_from(MAX_EVENTS_PER_VIEW + 1).expect("fits");
+        bytes[events_len_at..].copy_from_slice(&too_many.to_be_bytes());
+        assert!(PlayerView::decode(&bytes).is_none());
     }
 
     /// Two views that differ anywhere encode differently. Without this the size

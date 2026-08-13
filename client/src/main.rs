@@ -49,7 +49,10 @@ async fn play(address: SocketAddr, certificate: &[u8]) -> Result<(), String> {
     wire.send(&headless.join())
         .await
         .map_err(|error| error.to_string())?;
-    let accepted = wire.recv().await.map_err(|error| error.to_string())?;
+    let accepted = wire
+        .recv_session()
+        .await
+        .map_err(|error| error.to_string())?;
     headless
         .receive(&accepted)
         .map_err(|error| error.to_string())?;
@@ -58,7 +61,7 @@ async fn play(address: SocketAddr, certificate: &[u8]) -> Result<(), String> {
         .await
         .map_err(|error| error.to_string())?;
 
-    while let Ok(frame) = wire.recv().await {
+    while let Ok(frame) = wire.recv_state().await {
         headless
             .receive(&frame)
             .map_err(|error| error.to_string())?;
@@ -79,6 +82,8 @@ async fn play(address: SocketAddr, certificate: &[u8]) -> Result<(), String> {
             break;
         }
     }
+    let (incomplete, stale) = wire.losses();
+    println!("frames lost {incomplete} shards late {stale}");
     Ok(())
 }
 

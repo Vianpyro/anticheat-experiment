@@ -55,7 +55,8 @@
 pub mod net;
 
 use protocol::{
-    ClientFrame, ClientMessage, DecodeError, HandleSpace, RejectReason, ServerFrame, ServerMessage,
+    ClientFrame, ClientMessage, DecodeError, EventBacklog, HandleSpace, RejectReason, ServerFrame,
+    ServerMessage,
 };
 use replay::{Recording, TimedInput};
 use sim::view::view_for;
@@ -109,6 +110,8 @@ struct Session {
     ready: bool,
     /// This recipient's private naming of the projectiles it has been shown.
     handles: HandleSpace,
+    /// The events this recipient is owed and the frame budget could not carry.
+    events: EventBacklog,
     /// The highest sequence number accepted from this seat.
     highest_seq: Option<u32>,
     /// What this seat has asked for since the last tick.
@@ -197,6 +200,22 @@ impl Match {
             .map_or(0, |session| session.refused)
     }
 
+    /// How many events this seat is owed that its frames could not carry, and
+    /// how many it will never be told about.
+    ///
+    /// The frame's event budget is smaller than a tick's capacity
+    /// (`sim::view::MAX_EVENTS_PER_VIEW`), so an overflow waits for the next
+    /// frame rather than being lost. These two numbers are what make "waits"
+    /// and "lost" tellable apart from outside, and the second is expected to
+    /// stay at zero for the whole life of this project — it is not a budget, it
+    /// is a tripwire.
+    #[must_use]
+    pub fn events_owed(&self, seat: Seat) -> (usize, u32) {
+        self.seats[seat.index()].as_ref().map_or((0, 0), |session| {
+            (session.events.deferred(), session.events.dropped())
+        })
+    }
+
     /// A new connection asks for a seat.
     ///
     /// The server picks which one — the lowest free — and tells the client.
@@ -226,6 +245,7 @@ impl Match {
         self.seats[seat.index()] = Some(Session {
             ready: false,
             handles: HandleSpace::new(),
+            events: EventBacklog::new(),
             highest_seq: None,
             pending: Vec::new(),
             refused: 0,
@@ -364,7 +384,12 @@ impl Match {
             };
             let view = view_for(&self.state, seat);
             let localized = session.handles.localize(&view, self.state.projectiles());
-            frames.push((seat, ServerFrame::encode(&ServerMessage::View(localized))));
+            // Shaped last, because the frame budget is the last thing between
+            // the projection and the wire: `localize` decides what this
+            // recipient calls things, `shape` decides how much of it fits in
+            // one frame and holds the rest for the next.
+            let shaped = session.events.shape(&localized);
+            frames.push((seat, ServerFrame::encode(&ServerMessage::View(shaped))));
         }
         frames
     }

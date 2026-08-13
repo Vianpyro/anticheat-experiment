@@ -7,6 +7,24 @@
 //! of this code, which is `docs/ARCHITECTURE.md`'s reason for `cheat-client`
 //! depending on `protocol` alone.
 //!
+//! # Two ways in, because state and session want different things
+//!
+//! The session's frames — the `Accepted` or `Rejected` that answers `Join` —
+//! arrive on the bidirectional stream this client opens, because they are sent
+//! once and have to arrive. Every `View` arrives as
+//! [`protocol::SERVER_SHARDS`] datagrams, reassembled by
+//! [`protocol::ShardAssembler`], because a view is better lost than late: at
+//! 30 Hz a retransmission is a stall, and a client that predicts wants the next
+//! tick rather than the previous one.
+//!
+//! The two are separate calls rather than one that selects over both, and that
+//! is not an arrangement of convenience. `quinn::RecvStream::read_exact` is not
+//! cancel-safe — a partially read frame is lost with the future — so a
+//! `select!` over a stream read and a datagram read would silently corrupt the
+//! stream the first time a datagram won the race. Since the stream carries
+//! exactly one server frame per session, the handshake reads it once and
+//! nothing selects over it afterwards.
+//!
 //! # The certificate is trusted exactly, and nothing else is
 //!
 //! The server generates a self-signed certificate at startup and the client is
@@ -20,7 +38,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use protocol::{ClientFrame, SERVER_FRAME_BYTES};
+use protocol::{ClientFrame, SERVER_FRAME_BYTES, ShardAssembler};
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
 
 /// Why the transport gave up.
@@ -55,10 +73,12 @@ impl From<std::io::Error> for NetError {
 /// One session's wire.
 #[derive(Debug)]
 pub struct Wire {
-    /// Held so the connection is not closed by being dropped.
-    _connection: Connection,
+    /// The datagrams arrive here; it is also what keeps the connection from
+    /// being closed by being dropped.
+    connection: Connection,
     send: SendStream,
     recv: RecvStream,
+    shards: ShardAssembler,
 }
 
 impl Wire {
@@ -93,9 +113,10 @@ impl Wire {
             .map_err(|error| NetError::Connection(error.to_string()))?;
 
         Ok(Self {
-            _connection: connection,
+            connection,
             send,
             recv,
+            shards: ShardAssembler::new(),
         })
     }
 
@@ -111,7 +132,7 @@ impl Wire {
             .map_err(|error| NetError::Connection(error.to_string()))
     }
 
-    /// Reads one frame, by length.
+    /// Reads the session's one frame off the stream, by length.
     ///
     /// Every server frame is the same number of bytes, so there is no
     /// delimiter, no length prefix, and nothing a sender could desynchronise.
@@ -119,13 +140,49 @@ impl Wire {
     /// # Errors
     ///
     /// [`NetError::Connection`] if the stream ends before a whole frame
-    /// arrives, which is what a clean shutdown looks like from here.
-    pub async fn recv(&mut self) -> Result<[u8; SERVER_FRAME_BYTES], NetError> {
+    /// arrives.
+    pub async fn recv_session(&mut self) -> Result<[u8; SERVER_FRAME_BYTES], NetError> {
         let mut bytes = [0u8; SERVER_FRAME_BYTES];
         self.recv
             .read_exact(&mut bytes)
             .await
             .map_err(|error| NetError::Connection(error.to_string()))?;
         Ok(bytes)
+    }
+
+    /// Reads datagrams until one completes a frame.
+    ///
+    /// A shard that does not decode is discarded rather than fatal: it came off
+    /// a socket, and a session that ended because somebody sprayed the port
+    /// would be a session an unrelated party can end. A frame whose shard never
+    /// arrives is abandoned by the assembler when the next frame starts, and
+    /// [`Wire::losses`] is how a caller sees that happen.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::Connection`] when the connection ends, which is what the end
+    /// of the match looks like from here.
+    pub async fn recv_state(&mut self) -> Result<[u8; SERVER_FRAME_BYTES], NetError> {
+        loop {
+            let datagram = self
+                .connection
+                .read_datagram()
+                .await
+                .map_err(|error| NetError::Connection(error.to_string()))?;
+            if let Ok(Some(frame)) = self.shards.accept(&datagram) {
+                return Ok(*frame.as_bytes());
+            }
+        }
+    }
+
+    /// Frames abandoned for a missing shard, and shards that arrived too late
+    /// to belong to one.
+    ///
+    /// Not an error condition: the state channel is unreliable on purpose. It
+    /// is reported so that "the client missed a tick" is a number somebody can
+    /// read rather than an absence they have to infer.
+    #[must_use]
+    pub const fn losses(&self) -> (u32, u32) {
+        (self.shards.incomplete(), self.shards.stale())
     }
 }

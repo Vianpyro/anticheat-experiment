@@ -91,10 +91,7 @@ fn scripted(seat: Seat, tick: u32) -> Action {
 /// One headless client, driven to the end of the match.
 ///
 /// Returns the digest of its reconciled local world at every checkpoint tick.
-async fn play(
-    address: SocketAddr,
-    certificate: Vec<u8>,
-) -> Result<(Seat, BTreeMap<u32, Digest>), String> {
+async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, String> {
     let mut wire = Wire::connect(address, &certificate)
         .await
         .map_err(|error| error.to_string())?;
@@ -103,7 +100,10 @@ async fn play(
     wire.send(&headless.join())
         .await
         .map_err(|error| error.to_string())?;
-    let accepted = wire.recv().await.map_err(|error| error.to_string())?;
+    let accepted = wire
+        .recv_session()
+        .await
+        .map_err(|error| error.to_string())?;
     headless
         .receive(&accepted)
         .map_err(|error| error.to_string())?;
@@ -124,7 +124,7 @@ async fn play(
         // whatever this client does, so this cannot deadlock; what it does mean
         // is that a client which stalls simply misses ticks, which is the
         // behaviour a real one has.
-        let Ok(frame) = wire.recv().await else {
+        let Ok(frame) = wire.recv_state().await else {
             break;
         };
         headless
@@ -142,14 +142,32 @@ async fn play(
         }
     }
 
-    if headless.stale() != 0 {
-        return Err(format!(
-            "{seat:?} discarded {} views for not being newer, on a transport that \
-             does not reorder",
-            headless.stale()
-        ));
-    }
-    Ok((seat, checkpoints))
+    // Not an error any more, and the change is the transport's. Views arrive as
+    // datagrams, which QUIC neither retransmits nor orders, so a view older
+    // than the one already applied is a reordering rather than a bug upstream —
+    // and a frame that never completes is a tick this client did not see. Both
+    // are reported and neither is fatal; what the criterion asserts is below.
+    let (incomplete, late_shards) = wire.losses();
+    Ok(Report {
+        seat,
+        checkpoints,
+        stale_views: headless.stale(),
+        incomplete_frames: incomplete,
+        late_shards,
+    })
+}
+
+/// What one client came back with.
+#[derive(Debug)]
+struct Report {
+    seat: Seat,
+    checkpoints: BTreeMap<u32, Digest>,
+    /// Views discarded for not being newer than what the client already held.
+    stale_views: u32,
+    /// Frames abandoned because one of their shards never arrived.
+    incomplete_frames: u32,
+    /// Shards that arrived after a newer frame had started.
+    late_shards: u32,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -174,11 +192,12 @@ async fn three_headless_clients_agree_and_the_log_resimulates() {
 
     let mut reports = Vec::new();
     for handle in playing {
-        let (seat, checkpoints) = handle
-            .await
-            .expect("a client task panicked")
-            .expect("a client failed");
-        reports.push((seat, checkpoints));
+        reports.push(
+            handle
+                .await
+                .expect("a client task panicked")
+                .expect("a client failed"),
+        );
     }
     let recording = hosting
         .await
@@ -186,45 +205,77 @@ async fn three_headless_clients_agree_and_the_log_resimulates() {
         .expect("the host failed");
 
     // The three clients are one team, which is what makes them comparable.
-    reports.sort_by_key(|(seat, _)| seat.index());
-    let seats: Vec<Seat> = reports.iter().map(|(seat, _)| *seat).collect();
+    reports.sort_by_key(|report| report.seat.index());
+    let seats: Vec<Seat> = reports.iter().map(|report| report.seat).collect();
     assert_eq!(seats, vec![Seat::Blue0, Seat::Blue1, Seat::Blue2]);
+    for report in &reports {
+        println!(
+            "{:?}: {} checkpoints, {} frames lost, {} shards late, {} views stale",
+            report.seat,
+            report.checkpoints.len(),
+            report.incomplete_frames,
+            report.late_shards,
+            report.stale_views
+        );
+    }
 
     // ---------------------------------------------------------------
-    // (a) identical digests at every checkpoint
+    // (a) identical digests at every checkpoint both clients received
     // ---------------------------------------------------------------
+    //
+    // "Every checkpoint tick" is what M3's criterion said, and it said it about
+    // a transport that retransmitted. State travels in datagrams now, so a
+    // client can legitimately miss a tick, and requiring all three to hold every
+    // checkpoint would be requiring the loss rate to be zero — a property of the
+    // loopback rather than of this project. What is asserted instead is the
+    // claim the criterion was making: **no two clients ever disagree**, and the
+    // channel delivered essentially everything. `docs/MILESTONES.md` records the
+    // weakening and what it costs.
+    let expected = (TICKS / CHECKPOINT) as usize;
+    for report in &reports {
+        assert!(
+            report.checkpoints.len() * 10 >= expected * 9,
+            "{:?} reached {} of {} checkpoints; the state channel is losing more \
+             than a tenth of its frames, which is a transport failure rather than \
+             the occasional dropped datagram this tolerates",
+            report.seat,
+            report.checkpoints.len(),
+            expected
+        );
+    }
 
-    let (_, first) = &reports[0];
-    assert!(
-        first.len() >= (TICKS / CHECKPOINT) as usize,
-        "only {} checkpoints were reached out of {}; the match did not run",
-        first.len(),
-        TICKS / CHECKPOINT
-    );
+    let first = &reports[0];
     // Distinct digests, or "all three agreed" would be a statement about a
     // world that never changed.
-    let distinct: std::collections::BTreeSet<&Digest> = first.values().collect();
+    let distinct: std::collections::BTreeSet<&Digest> = first.checkpoints.values().collect();
     assert!(
         distinct.len() > 1,
         "every checkpoint of the run produced the same digest, so agreement \
          between the clients is not evidence of anything"
     );
 
-    for (seat, checkpoints) in &reports[1..] {
-        assert_eq!(
-            checkpoints.keys().collect::<Vec<_>>(),
-            first.keys().collect::<Vec<_>>(),
-            "{seat:?} reached different checkpoints"
-        );
-        for (tick, digest) in checkpoints {
+    // Pairwise, on the checkpoints both members of the pair hold. Counted, so
+    // that a run in which the three clients happened to share no checkpoint at
+    // all cannot pass by comparing nothing.
+    let mut compared = 0u32;
+    for report in &reports[1..] {
+        for (tick, digest) in &report.checkpoints {
+            let Some(theirs) = first.checkpoints.get(tick) else {
+                continue;
+            };
             assert_eq!(
-                first.get(tick),
-                Some(digest),
-                "{seat:?} disagrees with {:?} about the world at tick {tick}",
-                reports[0].0
+                theirs, digest,
+                "{:?} disagrees with {:?} about the world at tick {tick}",
+                report.seat, first.seat
             );
+            compared += 1;
         }
     }
+    assert!(
+        compared as usize >= expected * 3 / 2,
+        "only {compared} checkpoint digests were compared across the three \
+         clients, which is too few for their agreement to mean anything"
+    );
 
     // ---------------------------------------------------------------
     // (b) the log resimulates, in another process
