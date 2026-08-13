@@ -211,18 +211,31 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
             seed: 0x00C0_FFEE_0D15_EA5E,
             players: 3,
         },
-        // Four milliseconds a tick rather than M3's one, and the number is
+        // Ten milliseconds a tick rather than M3's one, and the number is
         // measured rather than picked. At one millisecond three clients on one
         // machine cannot keep up: a third of the server's ticks run with no
         // input from a given client, the champion walks on its standing order
         // anyway, and the next view is two steps from the anchor where the
         // client drew one — 662 of 1000 views exact, worst correction exactly
-        // one tick of movement. At four milliseconds and above, all three
-        // clients are exact on every view of a thousand, and so they are at ten
-        // and at the game's own thirty-three. The compression that costs
-        // nothing is the one that keeps the criterion a statement about the
-        // prediction rather than about the loopback's scheduler.
-        Duration::from_millis(4),
+        // one tick of movement. The compression that costs nothing is the one
+        // that keeps the criterion a statement about the prediction rather than
+        // about the loopback's scheduler.
+        //
+        // **It was four, and giving the match something to happen in is what
+        // moved it.** Walking the team under Red's tower rather than turning
+        // them round at the halfway point — `docs/RISKS.md` R15, and the reason
+        // `TURN` is where it is — puts enemies and damage events in every view,
+        // so each tick costs a client more to receive and to reconcile. Four
+        // milliseconds was enough for the empty match and is not enough for this
+        // one on a CI runner: both `check` jobs reported `worst correction 13106
+        // raw units`, which is one tick of `champion_speed` to within a raw unit
+        // and is the documented shape of a client that fell behind rather than
+        // of a prediction that is wrong.
+        //
+        // The lesson is the one this file already had and had not had to spend:
+        // the period is a budget for the *client*, and a fixture that reaches
+        // more of the game spends more of it.
+        Duration::from_millis(10),
         TICKS,
     ));
 
