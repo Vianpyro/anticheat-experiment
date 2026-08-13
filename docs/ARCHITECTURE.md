@@ -630,6 +630,35 @@ constants produces. The encoder truncates at the same bound as a backstop — th
 is what keeps `MAX_ENCODED_BYTES` a property of the *encoding* rather than an
 obligation on every caller, so no framing code has a payload it cannot pad.
 
+**What a replay records is what the rules produced, never what a client was
+delivered.** Deferral creates two sequences of events and they are not the same
+sequence: the rules emit an event on tick *T*, and the recipient whose frame was
+already full is told about it in the frame for *T + 1*. The question of which
+one a replay records costs thirty seconds to answer here and a painful debugging
+session at M5, where resimulation compares a recorded match against a `sim` that
+produces events in rule order — a log written in delivery order would be offset
+by exactly one tick on every busy tick of every match, and the symptom would be
+a digest mismatch reported against a recording that was perfectly faithful, in
+the one milestone whose subject is telling tampering apart from honest
+disagreement.
+
+The answer is **produced**, and it is structural rather than a rule somebody
+follows. A `Recording` carries the seed and the input log and **no events at
+all**; resimulation derives them by running the same `step` the server ran, so
+there is no field for delivery order to get into. `Match::recording` is built
+from the seed and the log, and the backlog lives in a `Session` downstream of
+it, fed from an already-culled `PlayerView` — it never sees a `State`, and
+nothing it does can reach the recording.
+
+`server/tests/produced_not_delivered.rs` demonstrates that the two sequences
+really do differ rather than leaving it hypothetical: nine champions walk to the
+middle of the map and every seat casts both abilities on one tick, producing 38
+events of which one frame carries 16, 16 more arrive on the next frame and 22
+are still owed — and resimulating the log reproduces all 38 on the tick that
+produced them. A second test drives two matches with identical accepted inputs
+and different audiences and requires byte-identical recordings; a `recording`
+that consulted the session table fails it.
+
 **Deferral is not a side channel, and the argument is the one the handle space
 already makes.** The queue is fed from an already-culled `PlayerView`; it never
 sees the state, so there is nothing hidden for it to be a function of. Two
