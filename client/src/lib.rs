@@ -50,6 +50,7 @@
 #![deny(missing_docs, missing_debug_implementations)]
 
 pub mod net;
+pub mod predict;
 
 use std::collections::BTreeMap;
 
