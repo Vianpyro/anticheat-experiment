@@ -13,12 +13,30 @@ name = "moba-client"
 path = "src/main.rs"
 
 [dependencies]
-crossterm = { version = "0.29", default-features = false, features = ["events", "windows"] }
 protocol = { path = "../protocol" }
 quinn = { version = "0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "logging", "tls12"] }
 sim = { path = "../sim" }
+
+# The framebuffer. `docs/ARCHITECTURE.md` records why the pixels are drawn on
+# the CPU rather than through `wgpu`: the scene is nine discs and six towers, a
+# GPU pipeline is a driver requirement at run time and forty more crates at
+# build time, and a CPU rasteriser leaves `client::draw::rasterize` a pure
+# function of a slice — so the renderer keeps its tests in a CI job that has no
+# display. `x11-dlopen` and `wayland-dlopen` so that neither backend needs a
+# system development package to build; `kms` is off because a console
+# framebuffer is not a platform in `docs/ENGINEERING.md`'s matrix.
+softbuffer = { version = "0.4.8", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
 tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+
+# The window and, the reason this dependency is here at all, the input. `winit`
+# is the layer that surfaces unaccelerated device motion on every platform in
+# the matrix — `XI_RawMotion` on X11, `zwp_relative_pointer_v1` on Wayland,
+# `WM_INPUT` on Windows — which is what `docs/RISKS.md` R14's successor is
+# about. `wayland-csd-adwaita` is deliberately off: it is the client-side
+# decoration theme and it drags in a font rasteriser, which is the font stack
+# R14 counted against a windowed client in the first place.
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 
 # `server`, for the in-process harness that runs M3's exit criterion, and
 # nothing else. `docs/ARCHITECTURE.md` forbids `client` a *normal* dependency on

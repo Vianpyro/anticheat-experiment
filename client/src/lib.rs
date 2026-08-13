@@ -49,10 +49,12 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs, missing_debug_implementations)]
 
+pub mod draw;
+pub mod gfx;
+pub mod input;
 pub mod net;
+pub mod play;
 pub mod predict;
-pub mod term;
-pub mod ui;
 
 use std::collections::BTreeMap;
 
@@ -307,7 +309,7 @@ pub struct Headless {
     /// the events were about. A renderer needs both, so it reads this instead.
     /// It is the view the server sent, unmodified: nothing here accumulates
     /// across ticks, because a client that remembered where an enemy used to be
-    /// would be reconstructing what the fog withheld (`crate::ui`).
+    /// would be reconstructing what the fog withheld (`crate::draw`).
     last_view: Option<PlayerView>,
 }
 
