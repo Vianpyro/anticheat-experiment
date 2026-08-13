@@ -43,9 +43,9 @@ mod fixture;
 
 use fixture::{DUEL_RULES, DUEL_SEED, DUEL_TICKS, SEED, TICKS, duel_script, script};
 use sim::{
-    Action, Digest, EntityId, Fx, FxVec2, Input, Liveness, Outcome, PLAYER_COUNT, PlayerId, RULES,
-    Rules, State, TOWER_COUNT, Tick, champion_entity_id, input_log_digest, new_state_with_rules,
-    rules_hash, step_with_rules, tower_entity_id,
+    Action, Digest, EntityId, Fx, FxVec2, Input, Liveness, Outcome, RULES, Rules, Seat, State,
+    TOWER_COUNT, Tick, champion_entity_id, input_log_digest, new_state_with_rules, rules_hash,
+    step_with_rules, tower_entity_id,
 };
 
 /// Ticks between two recorded checkpoints.
@@ -56,43 +56,43 @@ const CHECKPOINT_EVERY: u32 = 100;
 /// Pinned separately from the state digests so that a change to the *script*
 /// fails with an unambiguous message, instead of presenting as a mysterious
 /// simulation divergence.
-const EXPECTED_INPUT_LOG: &str = "0430e59cfbc35b63ee2289b63bcfa9b054a1f9cfc7f3c427a4860a67daabd54f";
+const EXPECTED_INPUT_LOG: &str = "b6bc3bc325f6308a60a07a0d43c92a7c6c7fcc18e7858f2a724d1f69f93a4c0e";
 
 /// The digest of [`RULES`]. A balance change lands here first.
-const EXPECTED_RULES: &str = "d05b4a56a94c63c52e497dbe772b22d8a3260443207c18a2e1a2f1536f68b297";
+const EXPECTED_RULES: &str = "9b67d7fde4433a55334dd1702b8145d7885811ebb79604d5367274e1b3e9f166";
 
 /// `State::digest()` at tick 100, 200, … 1000.
 const EXPECTED_CHECKPOINTS: [&str; 10] = [
     // tick 100
-    "27da063e193d2e0f471b4e51bb1dcb9066e2c235a3b3fac41fe5ab39306e647b",
+    "e2e4548fdabf0e9a59352915bcd4fda6fecbbaa56a12b19c6789f674c2fe1e59",
     // tick 200
-    "f8066b437649ab8530382351a3e62218c75837bec0c61d614ae467f4b13b2ca4",
+    "c1b8cd2c47a9dcb7f7df8b4a8dbc8879fe4fe6a73596dceed5cb38ea1fa054c3",
     // tick 300
-    "f81210c00fbc8f829a4fd8d79c86a6c15de8c17ecac26ee72057be149a9e0b40",
+    "4c64d4bdbb38b27bcd20d9b7223c30228aba490366fcf91679a83253891f4198",
     // tick 400
-    "454a2ae7e38e5caccda33d83b337599a46f42f74f54782f54279c6e7b74ebf7d",
+    "b397b1b1078b237ba226f3bc4bc9b11e19870d052396a92bb6346d4c64e80fb9",
     // tick 500
-    "66657b824c0c855637642c3934cc978e9b8c88588fd7f153b2515e1f20a47a0a",
+    "6773b29ff24a62afd7b4b7cfbe0482f9f7ab0f3818019fb2821a4b11bf5ffad8",
     // tick 600
-    "384d39f0e0ee09299e2d3231efd907bcd965b758342ff05b722b29b4621c70c8",
+    "08836d7f31919203c0ca41defdb755d3f7b6cb776c059b9e1cd04922295441d5",
     // tick 700
-    "17ff8e53968c7dfad9e9abcd65788bd1f3c96ed9a5e79b0cd291e66f2cf0bbea",
+    "b9b9f2fde68266758cf5a713b13ed536c6befc235e2f14f193f656a3fcab0f11",
     // tick 800
-    "0ac9be58a75ec7a39330e07e4e063b8e7691a3179d603a9288e3e790be7e4d3f",
+    "0db93d3272703ea2a438229e0254d7bbfe11cc32822bbedafb8bfb05728d32be",
     // tick 900
-    "371b4faa8cccb4abdc6a8172aaf09458c8941a7bc37d6287d99bc6ff69a22c0c",
+    "460d6d6d22f50fd99e2f360c585c997349c7e49c5f8f8936648f2ad11f3567dd",
     // tick 1000
-    "1205ef8639bf5a816adb1cc51595728339738363932dd24bf12b0c126bd5c547",
+    "f8ef206f75e90ff8bf35082287c71b73094409426bdb769178f9a13a1327406b",
 ];
 
 /// The hash of [`DUEL_RULES`]. Distinct from `EXPECTED_RULES` by construction,
 /// which is the point: it is what stops a digest recorded under the fixture's
 /// constants from ever being read as one recorded under the game's.
 const EXPECTED_DUEL_RULES: &str =
-    "46c4c57095fbded8fdf70c9c32871d0fe0ff33bbadebc63f3c1eac6e7a548274";
+    "3fc32c37c1559d02a3d2b2262117bfc222e212e1ad04050f15ab8cfbbb747e7b";
 
 /// `State::digest()` at the end of the duel fixture.
-const EXPECTED_DUEL: &str = "f2a84bfe2b4111c24f8ef0a2c5f8bc489081c5d3b1c06990cac2feb3547d162b";
+const EXPECTED_DUEL: &str = "33df0ab2df8c014ce577db75f38edd8014678160a8636549860dfe42bfa42277";
 
 /// Runs a fixture from a given seed under given rules, returning the final
 /// state and one digest per checkpoint.
@@ -284,7 +284,7 @@ fn the_fixture_actually_depends_on_its_inputs() {
     tampered[0].push(Input {
         tick: Tick(0),
         seq: u32::MAX,
-        player: PlayerId(0),
+        player: Seat::Blue0,
         action: Action::Move(FxVec2::new(Fx::from_int(40), Fx::from_int(7))),
     });
     assert_ne!(run(&tampered).0.digest(), baseline);
@@ -293,8 +293,8 @@ fn the_fixture_actually_depends_on_its_inputs() {
 /// Entity handles are laid out as the rest of the workspace will assume.
 #[test]
 fn entity_handles_are_where_the_fixture_expects_them() {
-    for seat in 0..PLAYER_COUNT {
-        assert_eq!(champion_entity_id(seat), EntityId(seat as u16));
+    for seat in Seat::ALL {
+        assert_eq!(champion_entity_id(seat), EntityId(seat.index() as u16));
     }
     for index in 0..TOWER_COUNT {
         assert_eq!(tower_entity_id(index), EntityId(10 + index as u16));

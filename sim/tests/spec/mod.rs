@@ -11,6 +11,74 @@
 //! It is deliberately written as the naive double loop it is. This is the
 //! specification, and it is supposed to be boring enough to read as one.
 //!
+//! # The duplication is deliberate, and this is the argument for keeping it
+//!
+//! It has already cost something once. The predicate here compared *truncated*
+//! distances where `sim::view` compares exact squares, so the two disagreed in
+//! a shell one raw unit thick just outside every circle — a real divergence,
+//! found by a property that aims at the boundary, fixed in the commit that
+//! found it. A duplication that diverged once will diverge again, and the
+//! obvious response is to delete it: have `sim` export its predicate and have
+//! this module call it.
+//!
+//! **That is refused, and the reason is what the tests are evidence *of*.**
+//! `docs/MILESTONES.md` records M2 as reached rather than written on exactly
+//! two grounds, and the first is that the culling tests do not call `sim`'s own
+//! predicate — a test that consumed `sim::view::can_see` would assert that
+//! `view_for` agrees with itself, which is true of a projection that leaks
+//! everything as long as it leaks consistently. Sharing the predicate would
+//! convert every culling assertion in this repository into a tautology in order
+//! to remove a divergence the suite already detects.
+//!
+//! And it does detect it, which is the half that makes this a decision rather
+//! than a preference. A disagreement between the two is not a silent drift; it
+//! is a failing test, from either side. If this module is **stricter** than the
+//! rule, `assert_sound` in `sim/tests/view_properties.rs` fails: the view names
+//! something the specification says is out of vision. If it is **laxer**,
+//! `assert_complete` fails: the entitled set holds a handle the view withheld.
+//!
+//! # What that detection actually costs, measured rather than assumed
+//!
+//! The claim above was checked by putting the divergence back — `covered` was
+//! returned to `source.sub(point).length() <= radius`, the truncating form —
+//! and running the suite. Two results, and the second is the one worth writing
+//! down:
+//!
+//! - **`everything_inside_vision_is_named` goes red**, at
+//!   `tick Tick(18), Blue0: the visible set is not the entitled set`. The laxer
+//!   specification admits a champion in the one-raw-unit shell and the view
+//!   does not. That is the guard working.
+//! - **It only goes red at the raised budget.** At proptest's development
+//!   default of 256 cases the whole binary passes with the divergence in place;
+//!   at the `properties` job's `PROPTEST_CASES=16384` it fails. The shell is
+//!   one part in 786 432 of the vision radius, and finding a reachable state
+//!   that lands a champion inside it is a sampling problem.
+//! - **`vision_flips_exactly_at_the_radius` did not catch it at all**, at
+//!   either budget, and the reason was structural rather than a matter of
+//!   budget: `face_off` separated the two champions along `x` alone, so the
+//!   squared distance was a perfect square and the integer square root exact on
+//!   it. The truncating predicate and the exact one agree at every separation
+//!   that property drew, which made it a boundary sweep that only ever asked
+//!   the one question with an easy answer.
+//!
+//! **That last point has since been fixed, and it moves the guard.** The
+//! property draws an *offset* now rather than a separation along an axis, and
+//! most of its weight lands in the shell where the two predicates disagree; it
+//! holds both the rule and this module to the exact criterion. Putting the
+//! truncation back here now fails it in six cases at proptest's development
+//! default, at `the specification and the exact criterion disagree at
+//! FxVec2 { x: 11.47642, y: 3.50595 }`, and putting the truncation into
+//! `sim::view` instead fails it in three, shrinking to
+//! `FxVec2 { x: 0.00001, y: 12.00000 }` — the counter-example named two
+//! paragraphs above, found rather than remembered.
+//!
+//! So the honest statement is now: the duplication is guarded twice, by
+//! completeness at CI's budget and by the boundary property at a developer's,
+//! and only the second of those is a guard somebody will actually see fire
+//! before pushing. The obligation that follows is unchanged and still the real
+//! mechanism: **a change to the visibility rule in `sim/src/view.rs` changes
+//! this module in the same commit.** The suite is the backstop.
+//!
 //! # Two things about it that are specification and not implementation detail
 //!
 //! **The boundary is closed, and the comparison is exact.** A point at exactly
@@ -40,9 +108,8 @@ use std::collections::BTreeSet;
 
 use sim::view::{EntityView, PlayerView, VisibleEvent};
 use sim::{
-    Cooldowns, EntityId, Event, EventKind, Fx, FxVec2, Liveness, Outcome, PLAYER_COUNT, PlayerId,
-    Rules, State, TOWER_COUNT, Team, Tick, champion_entity_id, tower_entity_id, tower_position,
-    tower_team,
+    Cooldowns, EntityId, Event, EventKind, Fx, FxVec2, Liveness, Outcome, Rules, Seat, State,
+    TOWER_COUNT, Team, Tick, champion_entity_id, tower_entity_id, tower_position, tower_team,
 };
 
 /// Whether `team` sees `point`, under `rules`.
@@ -59,11 +126,11 @@ pub fn team_sees(state: &State, team: Team, point: FxVec2, rules: &Rules) -> boo
         source.sub(point).length_squared_wide() <= reach.saturating_mul(reach)
     };
 
-    for seat in 0..PLAYER_COUNT {
-        if Team::of_player(PlayerId(seat as u8)) != team {
+    for seat in Seat::ALL {
+        if seat.team() != team {
             continue;
         }
-        let champion = state.champions()[seat];
+        let champion = *state.champion(seat);
         if !matches!(champion.liveness, Liveness::Alive { .. }) {
             continue;
         }
@@ -155,10 +222,10 @@ pub struct Entitled {
     pub tick: Tick,
     /// The outcome, which is global the moment it happens.
     pub outcome: Outcome,
-    /// The player's own champion, or `None` for a seat outside the match — the
-    /// specification declines to say what a champion that does not exist looks
-    /// like, and no server can ask.
-    pub own: Option<Own>,
+    /// The player's own champion. Not an `Option` since M3: a [`Seat`] names a
+    /// champion that exists, so the case the specification used to decline to
+    /// describe is one nobody can construct.
+    pub own: Own,
     /// Everything else in vision, keyed by handle and ordered by it. Ordered by
     /// handle rather than by anything about the state, because the order a
     /// player is told things in must be a function of what they were told.
@@ -170,16 +237,15 @@ pub struct Entitled {
 
 /// What `player` may learn from `state`, under `rules`.
 #[must_use]
-pub fn entitled(state: &State, player: PlayerId, rules: &Rules) -> Entitled {
-    let team = Team::of_player(player);
-    let own_seat = player.0 as usize;
+pub fn entitled(state: &State, player: Seat, rules: &Rules) -> Entitled {
+    let team = player.team();
 
     let mut visible = Vec::new();
-    for seat in 0..PLAYER_COUNT {
-        if seat == own_seat {
+    for seat in Seat::ALL {
+        if seat == player {
             continue;
         }
-        let champion = state.champions()[seat];
+        let champion = *state.champion(seat);
         // A dead champion is not on the map, for its own team either.
         let Liveness::Alive { hp } = champion.liveness else {
             continue;
@@ -219,12 +285,12 @@ pub fn entitled(state: &State, player: PlayerId, rules: &Rules) -> Entitled {
     }
     visible.sort_by_key(|(id, _)| id.0);
 
-    let own = state.champions().get(own_seat).map(|champion| Own {
-        id: champion_entity_id(own_seat),
-        position: champion.position,
-        liveness: champion.liveness,
-        cooldowns: champion.cooldowns,
-    });
+    let own = Own {
+        id: champion_entity_id(player),
+        position: state.champion(player).position,
+        liveness: state.champion(player).liveness,
+        cooldowns: state.champion(player).cooldowns,
+    };
 
     Entitled {
         tick: state.tick(),
@@ -237,7 +303,7 @@ pub fn entitled(state: &State, player: PlayerId, rules: &Rules) -> Entitled {
 
 /// The handles `player` is entitled to see.
 #[must_use]
-pub fn expected_ids(state: &State, player: PlayerId, rules: &Rules) -> BTreeSet<u16> {
+pub fn expected_ids(state: &State, player: Seat, rules: &Rules) -> BTreeSet<u16> {
     entitled(state, player, rules)
         .visible
         .iter()
@@ -247,8 +313,8 @@ pub fn expected_ids(state: &State, player: PlayerId, rules: &Rules) -> BTreeSet<
 
 /// The events of this tick that happened somewhere `player` can see.
 #[must_use]
-pub fn expected_events(state: &State, player: PlayerId, rules: &Rules) -> Vec<Event> {
-    let team = Team::of_player(player);
+pub fn expected_events(state: &State, player: Seat, rules: &Rules) -> Vec<Event> {
+    let team = player.team();
     state
         .events()
         .iter()

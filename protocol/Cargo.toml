@@ -9,3 +9,11 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+sim = { path = "../sim" }
+
+# The same version and the same reasoning as `sim`'s: the harness draws the
+# inputs, its draws never reach a `State`, and every property here is about
+# what the decoder does with bytes rather than about what the rules do with
+# them.
+[dev-dependencies]
+proptest = "1.11.0"

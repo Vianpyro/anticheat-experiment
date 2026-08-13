@@ -93,12 +93,35 @@ pub use crate::rules::{RULES, Rules, TICKS_PER_SECOND, rules_hash};
 pub use crate::sha256::Digest;
 pub use crate::state::{
     Champion, Cooldowns, EntityId, EntityRef, Liveness, MAX_PROJECTILES, Order, Outcome,
-    PLAYER_COUNT, PlayerId, Projectile, Projectiles, State, TEAM_SIZE, TOWER_COUNT, Team, Tick,
-    Tower, champion_entity_id, entity_id, entity_team, new_state, new_state_with_rules,
-    tower_entity_id, tower_position, tower_team,
+    PLAYER_COUNT, PROJECTILE_ID_BASE, Projectile, Projectiles, Seat, State, TEAM_COUNT, TEAM_SIZE,
+    TOWER_COUNT, TOWER_ID_BASE, Team, Tick, Tower, base_position, champion_entity_id, entity_id,
+    entity_team, new_state, new_state_with_rules, tower_entity_id, tower_lane, tower_position,
+    tower_team,
 };
 pub use crate::step::{step, step_with_rules};
 pub use crate::vec2::FxVec2;
+
+/// The SHA-256 of a byte string, under this crate's own implementation.
+///
+/// Exposed for one reason and it is worth naming, because a hash function on a
+/// public API invites uses this one is not for. The headless client at M3 has
+/// to digest the world it reconciled from the views it was sent, and the whole
+/// point of that digest is that three clients and the server compute the *same*
+/// 32 bytes over related material. A second SHA-256 in another crate would be a
+/// second implementation to keep agreeing with this one, and a dependency on
+/// `sha2` in `client` would be a dependency that can change under a project
+/// whose central claim is byte-identical results.
+///
+/// It is not a commitment scheme, a MAC, or a signature primitive. M5's
+/// signatures take an audited crate: a security portfolio does not hand-roll
+/// signature code, and hand-writing the hash beneath one is the same mistake
+/// with an extra step.
+#[must_use]
+pub fn digest_bytes(bytes: &[u8]) -> Digest {
+    let mut hasher = crate::sha256::Hasher::new();
+    hasher.update(bytes);
+    hasher.finish()
+}
 
 /// The digest of an input log, in the order given.
 ///

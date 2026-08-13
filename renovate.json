@@ -1,0 +1,51 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "America/Toronto",
+  "schedule": ["before 9am on monday"],
+  "prConcurrentLimit": 1,
+  "prHourlyLimit": 1,
+  "minimumReleaseAge": "7 days",
+  "rangeStrategy": "bump",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 9am on the first day of the month"]
+  },
+  "commitMessagePrefix": "build(deps):",
+  "packageRules": [
+    {
+      "description": "One grouped pull request per week. The value for a project revisited every few months is returning to a single CI-validated update rather than to a wall of forty (docs/ENGINEERING.md).",
+      "matchPackageNames": ["*"],
+      "groupName": "weekly dependencies"
+    },
+    {
+      "description": "Auto-merge patch and minor dev-dependency updates. The blast radius is the test suite, and the test suite is what is validating them.",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "automerge": true,
+      "groupName": "weekly dev-dependencies"
+    },
+    {
+      "description": "Never auto-merge anything sim depends on. sim's [dependencies] table is empty and docs/RISKS.md R9 is about keeping it that way; a rule that would merge something into it without a human is a rule that defeats the invariant it is protecting.",
+      "matchFileNames": ["sim/Cargo.toml"],
+      "automerge": false,
+      "groupName": null,
+      "addLabels": ["sim"]
+    },
+    {
+      "description": "Major bumps and production dependencies are reviewed. The blast radius is the running server (docs/ENGINEERING.md).",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "groupName": null
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": ["at any time"],
+    "automerge": false
+  }
+}

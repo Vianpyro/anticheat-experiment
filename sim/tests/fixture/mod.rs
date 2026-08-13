@@ -13,9 +13,58 @@
 #![allow(dead_code, reason = "each test binary uses a subset of the fixtures")]
 
 use sim::{
-    Action, EntityId, Fx, FxVec2, Input, PLAYER_COUNT, PlayerId, RULES, Rng, Rules, Tick,
-    champion_entity_id, tower_entity_id,
+    Action, EntityId, Fx, FxVec2, Input, PLAYER_COUNT, RULES, Rng, Rules, Seat, TEAM_SIZE, Team,
+    Tick, base_position, champion_entity_id, tower_entity_id,
 };
+
+/// Which team each team walks at: Blue at Red, Red at Green, Green at Blue.
+///
+/// Arbitrary and fixed. What it buys is that all three lanes are used and no
+/// team is left unattacked, which is what makes the fixture exercise the
+/// triangle rather than one edge of it. A three-team map has no notion of "the
+/// enemy", so a fixture has to pick, and picking a rotation is the pick that
+/// treats the three teams alike.
+const fn quarry(team: Team) -> Team {
+    match team {
+        Team::Blue => Team::Red,
+        Team::Red => Team::Green,
+        Team::Green => Team::Blue,
+    }
+}
+
+/// The tower the quarry keeps on the lane the two of them share.
+///
+/// Read off `sim::tower_lane`: team `t`'s towers are indices `2t` (toward the
+/// next base) and `2t + 1` (toward the previous one), so the tower Blue meets
+/// walking at Red is Red's own on the Red–Blue lane, which is index 3.
+const fn quarry_tower(team: Team) -> usize {
+    match team {
+        Team::Blue => 3,
+        Team::Red => 5,
+        Team::Green => 1,
+    }
+}
+
+/// The seat of the quarry team sitting in the same place in its own line-up.
+fn quarry_seat(seat: Seat) -> Seat {
+    Seat::ALL[quarry(seat.team()).index() * TEAM_SIZE + seat.within_team()]
+}
+
+/// A point `percent` of the way from a seat's own base toward its quarry's,
+/// nudged sideways by `offset` units.
+fn along_the_lane(seat: Seat, percent: i32, offset: i32, rules: &Rules) -> FxVec2 {
+    let from = base_position(seat.team(), rules);
+    let to = base_position(quarry(seat.team()), rules);
+    let along = from.add(to.sub(from).scale(Fx::from_ratio(percent, 100)));
+    // Sideways is perpendicular to the lane, so the jitter means the same thing
+    // on all three of them — on the old two-team map it was `y`, which was
+    // perpendicular to the one lane there was.
+    let direction = to.sub(from);
+    let across = FxVec2::new(direction.y.neg(), direction.x).normalize_or_zero();
+    along
+        .add(across.scale(Fx::from_int(offset)))
+        .clamp_components(rules.map_half_extent)
+}
 
 /// The match seed. Arbitrary, and frozen: it is part of the fixture.
 pub const SEED: u64 = 0x00C0_FFEE_0D15_EA5E;
@@ -28,7 +77,7 @@ const SCRIPT_SEED: u64 = 0x5EED_1234_5EED_4321;
 /// Ticks in the fixture, per M1's exit criterion.
 pub const TICKS: u32 = 1000;
 
-/// A scripted match: six players issuing plausible commands, plus the
+/// A scripted match: nine players issuing plausible commands, plus the
 /// occasional piece of nonsense a real client would never send and a
 /// compromised one certainly would.
 ///
@@ -43,16 +92,16 @@ pub fn script() -> Vec<Vec<Input>> {
 
     for tick in 0..TICKS {
         let mut inputs = Vec::new();
-        for (seat, next_seq) in seq.iter_mut().enumerate() {
+        for seat in Seat::ALL {
+            let index = seat.index();
             let roll = rng.below(1000);
             // Two draws are consumed unconditionally so that the generator's
             // position does not depend on which branch was taken.
             let a = rng.below(1000) as i32;
             let b = rng.below(1000) as i32;
 
-            let toward_enemy = if seat < PLAYER_COUNT / 2 { 1 } else { -1 };
-            let enemy_seat = (seat + PLAYER_COUNT / 2) % PLAYER_COUNT;
-            let enemy_tower = if seat < PLAYER_COUNT / 2 { 2 } else { 0 };
+            let enemy_seat = quarry_seat(seat);
+            let enemy_tower = quarry_tower(seat.team());
 
             let action = if roll < 950 {
                 // Most ticks carry no new command. Both halves of that matter:
@@ -63,24 +112,28 @@ pub fn script() -> Vec<Vec<Input>> {
                 // fixture on none.
                 continue;
             } else if roll < 964 {
-                // Always toward the enemy base, never back toward one's own.
-                // A destination drawn symmetrically averages out to standing
+                // Always down its own lane, never back toward its own base. A
+                // destination drawn symmetrically averages out to standing
                 // still, which is the same problem in a different costume.
-                let x = toward_enemy * (a % 160 + 40);
-                let y = b % 41 - 20;
-                Action::Move(FxVec2::new(Fx::from_int(x), Fx::from_int(y)))
+                Action::Move(along_the_lane(seat, a % 90 + 20, b % 41 - 20, &RULES))
             } else if roll < 990 {
                 if a % 5 < 1 {
                     Action::Attack(champion_entity_id(enemy_seat))
                 } else {
-                    Action::Attack(tower_entity_id(enemy_tower + (b as usize % 2)))
+                    Action::Attack(tower_entity_id(enemy_tower))
                 }
             } else if roll < 995 {
-                let y = b % 21 - 10;
-                Action::Skillshot(FxVec2::new(
-                    Fx::from_int(toward_enemy * 10),
-                    Fx::from_int(y),
-                ))
+                // Aimed down the lane, with a few degrees of spread.
+                let from = base_position(seat.team(), &RULES);
+                let to = base_position(quarry(seat.team()), &RULES);
+                let direction = to.sub(from);
+                let across = FxVec2::new(direction.y.neg(), direction.x).normalize_or_zero();
+                Action::Skillshot(
+                    direction
+                        .normalize_or_zero()
+                        .scale(Fx::from_int(10))
+                        .add(across.scale(Fx::from_ratio(b % 21 - 10, 10))),
+                )
             } else if roll < 998 {
                 Action::Targeted(champion_entity_id(enemy_seat))
             } else {
@@ -97,11 +150,11 @@ pub fn script() -> Vec<Vec<Input>> {
 
             inputs.push(Input {
                 tick: Tick(tick),
-                seq: *next_seq,
-                player: PlayerId(seat as u8),
+                seq: seq[index],
+                player: seat,
                 action,
             });
-            *next_seq += 1;
+            seq[index] += 1;
         }
         log.push(inputs);
     }
@@ -112,12 +165,14 @@ pub fn script() -> Vec<Vec<Input>> {
 ///
 /// The scripted match above exercises movement, both abilities, basic attacks,
 /// tower fire, projectile collision, clamping and the hostile tail — but over
-/// thirty-three seconds of six-way skirmishing it never quite finishes anyone
+/// thirty-three seconds of nine-way skirmishing it never quite finishes anyone
 /// off, and death and respawn would then be verified by unit tests on one
 /// platform and by nothing on three.
 ///
-/// Seat 0 walks alone into the enemy half; the three defenders focus it and
-/// their towers join in.
+/// Seat 0 walks alone down the Blue–Red lane; Red's three defenders focus it and
+/// the towers on that lane join in. Green sits at its own base and takes no
+/// part, which is a configuration only a three-team map has and one the
+/// projection has to answer for: a player watching a fight it is not in.
 ///
 /// # Why this fixture carries its own rules
 ///
@@ -139,10 +194,19 @@ pub fn script() -> Vec<Vec<Input>> {
 /// and a new constant added to `Rules` reaches it without anyone updating it
 /// here.
 pub const DUEL_SEED: u64 = 0x0DEA_D0DE_0DEA_D0DE;
-pub const DUEL_TICKS: u32 = 900;
+/// Forty seconds, against the scripted match's thirty-three.
+///
+/// Longer than it was, and the reason is the map rather than the rules: a lane
+/// of the triangle is 173 units where the old map's single lane was 200 between
+/// spawns but had its towers at 40 and 90 from the middle, so a champion walking
+/// out of its base meets the first thing that can kill it later than it used to.
+/// The fixture has to contain a death *and* the respawn after it *and* enough
+/// ticks for the champion to move again afterwards, which is what
+/// `the_duel_kills_and_respawns_its_victim` checks.
+pub const DUEL_TICKS: u32 = 1200;
 
 /// The constants the duel is played under: [`RULES`], made lethal enough to
-/// reach death and respawn inside thirty seconds.
+/// reach death and respawn inside forty seconds.
 pub const DUEL_RULES: Rules = Rules {
     champion_max_hp: Fx::from_int(350),
     // 5 seconds, against the game's 15.
@@ -156,45 +220,52 @@ pub fn duel_script() -> Vec<Vec<Input>> {
 
     for tick in 0..DUEL_TICKS {
         let mut inputs = Vec::new();
-        let mut issue = |seat: usize, action: Action, inputs: &mut Vec<Input>| {
+        let mut issue = |seat: Seat, action: Action, inputs: &mut Vec<Input>| {
             inputs.push(Input {
                 tick: Tick(tick),
-                seq: seq[seat],
-                player: PlayerId(seat as u8),
+                seq: seq[seat.index()],
+                player: seat,
                 action,
             });
-            seq[seat] += 1;
+            seq[seat.index()] += 1;
         };
 
-        // Seat 0 keeps walking into the enemy base, including after it
-        // respawns — which is what makes the second death, and therefore the
-        // respawn timer, part of what this fixture checks.
+        // Seat 0 keeps walking at Red's base, including after it respawns —
+        // which is what makes the second death, and therefore the respawn
+        // timer, part of what this fixture checks.
         if tick.is_multiple_of(60) {
             issue(
-                0,
-                Action::Move(FxVec2::new(Fx::from_int(88), Fx::ZERO)),
+                Seat::Blue0,
+                Action::Move(along_the_lane(Seat::Blue0, 95, 0, &DUEL_RULES)),
                 &mut inputs,
             );
         }
         // The three defenders hold their ground and attack it on sight.
         if tick == 0 {
-            for seat in PLAYER_COUNT / 2..PLAYER_COUNT {
-                issue(seat, Action::Attack(champion_entity_id(0)), &mut inputs);
-            }
-        }
-        // Everything else they have, on cooldown.
-        if tick % 240 == 30 {
-            for seat in PLAYER_COUNT / 2..PLAYER_COUNT {
+            for seat in [Seat::Red0, Seat::Red1, Seat::Red2] {
                 issue(
                     seat,
-                    Action::Skillshot(FxVec2::new(Fx::from_int(-10), Fx::ZERO)),
+                    Action::Attack(champion_entity_id(Seat::Blue0)),
                     &mut inputs,
                 );
             }
         }
+        // Everything else they have, on cooldown. Aimed back down their own
+        // lane, which is where seat 0 is coming from.
+        if tick % 240 == 30 {
+            let toward = along_the_lane(Seat::Red0, -100, 0, &DUEL_RULES)
+                .sub(base_position(Team::Red, &DUEL_RULES));
+            for seat in [Seat::Red0, Seat::Red1, Seat::Red2] {
+                issue(seat, Action::Skillshot(toward), &mut inputs);
+            }
+        }
         if tick % 360 == 60 {
-            for seat in PLAYER_COUNT / 2..PLAYER_COUNT {
-                issue(seat, Action::Targeted(champion_entity_id(0)), &mut inputs);
+            for seat in [Seat::Red0, Seat::Red1, Seat::Red2] {
+                issue(
+                    seat,
+                    Action::Targeted(champion_entity_id(Seat::Blue0)),
+                    &mut inputs,
+                );
             }
         }
 

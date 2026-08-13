@@ -48,10 +48,10 @@ required.
 
 | Workflow | Trigger | Jobs | Permissions | Budget |
 | --- | --- | --- | --- | --- |
-| `ci` | PR, push to `main` | `check` (fmt + clippy `-D warnings` + test, matrixed over Linux and Windows, plus two Linux-only assertions on the working tree: a grep for a serialization derive in `sim` — `RISKS.md` R5 — and `cargo tree -p sim --edges normal`, which must print `sim` and nothing else), and from M7 `exploits` (Linux) | `contents: read` | < 5 min wall, warm |
+| `ci` | PR, push to `main` | `check` (fmt + clippy `-D warnings` + test, matrixed over Linux and Windows, plus four Linux-only additions: the property suites outside `sim` at a raised case budget, a grep for a serialization derive in `sim` — `RISKS.md` R5 — `cargo tree -p sim --edges normal`, which must print `sim` and nothing else, and `cargo tree -p client --edges normal`, which must show no path to `anticheat` or `server`), and from M7 `exploits` (Linux) | `contents: read` | < 5 min wall, warm |
 | `pr-hygiene` | PR, push to any branch but `main` | `branch-name` (skipped for pull requests from a fork, whose branch names are the fork's business), `pr-title` (Conventional Commits, every pull request) | `contents: read` | seconds |
 | `determinism` | PR and push touching `sim/`, `replay/`, the fixtures, the lockfile or the toolchain pin | `fixture` (the fixtures on Linux x86-64, Windows x86-64, macOS aarch64, under `--release`, each compared against digests committed in the repository), `properties` (the same three targets with a raised `PROPTEST_CASES`), and `sim-version` (a PR touching `sim/` must raise the crate version — `RISKS.md` R13) | `contents: read` | < 6 min |
-| `supply-chain` | PR (licenses, bans, sources) and weekly cron (advisories) | `cargo-deny` | `contents: read` | < 1 min |
+| `supply-chain` | PR touching a manifest, the lockfile or `deny.toml` (licenses, bans, sources) and weekly cron (advisories) | `cargo-deny` | `contents: read` | < 2 min |
 | `coverage` | Weekly cron, manual dispatch | `cargo llvm-cov`, uploaded as an artifact | `contents: read` | untimed |
 | `release` | Tag `v*` | Build matrix, container, SBOM, attestation, GitHub Release | `contents: write`, `packages: write`, `id-token: write`, `attestations: write` — this job only | < 20 min |
 
@@ -79,6 +79,12 @@ check you did not cause is the fastest way to learn to ignore red checks.
 Caching: `Swatinem/rust-cache`, keyed on OS plus the pinned toolchain plus
 `Cargo.lock`. No `sccache` — it is a second cache layer to reason about for a
 workspace this size.
+
+Both third-party actions are referenced by commit SHA with the tag in a trailing
+comment, since M3. `RISKS.md` R12 is why, and why not earlier: the pins and
+Renovate, which is what keeps them current, land in one change or not at all.
+The count of third-party actions is still two — `supply-chain` installs
+`cargo-deny` with `cargo install --locked` rather than reaching for a third.
 
 ### Changes to what exists today
 

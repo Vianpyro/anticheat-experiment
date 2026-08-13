@@ -61,7 +61,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # The whole history: the check is a comparison against the base of the
           # pull request, and a shallow clone does not contain it.
@@ -140,9 +140,9 @@ jobs:
             arch: aarch64
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # `--release` deliberately, and it is the same profile on all three: the
       # workspace turns `overflow-checks` on in every profile precisely so that
@@ -206,9 +206,9 @@ jobs:
       PROPTEST_CASES: 16384
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # `--release`, for the reason the fixture job runs release: overflow
       # checks are on in every profile, so this exercises the optimised code

@@ -31,19 +31,36 @@ Out of the adversary model (and therefore not defended against):
   part of the deliverable.
 - Attacks on the server host, the CI, or the operator's machine. Standard
   software security, not anti-cheat.
-- Collusion between human players (win trading, intentional feeding). Social
-  problem, detected socially.
+- Collusion between human players (win trading, intentional feeding) *within a
+  team*. Social problem, detected socially. Collusion **between two of the three
+  teams against the third** is a different thing and is in the table below as
+  class 6, because the three-team format makes it a way to obtain information
+  rather than only a way to throw a match.
 
 ## In scope
 
 ### Game (MVP, frozen)
 
-3v3, one shared champion, one lane. Fog of war. One skillshot, one targeted
-spell, a basic-attack range. Towers. No items, levels, minions, jungle, or
-matchmaking. Tick-based authoritative server, client-side reconciliation.
+**3v3v3 on a triangular map**: three teams of three, a base at each vertex, a
+lane along each edge, and every lane contested by exactly the two teams whose
+bases it joins. One shared champion. Fog of war. One skillshot, one targeted
+spell, a basic-attack range. Towers, two per team, one on each lane leaving its
+own base. No items, levels, minions, jungle, or matchmaking. Tick-based
+authoritative server, client-side reconciliation.
+
+The third team is not a game-design flourish and it is not free: it is the
+format that introduces an exploit class the two-team game does not have (class
+6 below), and it was taken at M3 rather than later because a corpus of human
+matches recorded at six seats is unusable at nine, and so is every replay
+recorded under it. Changing the roster after M4 destroys data; changing it
+before M4 destroys nothing.
 
 The MVP is frozen. Additions to the game are only in scope when a specific
-anti-cheat experiment requires them, and the milestone that requires them says so.
+anti-cheat experiment requires them, and the milestone that requires them says
+so. In particular the vision model stays **discs without occlusion**: brushes
+and line-of-sight are the obvious thing a fuller MOBA map would add and they are
+deliberately not here, because there is no maphack in the repository yet to test
+them against. They are reconsidered after M7, when there is.
 
 ### Structural invariants
 
@@ -51,9 +68,16 @@ These are not features, they are properties the codebase must never lose:
 
 1. `step(&State, &[Input]) -> State` is pure: no clock, no I/O, no async, no
    floating point, explicit seed, fixed-point arithmetic.
-2. Per-player visibility is a projection, `view_for(&State, PlayerId) ->
+2. Per-player visibility is a projection, `view_for(&State, Seat) ->
    PlayerView`, computed server-side and applied before serialization. An entity
-   outside vision is **absent from the message**, not flagged invisible.
+   outside vision is **absent from the message**, not flagged invisible. The
+   seat is a nine-valued type rather than an integer, so "whose vision is this"
+   has no answer outside the match to get wrong; the byte that names it is
+   validated at the protocol boundary or refused there. With three teams the
+   projection carries a second obligation: a view must distinguish the two
+   *enemy* teams only by what it actually shows, so a field naming the nearest
+   enemy team, a counter kept per enemy team, or an ordering correlated with
+   team membership are all leaks by construction.
 3. `State` is not serializable anywhere in the workspace. Only `PlayerView`
    crosses the wire. This makes the maphack defense a compile-time property
    rather than a code-review habit.
@@ -72,11 +96,32 @@ matching exploit exists in the repository and fails against it in CI.
 | 3 | Synthetic input and botting | Server-arrival-time telemetry; behavioral statistics calibrated on a human corpus; account-progression coherence over time |
 | 4 | Time manipulation: slowdown, clock desync | Divergence between client-claimed and server-observed input timestamps as a first-class signal |
 | 5 | Protocol abuse: replay, concurrency, out-of-sequence | Monotonic input sequence numbers, idempotent session commands, per-player rate limits |
+| 6 | Cross-team collusion: two teams cooperating against the third, including sharing vision outside the game | **None applicable.** See below |
 
 Note on class 5: a QUIC/TLS transport already defeats naive packet replay and
 reordering. The in-scope work is the application-level residue — session
 commands and input sequencing — and the documentation must say which layer is
 doing the work rather than claim credit for the transport.
+
+Note on class 6, and it is the note that matters most about it: **no technical
+defence applies, and this project will not pretend one does.** A three-team
+format creates a coalition a two-team format cannot have, and the useful thing
+two colluding teams exchange is *vision*: each is entitled to what it sees, and
+putting the two entitlements together on a voice call produces a map neither
+player could obtain from the protocol. Every frame involved is correctly culled.
+Every message is one the server intended to send. There is no invalid input, no
+malformed frame and no impossible action for the server to reject, because
+nothing invalid happens — the leak is two people talking, outside the system.
+
+That places it squarely in the register of `SCOPE.md`'s adversary model line
+"automate play with synthetic inputs": behavioural statistics are the only lever
+that reaches it at all, and even then only as a weak one — coordinated
+positioning between two teams looks like two teams that happened to move well.
+It is recorded as a class rather than omitted for the same reason the ceiling of
+behavioural detection is recorded: naming what the design cannot defend is part
+of the deliverable, and a reader who notices the hole before the document does
+is entitled to conclude the rest was written the same way. No milestone
+delivers a defence for it, and M8's detectors do not claim one.
 
 Note on class 2: against a fully authoritative server, resimulating the server's
 own inputs proves the server did not corrupt itself; it does not catch a
@@ -137,6 +182,9 @@ absence is a feature.
 
 - Designing a deterministic simulation as a verification primitive, and holding
   that property across three CPU targets under CI.
+- Stating a side-channel property that only a three-team format makes
+  expressible — that a view distinguishes two enemies only by what it shows —
+  and exercising it by mutation rather than asserting it.
 - Making a security property structural (`State` cannot be serialized) rather
   than procedural.
 - Adversarial engineering discipline: exploit first, defense second, exploit

@@ -8,4 +8,25 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[[bin]]
+name = "moba-server"
+path = "src/main.rs"
+
 [dependencies]
+# `quinn`'s datagram API takes a `Bytes` and there is no `&[u8]` form of it, so
+# this is not a choice about buffer management — it is the type the call
+# requires. It is already in the lockfile underneath `quinn`; naming it here
+# only makes the direct use visible.
+bytes = { version = "1.12.1", default-features = false, features = ["std"] }
+protocol = { path = "../protocol" }
+quinn = { version = "0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rcgen = { version = "0.14.9", default-features = false, features = ["crypto", "ring", "pem"] }
+replay = { path = "../replay" }
+rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+sim = { path = "../sim" }
+tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+
+# The harness that draws the scripts. Same reasoning as `sim`'s and
+# `protocol`'s: its draws choose which matches to run, never what a rule reads.
+[dev-dependencies]
+proptest = "1.11.0"

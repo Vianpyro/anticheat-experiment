@@ -1,0 +1,66 @@
+# cargo-deny, the workspace's only supply-chain tool.
+#
+# `docs/ENGINEERING.md` places it at M3 and says why it is the only one: its
+# advisories check reads the same RustSec database as `cargo-audit`, so running
+# both is a second automation returning the same information. It arrives now
+# rather than at M0 because until the transport landed there was nothing in the
+# dependency graph to check — `sim` still has an empty `[dependencies]` table
+# and is meant to keep it.
+
+[graph]
+# The platform matrix from `docs/ENGINEERING.md`. Checking every target the
+# ecosystem can name would flag Windows crates on Linux and BSD crates nobody
+# builds; checking exactly the three this project ships for is the point.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+]
+all-features = true
+
+[advisories]
+version = 2
+# Run on the weekly schedule rather than on pull requests, for the reason
+# `docs/ENGINEERING.md` gives: a CVE published in a transitive dependency has
+# nothing to do with the pull request in front of you, and a red check you did
+# not cause is the fastest way to learn to ignore red checks.
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive only, and every entry is one the tree actually contains today. A
+# list padded with licences nobody uses is a list that stops being a decision.
+allow = [
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+# The LLVM exception, on the compiler-builtins shims the standard library pulls
+# in. It only ever widens the Apache-2.0 grant, and the crates carrying it are
+# not ones this project chose.
+exceptions = []
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# The workspace's own crates depend on each other by path and therefore by
+# wildcard version, which is what a path dependency is. That is not the surface
+# `wildcards` exists to catch — it exists to catch a wildcard on a *registry*
+# crate, where any future release satisfies it.
+allow-wildcard-paths = true
+# `sim` is the crate whose dependency graph must stay empty (`docs/RISKS.md`
+# R9), and that is enforced separately and more strongly by `cargo tree -p sim
+# --edges normal` in `ci`. Nothing is banned by name here: a ban list is a list
+# of things somebody once thought of, and the check that matters is the one that
+# refuses a dependency of any name.
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -34,31 +34,87 @@
 //!
 //! # Serialization
 //!
-//! [`PlayerView::encode`] is a hand-written canonical encoding, and `sim` still
-//! has an empty `[dependencies]` table. `docs/ARCHITECTURE.md` allows `serde`
-//! here; it is deliberately not taken yet, and the reason is in that document
-//! under this module's heading — the transport that would choose a codec does
-//! not exist until M3, and the traffic-shape invariant that governs message
-//! size wants an encoding whose byte layout is decided here rather than by a
-//! crate.
+//! [`PlayerView::encode`] and [`PlayerView::decode`] are a hand-written
+//! canonical encoding and its inverse, and `sim` still has an empty
+//! `[dependencies]` table. `docs/ARCHITECTURE.md` allows `serde` here; the
+//! permission was not taken at M3 either, and the reason is now stronger than
+//! it was: the transport pads every `View` message to
+//! [`PlayerView::MAX_ENCODED_BYTES`], and that bound is derived from this byte
+//! layout rather than measured from a run. A codec that chose its own widths
+//! would make the padding budget a number nobody could derive.
 //!
-//! What the encoding is *not*, yet: a constant size. `docs/ARCHITECTURE.md`
-//! requires every `View` message to encode to the same number of bytes and to
-//! be sent at a constant cadence, because message length and message count leak
-//! the number of visible entities as surely as the entities themselves would.
-//! That is a property of the transport, the transport is M3, and padding a
-//! bound into a bucket here would be building half of it in the wrong crate.
-//! [`PlayerView::MAX_ENCODED_BYTES`] is the bound that padding will eventually
-//! round up to.
+//! The two halves live in one file deliberately. A decoder in `protocol` would
+//! be a second copy of the layout, and a drifted decoder does not error — it
+//! produces a plausible view. Here, a field added to a view type has to be
+//! handled twice in the same diff, and the round-trip test below covers both.
+//!
+//! What the encoding is *not* is a constant size, and it is not supposed to be:
+//! the constant size is the frame's, one bucket wide enough for the worst case,
+//! and `protocol::ServerFrame` is where it is imposed. The reason it is imposed
+//! there rather than here is that the other half of the traffic-shape invariant
+//! — one message per player per tick, whatever happened — is a statement about
+//! a server loop and cannot be made by a projection at all.
 
 use crate::event::{Ability, Event, EventKind};
 use crate::fx::Fx;
 use crate::rules::{RULES, Rules};
 use crate::state::{
-    Cooldowns, EntityId, Liveness, Outcome, PLAYER_COUNT, PlayerId, State, TOWER_COUNT, Team, Tick,
-    champion_entity_id, tower_entity_id, tower_position,
+    Cooldowns, EntityId, Liveness, MAX_PROJECTILES, Outcome, PLAYER_COUNT, Seat, State,
+    TOWER_COUNT, Team, Tick, champion_entity_id, tower_entity_id, tower_position,
 };
 use crate::vec2::FxVec2;
+
+/// Events one view may carry, and therefore the ones a frame can.
+///
+/// # Why the frame has a smaller event budget than the tick does
+///
+/// [`crate::MAX_EVENTS`] is what one *tick* can record; this is what one
+/// *message* can carry, and they are different numbers for a reason that lives
+/// outside this crate. The transport pads every frame to
+/// [`PlayerView::MAX_ENCODED_BYTES`] and cuts it into a constant number of
+/// datagrams that must each fit the path MTU, so the event budget is what is
+/// left of a datagram after the entity list — and the entity list cannot be
+/// capped, because which entities survive a cap is a function of what is
+/// visible and trading a length channel for a content channel is not a saving
+/// (`docs/ARCHITECTURE.md`, the padding budget). Sixteen is what the geometry
+/// leaves: two datagrams under 600 bytes each.
+///
+/// # What happens to the seventeenth event
+///
+/// It is **deferred, not dropped**: `protocol::EventBacklog` holds a
+/// per-recipient queue and delivers the overflow on the next frame, in the
+/// order the rules produced it. No event is lost until the queue itself
+/// overflows, which takes a sustained rate no reachable state produces.
+///
+/// That is not a side channel, and the argument is the one the per-recipient
+/// handle space already makes: the queue is a function of the events this
+/// recipient was *entitled* to see, and of nothing else. Two states a player
+/// cannot tell apart produce the same entitled events, hence the same queue,
+/// hence the same bytes.
+///
+/// The cap is enforced twice, and the two halves do different jobs.
+/// [`PlayerView::encode`] writes at most this many events, which is what makes
+/// the bound above a property of the *encoding* rather than a promise every
+/// caller has to keep — there is no view that encodes to more than
+/// [`PlayerView::MAX_ENCODED_BYTES`], so no framing code has a failure path.
+/// The backlog is what makes the truncation unreachable, so that the game does
+/// not silently lose a cue.
+pub const MAX_EVENTS_PER_VIEW: usize = 16;
+
+/// The budget is smaller than a tick's capacity, which is the whole reason the
+/// backlog exists. If they ever coincide, the deferral is dead code and the
+/// comment above it is a lie, so this stops the build instead.
+const _: () = assert!(MAX_EVENTS_PER_VIEW < crate::event::MAX_EVENTS);
+
+/// Bytes in the parts of the encoding that are always present: `tick`,
+/// `outcome`, `own`, and the two list lengths.
+const FIXED_BYTES: usize = 4 + 6 + 21 + 2 + 2;
+/// Bytes in a champion or tower entry: tag, handle, position, hit points.
+const ENTITY_ENTRY_BYTES: usize = 1 + 2 + 8 + 4;
+/// Bytes in a projectile entry: tag, handle, position, velocity.
+const PROJECTILE_ENTRY_BYTES: usize = 1 + 2 + 8 + 8;
+/// Bytes in the widest event, which is damage: tag, handle, amount, place.
+const EVENT_ENTRY_BYTES: usize = 1 + 2 + 4 + 8;
 
 /// Everything one player may know about one tick.
 ///
@@ -206,8 +262,14 @@ pub enum VisibleEvent {
 }
 
 /// What one player may know about one tick, under [`RULES`].
+///
+/// The seat is a [`Seat`], which has no value outside the match. That is the
+/// whole of the argument that this function cannot be asked for the vision of a
+/// player who is not playing: there is no such request to make. The byte that
+/// arrived over the network became a seat at the protocol boundary or it was
+/// refused there — see [`Seat::from_index`].
 #[must_use]
-pub fn view_for(state: &State, player: PlayerId) -> PlayerView {
+pub fn view_for(state: &State, player: Seat) -> PlayerView {
     view_for_with_rules(state, player, &RULES)
 }
 
@@ -217,18 +279,15 @@ pub fn view_for(state: &State, player: PlayerId) -> PlayerView {
 /// recorded under its own [`Rules`] must be projected under those rules too,
 /// and a caller that has to name the constants cannot silently mix two sets.
 #[must_use]
-pub fn view_for_with_rules(state: &State, player: PlayerId, rules: &Rules) -> PlayerView {
-    let team = Team::of_player(player);
-    let own_seat = player.0 as usize;
+pub fn view_for_with_rules(state: &State, player: Seat, rules: &Rules) -> PlayerView {
+    let team = player.team();
 
     let mut visible = Vec::new();
-    for seat in 0..PLAYER_COUNT {
-        if seat == own_seat {
+    for seat in Seat::ALL {
+        if seat == player {
             continue;
         }
-        let Some(champion) = state.champions().get(seat) else {
-            continue;
-        };
+        let champion = state.champion(seat);
         // A dead champion is not on the map. It is therefore not in anybody's
         // view, including its own team's — the fact that a teammate is waiting
         // to respawn is information about a player rather than about the world,
@@ -307,7 +366,7 @@ pub fn view_for_with_rules(state: &State, player: PlayerId, rules: &Rules) -> Pl
     PlayerView {
         tick: state.tick(),
         outcome: state.outcome(),
-        own: own_view(state, own_seat, rules),
+        own: own_view(state, player),
         visible,
         events,
     }
@@ -320,13 +379,11 @@ pub fn view_for_with_rules(state: &State, player: PlayerId, rules: &Rules) -> Pl
 /// which is what makes losing a tower cost map control rather than only hit
 /// points.
 fn can_see(state: &State, team: Team, point: FxVec2, rules: &Rules) -> bool {
-    for seat in 0..PLAYER_COUNT {
-        if Team::of_player(PlayerId(seat as u8)) != team {
+    for seat in Seat::ALL {
+        if seat.team() != team {
             continue;
         }
-        let Some(champion) = state.champions().get(seat) else {
-            continue;
-        };
+        let champion = state.champion(seat);
         if !matches!(champion.liveness, Liveness::Alive { .. }) {
             continue;
         }
@@ -359,26 +416,19 @@ fn can_see(state: &State, team: Team, point: FxVec2, rules: &Rules) -> bool {
 /// The player's own champion. Always present, alive or dead: a player is never
 /// hidden from itself, so this needs no visibility test and is not an exception
 /// to the culling rule.
-fn own_view(state: &State, seat: usize, rules: &Rules) -> OwnView {
-    let id = champion_entity_id(seat);
-    match state.champions().get(seat) {
-        Some(champion) => OwnView {
-            id,
-            position: champion.position,
-            liveness: champion.liveness,
-            cooldowns: champion.cooldowns,
-        },
-        // A seat outside the match. `view_for` is total for the same reason
-        // `step` is: the caller is the server, and a server that panics on a
-        // bad seat is a match everybody loses.
-        None => OwnView {
-            id,
-            position: crate::state::spawn_position(seat, rules),
-            liveness: Liveness::Alive {
-                hp: rules.champion_max_hp,
-            },
-            cooldowns: Cooldowns::default(),
-        },
+///
+/// It had a second arm until M3 — the seat that named nobody, answered with an
+/// invented champion standing on a spawn point. That arm was the reason a
+/// server passing an unvalidated handle would have got a plausible view back
+/// instead of a refusal. [`Seat`] removed the case rather than the branch's
+/// contents, which is the difference the debt was about.
+fn own_view(state: &State, seat: Seat) -> OwnView {
+    let champion = state.champion(seat);
+    OwnView {
+        id: champion_entity_id(seat),
+        position: champion.position,
+        liveness: champion.liveness,
+        cooldowns: champion.cooldowns,
     }
 }
 
@@ -461,6 +511,7 @@ impl Encode for Team {
         match self {
             Self::Blue => 0u8.encode_into(out),
             Self::Red => 1u8.encode_into(out),
+            Self::Green => 2u8.encode_into(out),
         }
     }
 }
@@ -611,14 +662,23 @@ impl PlayerView {
     /// | `outcome` | 1 + 1 + 4 = 6 | 1 |
     /// | `own` | 2 + 8 + (1 + 4) + 6 = 21 | 1 |
     /// | `visible` length | 2 | 1 |
-    /// | champion or tower entry | 1 + 2 + 8 + 4 = 15 | 5 + 4 |
-    /// | projectile entry | 1 + 2 + 8 + 8 = 19 | [`crate::MAX_PROJECTILES`] |
+    /// | champion or tower entry | 1 + 2 + 8 + 4 = 15 | [`PLAYER_COUNT`] − 1 + [`TOWER_COUNT`] |
+    /// | projectile entry | 1 + 2 + 8 + 8 = 19 | [`MAX_PROJECTILES`] |
     /// | `events` length | 2 | 1 |
-    /// | widest event (damage) | 1 + 2 + 4 + 8 = 15 | [`crate::MAX_EVENTS`] |
+    /// | widest event (damage) | 1 + 2 + 4 + 8 = 15 | [`MAX_EVENTS_PER_VIEW`] |
     ///
-    /// Five champions rather than six: the sixth is the player's own, which is
-    /// in `own` and never in `visible`.
-    pub const MAX_ENCODED_BYTES: usize = 1498;
+    /// One champion short of the roster: a player's own is in `own` and never
+    /// in `visible`.
+    ///
+    /// It is an expression rather than a literal, so that a change to the
+    /// roster or to the arenas moves it without anyone re-doing the sum by
+    /// hand. The widths are still written out, and they are still a claim about
+    /// the encoding below rather than a fact the compiler checks — which is
+    /// what `the_worst_case_view_encodes_to_exactly_the_bound` is for.
+    pub const MAX_ENCODED_BYTES: usize = FIXED_BYTES
+        + (PLAYER_COUNT - 1 + TOWER_COUNT) * ENTITY_ENTRY_BYTES
+        + MAX_PROJECTILES * PROJECTILE_ENTRY_BYTES
+        + MAX_EVENTS_PER_VIEW * EVENT_ENTRY_BYTES;
 
     /// The canonical wire encoding of this view.
     ///
@@ -655,26 +715,302 @@ impl PlayerView {
         for entity in visible {
             entity.encode_into(&mut out);
         }
-        u16::try_from(events.len())
+        // At most `MAX_EVENTS_PER_VIEW`, so that the bound above is a property
+        // of this function rather than an obligation on its caller: a framing
+        // layer that pads to `MAX_ENCODED_BYTES` must have no input that
+        // exceeds it. The transport never reaches the truncation — its
+        // per-recipient backlog defers the overflow instead — and that
+        // separation is the point: this half keeps the encoding total, the
+        // other half keeps the game lossless.
+        let shown = events.len().min(MAX_EVENTS_PER_VIEW);
+        u16::try_from(shown)
             .unwrap_or(u16::MAX)
             .encode_into(&mut out);
-        for event in events {
+        for event in events.iter().take(shown) {
             event.encode_into(&mut out);
         }
         out
+    }
+
+    /// Reads a view back, returning it and how many bytes it occupied.
+    ///
+    /// The byte count is the second half of the return value rather than an
+    /// implied "all of them", because the transport pads: a `View` frame is a
+    /// constant number of bytes of which the view is a prefix and the rest is
+    /// zero, and the caller has to know where the view stopped in order to
+    /// check that the remainder is padding rather than a message somebody
+    /// smuggled in behind one.
+    ///
+    /// `None` for any byte string that is not an encoding of a view. Total on
+    /// every input, including truncated and adversarial ones.
+    #[must_use]
+    pub fn decode(bytes: &[u8]) -> Option<(Self, usize)> {
+        let mut cursor = Cursor::new(bytes);
+        let tick = Tick::decode_from(&mut cursor)?;
+        let outcome = Outcome::decode_from(&mut cursor)?;
+        let own = OwnView::decode_from(&mut cursor)?;
+
+        // The two lengths are the only variable-length part of the encoding,
+        // and they are the one place a hostile frame could ask for work
+        // proportional to a number it chose. Bounded against what the *state*
+        // can hold rather than against the buffer: `visible` cannot exceed the
+        // arenas that produce it, and a frame claiming more is malformed, not
+        // large.
+        let visible_len = usize::from(u16::decode_from(&mut cursor)?);
+        if visible_len
+            > PLAYER_COUNT
+                .saturating_add(TOWER_COUNT)
+                .saturating_add(MAX_PROJECTILES)
+        {
+            return None;
+        }
+        let mut visible = Vec::with_capacity(visible_len);
+        for _ in 0..visible_len {
+            visible.push(EntityView::decode_from(&mut cursor)?);
+        }
+
+        let events_len = usize::from(u16::decode_from(&mut cursor)?);
+        // Against what a *frame* can carry rather than against what a tick can
+        // record: the encoder writes no more than this, so anything above it is
+        // a frame nothing in this workspace produced.
+        if events_len > MAX_EVENTS_PER_VIEW {
+            return None;
+        }
+        let mut events = Vec::with_capacity(events_len);
+        for _ in 0..events_len {
+            events.push(VisibleEvent::decode_from(&mut cursor)?);
+        }
+
+        Some((
+            Self {
+                tick,
+                outcome,
+                own,
+                visible,
+                events,
+            },
+            cursor.at,
+        ))
+    }
+}
+
+/// Reads a big-endian value out of a cursor, or gives up.
+///
+/// The mirror of [`Encode`], and it lives beside it rather than in `protocol`
+/// on purpose. The encoding is one object with two halves, and a decoder in
+/// another crate is a second copy of the byte layout that can drift from this
+/// one — silently, because a drifted decoder produces a *plausible* view rather
+/// than an error. Keeping the pair in one file means the round-trip test below
+/// covers both, and a field added to a view type has to be handled twice in the
+/// same diff.
+///
+/// Every implementation is total: it returns `None` rather than panicking on
+/// any byte string, because the bytes come off a socket. The one that consumes
+/// them today is the headless client, reading from the server it trusts; that
+/// is not a reason to write a parser that can be made to panic.
+trait Decode: Sized {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self>;
+}
+
+/// A position in a byte string, which never reads past the end.
+struct Cursor<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Cursor<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, at: 0 }
+    }
+
+    fn take(&mut self, count: usize) -> Option<&'a [u8]> {
+        let end = self.at.checked_add(count)?;
+        let slice = self.bytes.get(self.at..end)?;
+        self.at = end;
+        Some(slice)
+    }
+}
+
+impl Decode for u8 {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        cursor.take(1)?.first().copied()
+    }
+}
+
+impl Decode for u16 {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self::from_be_bytes(cursor.take(2)?.try_into().ok()?))
+    }
+}
+
+impl Decode for u32 {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self::from_be_bytes(cursor.take(4)?.try_into().ok()?))
+    }
+}
+
+impl Decode for i32 {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self::from_be_bytes(cursor.take(4)?.try_into().ok()?))
+    }
+}
+
+impl Decode for Fx {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self::from_raw(i32::decode_from(cursor)?))
+    }
+}
+
+impl Decode for FxVec2 {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self::new(
+            Fx::decode_from(cursor)?,
+            Fx::decode_from(cursor)?,
+        ))
+    }
+}
+
+impl Decode for EntityId {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self(u16::decode_from(cursor)?))
+    }
+}
+
+impl Decode for Tick {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self(u32::decode_from(cursor)?))
+    }
+}
+
+impl Decode for Team {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        match u8::decode_from(cursor)? {
+            0 => Some(Self::Blue),
+            1 => Some(Self::Red),
+            2 => Some(Self::Green),
+            _ => None,
+        }
+    }
+}
+
+impl Decode for Ability {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        match u8::decode_from(cursor)? {
+            0 => Some(Self::Skillshot),
+            1 => Some(Self::Targeted),
+            _ => None,
+        }
+    }
+}
+
+impl Decode for Outcome {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        let tag = u8::decode_from(cursor)?;
+        let winner = Team::decode_from(cursor)?;
+        let at = Tick::decode_from(cursor)?;
+        match tag {
+            // The padded variant: both fields are present on the wire and both
+            // are meaningless, which is what keeps "the match ended" out of the
+            // message length.
+            0 => Some(Self::InProgress),
+            1 => Some(Self::Decided { winner, at }),
+            _ => None,
+        }
+    }
+}
+
+impl Decode for Liveness {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        match u8::decode_from(cursor)? {
+            0 => Some(Self::Alive {
+                hp: Fx::decode_from(cursor)?,
+            }),
+            1 => Some(Self::Dead {
+                respawn_at: Tick::decode_from(cursor)?,
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl Decode for Cooldowns {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self {
+            basic_attack: u16::decode_from(cursor)?,
+            skillshot: u16::decode_from(cursor)?,
+            targeted: u16::decode_from(cursor)?,
+        })
+    }
+}
+
+impl Decode for OwnView {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        Some(Self {
+            id: EntityId::decode_from(cursor)?,
+            position: FxVec2::decode_from(cursor)?,
+            liveness: Liveness::decode_from(cursor)?,
+            cooldowns: Cooldowns::decode_from(cursor)?,
+        })
+    }
+}
+
+impl Decode for EntityView {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        match u8::decode_from(cursor)? {
+            0 => Some(Self::Champion {
+                id: EntityId::decode_from(cursor)?,
+                position: FxVec2::decode_from(cursor)?,
+                hp: Fx::decode_from(cursor)?,
+            }),
+            1 => Some(Self::Tower {
+                id: EntityId::decode_from(cursor)?,
+                position: FxVec2::decode_from(cursor)?,
+                hp: Fx::decode_from(cursor)?,
+            }),
+            2 => Some(Self::Projectile {
+                id: EntityId::decode_from(cursor)?,
+                position: FxVec2::decode_from(cursor)?,
+                velocity: FxVec2::decode_from(cursor)?,
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl Decode for VisibleEvent {
+    fn decode_from(cursor: &mut Cursor<'_>) -> Option<Self> {
+        match u8::decode_from(cursor)? {
+            0 => Some(Self::Cast {
+                caster: EntityId::decode_from(cursor)?,
+                ability: Ability::decode_from(cursor)?,
+                at: FxVec2::decode_from(cursor)?,
+            }),
+            1 => Some(Self::Damage {
+                target: EntityId::decode_from(cursor)?,
+                amount: Fx::decode_from(cursor)?,
+                at: FxVec2::decode_from(cursor)?,
+            }),
+            2 => Some(Self::Death {
+                entity: EntityId::decode_from(cursor)?,
+                at: FxVec2::decode_from(cursor)?,
+            }),
+            _ => None,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{EntityView, PlayerView, VisibleEvent, view_for, view_for_with_rules};
+    use super::{
+        EntityView, MAX_EVENTS_PER_VIEW, PlayerView, VisibleEvent, view_for, view_for_with_rules,
+    };
     use crate::event::{Ability, MAX_EVENTS};
     use crate::fx::Fx;
     use crate::input::{Action, Input};
     use crate::rules::{RULES, Rules};
     use crate::state::{
-        Cooldowns, EntityId, Liveness, MAX_PROJECTILES, Outcome, PlayerId, Tick,
-        champion_entity_id, new_state, tower_entity_id, tower_position,
+        Cooldowns, EntityId, Liveness, MAX_PROJECTILES, Outcome, Seat, Tick, champion_entity_id,
+        new_state, tower_entity_id, tower_position,
     };
     use crate::step::step;
     use crate::vec2::FxVec2;
@@ -694,51 +1030,55 @@ mod tests {
     #[test]
     fn an_enemy_across_the_map_is_absent_rather_than_flagged() {
         let state = new_state(3);
-        let view = view_for(&state, PlayerId(0));
-        for seat in 3..6 {
+        let view = view_for(&state, Seat::Blue0);
+        for seat in [Seat::Red0, Seat::Red1, Seat::Red2] {
             assert!(
                 !ids(&view).contains(&champion_entity_id(seat)),
-                "seat {seat} is two hundred units away and still in the view"
+                "{seat:?} is a lane away and still in the view"
             );
         }
         // …and the culling is not "return nothing": the allies at spawn are
         // there, which is what makes the assertion above mean something.
-        assert!(ids(&view).contains(&champion_entity_id(1)));
-        assert!(ids(&view).contains(&champion_entity_id(2)));
+        assert!(ids(&view).contains(&champion_entity_id(Seat::Blue1)));
+        assert!(ids(&view).contains(&champion_entity_id(Seat::Blue2)));
     }
 
     #[test]
     fn an_enemy_that_walks_into_range_appears() {
         let mut state = new_state(3);
         let meeting_point = FxVec2::new(Fx::ZERO, Fx::ZERO);
-        state.place_champion(0, meeting_point, RULES.champion_max_hp);
+        state.place_champion(Seat::Blue0, meeting_point, RULES.champion_max_hp);
         state.place_champion(
-            3,
+            Seat::Red0,
             FxVec2::new(RULES.champion_vision_radius.add(Fx::ONE), Fx::ZERO),
             RULES.champion_max_hp,
         );
-        assert!(!ids(&view_for(&state, PlayerId(0))).contains(&champion_entity_id(3)));
+        assert!(!ids(&view_for(&state, Seat::Blue0)).contains(&champion_entity_id(Seat::Red0)));
 
         state.place_champion(
-            3,
+            Seat::Red0,
             FxVec2::new(RULES.champion_vision_radius.sub(Fx::ONE), Fx::ZERO),
             RULES.champion_max_hp,
         );
-        assert!(ids(&view_for(&state, PlayerId(0))).contains(&champion_entity_id(3)));
+        assert!(ids(&view_for(&state, Seat::Blue0)).contains(&champion_entity_id(Seat::Red0)));
     }
 
     #[test]
     fn a_players_own_champion_is_in_the_view_while_it_is_dead() {
         let mut state = new_state(3);
-        state.place_champion(0, FxVec2::ZERO, Fx::EPSILON);
-        state.place_champion(3, FxVec2::new(Fx::ONE, Fx::ZERO), RULES.champion_max_hp);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, Fx::EPSILON);
+        state.place_champion(
+            Seat::Red0,
+            FxVec2::new(Fx::ONE, Fx::ZERO),
+            RULES.champion_max_hp,
+        );
         let state = step(&state, &[]);
         let state = step(
             &state,
             &[Input {
                 tick: state.tick(),
                 seq: 0,
-                player: PlayerId(3),
+                player: Seat::Red0,
                 action: Action::Attack(EntityId(0)),
             }],
         );
@@ -748,37 +1088,37 @@ mod tests {
             Liveness::Dead { .. }
         ));
 
-        let view = view_for(&state, PlayerId(0));
+        let view = view_for(&state, Seat::Blue0);
         assert!(matches!(view.own.liveness, Liveness::Dead { .. }));
         // And it is not in `visible`, which is the list of things on the map.
-        assert!(!ids(&view).contains(&champion_entity_id(0)));
+        assert!(!ids(&view).contains(&champion_entity_id(Seat::Blue0)));
     }
 
     #[test]
     fn a_cast_out_of_vision_is_not_announced() {
         let mut state = new_state(3);
         // Blue seat 0 at the origin; Red seat 3 well beyond its vision.
-        state.place_champion(0, FxVec2::ZERO, RULES.champion_max_hp);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, RULES.champion_max_hp);
         state.place_champion(
-            3,
+            Seat::Red0,
             FxVec2::new(Fx::from_int(60), Fx::ZERO),
             RULES.champion_max_hp,
         );
         let cast = [Input {
             tick: Tick(0),
             seq: 0,
-            player: PlayerId(3),
+            player: Seat::Red0,
             action: Action::Skillshot(FxVec2::new(Fx::NEG_ONE, Fx::ZERO)),
         }];
         let state = step(&state, &cast);
 
         assert_eq!(state.events().count(), 1, "the cast happened");
         assert!(
-            view_for(&state, PlayerId(0)).events.is_empty(),
+            view_for(&state, Seat::Blue0).events.is_empty(),
             "and seat 0 was told about it"
         );
         assert_eq!(
-            view_for(&state, PlayerId(3)).events.len(),
+            view_for(&state, Seat::Red0).events.len(),
             1,
             "while the caster's own team saw it"
         );
@@ -789,15 +1129,15 @@ mod tests {
         let mut state = new_state(3);
         // Seat 3 dies at the origin, where seat 0 is standing. Seat 4 and 5 are
         // left at their spawn, far away.
-        state.place_champion(0, FxVec2::ZERO, RULES.champion_max_hp);
-        state.place_champion(3, FxVec2::new(Fx::ONE, Fx::ZERO), Fx::EPSILON);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, RULES.champion_max_hp);
+        state.place_champion(Seat::Red0, FxVec2::new(Fx::ONE, Fx::ZERO), Fx::EPSILON);
         let state = step(
             &state,
             &[Input {
                 tick: Tick(0),
                 seq: 0,
-                player: PlayerId(0),
-                action: Action::Attack(champion_entity_id(3)),
+                player: Seat::Blue0,
+                action: Action::Attack(champion_entity_id(Seat::Red0)),
             }],
         );
         assert!(matches!(
@@ -805,18 +1145,18 @@ mod tests {
             Liveness::Dead { .. }
         ));
 
-        let killer = view_for(&state, PlayerId(0));
+        let killer = view_for(&state, Seat::Blue0);
         assert!(
             killer
                 .events
                 .iter()
                 .any(|event| matches!(event, VisibleEvent::Death { entity, .. }
-                    if *entity == champion_entity_id(3))),
+                    if *entity == champion_entity_id(Seat::Red0))),
             "the killer saw the kill"
         );
         // The victim's own team-mates were at their spawn and saw nothing, but
         // seat 3's own view still says it is dead, through `own`.
-        let distant_ally = view_for(&state, PlayerId(4));
+        let distant_ally = view_for(&state, Seat::Red1);
         assert!(distant_ally.events.is_empty());
     }
 
@@ -826,12 +1166,12 @@ mod tests {
         // Nobody is near Blue's outer tower, so it is the only thing that can
         // see the point beside it.
         let beside_the_tower = tower_position(0, &RULES).add(FxVec2::new(Fx::ONE, Fx::ZERO));
-        state.place_champion(3, beside_the_tower, RULES.champion_max_hp);
-        assert!(ids(&view_for(&state, PlayerId(0))).contains(&champion_entity_id(3)));
+        state.place_champion(Seat::Red0, beside_the_tower, RULES.champion_max_hp);
+        assert!(ids(&view_for(&state, Seat::Blue0)).contains(&champion_entity_id(Seat::Red0)));
 
         state.set_tower_hp(0, Fx::ZERO);
         assert!(
-            !ids(&view_for(&state, PlayerId(0))).contains(&champion_entity_id(3)),
+            !ids(&view_for(&state, Seat::Blue0)).contains(&champion_entity_id(Seat::Red0)),
             "rubble sees nothing"
         );
     }
@@ -839,36 +1179,46 @@ mod tests {
     #[test]
     fn the_two_seats_of_a_team_see_the_same_world() {
         let mut state = new_state(3);
-        state.place_champion(0, FxVec2::ZERO, RULES.champion_max_hp);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, RULES.champion_max_hp);
         state.place_champion(
-            3,
+            Seat::Red0,
             FxVec2::new(Fx::from_int(5), Fx::ZERO),
             RULES.champion_max_hp,
         );
-        let first = view_for(&state, PlayerId(1));
-        let second = view_for(&state, PlayerId(2));
+        let first = view_for(&state, Seat::Blue1);
+        let second = view_for(&state, Seat::Blue2);
         assert_eq!(
             first
                 .visible
                 .iter()
                 .filter(|entity| !matches!(entity, EntityView::Champion { id, .. }
-                    if *id == champion_entity_id(1) || *id == champion_entity_id(2)))
+                    if *id == champion_entity_id(Seat::Blue1) || *id == champion_entity_id(Seat::Blue2)))
                 .count(),
             second
                 .visible
                 .iter()
                 .filter(|entity| !matches!(entity, EntityView::Champion { id, .. }
-                    if *id == champion_entity_id(1) || *id == champion_entity_id(2)))
+                    if *id == champion_entity_id(Seat::Blue1) || *id == champion_entity_id(Seat::Blue2)))
                 .count()
         );
         assert_eq!(first.events, second.events);
     }
 
+    /// There is no seat outside the match to test, and that is the point.
+    ///
+    /// This used to assert that `view_for(&state, PlayerId(200))` returned a
+    /// view rather than panicking, which was the best a `u8` allowed. The
+    /// replacement is not another assertion: it is [`Seat`], which has nine
+    /// values, so the call this test used to make no longer type-checks. What
+    /// remains to be tested is the frontier that turns a byte into a seat, and
+    /// that lives in `protocol` with the rest of the decoder.
     #[test]
-    fn a_seat_outside_the_match_gets_a_view_rather_than_a_panic() {
+    fn every_seat_that_exists_gets_a_view() {
         let state = new_state(3);
-        let view = view_for(&state, PlayerId(200));
-        assert_eq!(view.tick, Tick(0));
+        for seat in Seat::ALL {
+            assert_eq!(view_for(&state, seat).tick, Tick(0));
+            assert_eq!(view_for(&state, seat).own.id, champion_entity_id(seat));
+        }
     }
 
     /// The projection reads the constants it is handed, so a fixture recorded
@@ -876,21 +1226,21 @@ mod tests {
     #[test]
     fn the_vision_radius_comes_from_the_rules_it_is_given() {
         let mut state = new_state(3);
-        state.place_champion(0, FxVec2::ZERO, RULES.champion_max_hp);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, RULES.champion_max_hp);
         state.place_champion(
-            3,
+            Seat::Red0,
             FxVec2::new(Fx::from_int(40), Fx::ZERO),
             RULES.champion_max_hp,
         );
-        assert!(!ids(&view_for(&state, PlayerId(0))).contains(&champion_entity_id(3)));
+        assert!(!ids(&view_for(&state, Seat::Blue0)).contains(&champion_entity_id(Seat::Red0)));
 
         let far_sighted = Rules {
             champion_vision_radius: Fx::from_int(64),
             ..RULES
         };
         assert!(
-            ids(&view_for_with_rules(&state, PlayerId(0), &far_sighted))
-                .contains(&champion_entity_id(3))
+            ids(&view_for_with_rules(&state, Seat::Blue0, &far_sighted))
+                .contains(&champion_entity_id(Seat::Red0))
         );
     }
 
@@ -900,14 +1250,14 @@ mod tests {
     #[test]
     fn the_worst_case_view_encodes_to_exactly_the_bound() {
         let mut visible = Vec::new();
-        for seat in 1..6 {
+        for seat in Seat::ALL.into_iter().filter(|seat| *seat != Seat::Blue0) {
             visible.push(EntityView::Champion {
                 id: champion_entity_id(seat),
                 position: FxVec2::ZERO,
                 hp: Fx::ONE,
             });
         }
-        for index in 0..4 {
+        for index in 0..crate::state::TOWER_COUNT {
             visible.push(EntityView::Tower {
                 id: tower_entity_id(index),
                 position: FxVec2::ZERO,
@@ -927,7 +1277,7 @@ mod tests {
                 amount: Fx::ONE,
                 at: FxVec2::ZERO,
             };
-            MAX_EVENTS
+            MAX_EVENTS_PER_VIEW
         ];
         let view = PlayerView {
             tick: Tick(1),
@@ -936,7 +1286,7 @@ mod tests {
                 at: Tick(1),
             },
             own: OwnView {
-                id: champion_entity_id(0),
+                id: champion_entity_id(Seat::Blue0),
                 position: FxVec2::ZERO,
                 liveness: Liveness::Alive { hp: Fx::ONE },
                 cooldowns: Cooldowns::default(),
@@ -947,17 +1297,138 @@ mod tests {
         assert_eq!(view.encode().len(), PlayerView::MAX_ENCODED_BYTES);
     }
 
+    /// The event budget is a property of the encoding, not a promise the caller
+    /// makes.
+    ///
+    /// A tick can record more events than one frame can carry
+    /// (`MAX_EVENTS_PER_VIEW` against [`MAX_EVENTS`]), and the transport's
+    /// per-recipient backlog is what keeps the overflow from being lost. This
+    /// is the other half: whatever the caller hands over, the bytes stay inside
+    /// the bound, so no framing layer has a payload it cannot pad. Truncating
+    /// here is unreachable from the server, and it is what makes that true
+    /// rather than hoped.
+    #[test]
+    fn the_encoding_carries_no_more_events_than_a_frame_has_room_for() {
+        let overfull = vec![
+            VisibleEvent::Death {
+                entity: EntityId(0),
+                at: FxVec2::ZERO,
+            };
+            MAX_EVENTS
+        ];
+        let view = PlayerView {
+            tick: Tick(1),
+            outcome: Outcome::InProgress,
+            own: OwnView {
+                id: champion_entity_id(Seat::Blue0),
+                position: FxVec2::ZERO,
+                liveness: Liveness::Alive { hp: Fx::ONE },
+                cooldowns: Cooldowns::default(),
+            },
+            visible: Vec::new(),
+            events: overfull,
+        };
+        let encoded = view.encode();
+        assert!(encoded.len() <= PlayerView::MAX_ENCODED_BYTES);
+        let (decoded, read) = PlayerView::decode(&encoded).expect("the bound was not encodable");
+        assert_eq!(read, encoded.len());
+        assert_eq!(decoded.events.len(), MAX_EVENTS_PER_VIEW);
+    }
+
+    /// …and a frame claiming more events than that is refused rather than
+    /// half-read.
+    #[test]
+    fn a_view_claiming_more_events_than_a_frame_holds_is_refused() {
+        let view = view_for(&new_state(3), Seat::Blue0);
+        let mut bytes = view.encode();
+        let events_len_at = bytes.len() - 2;
+        let too_many = u16::try_from(MAX_EVENTS_PER_VIEW + 1).expect("fits");
+        bytes[events_len_at..].copy_from_slice(&too_many.to_be_bytes());
+        assert!(PlayerView::decode(&bytes).is_none());
+    }
+
     /// Two views that differ anywhere encode differently. Without this the size
     /// assertions would be checking an encoding that could be constant.
     #[test]
     fn the_encoding_follows_the_view() {
         let state = new_state(3);
-        let baseline = view_for(&state, PlayerId(0)).encode();
-        let stepped = view_for(&step(&state, &[]), PlayerId(0)).encode();
+        let baseline = view_for(&state, Seat::Blue0).encode();
+        let stepped = view_for(&step(&state, &[]), Seat::Blue0).encode();
         assert_ne!(baseline, stepped, "the tick alone must move the bytes");
 
-        let other_team = view_for(&state, PlayerId(3)).encode();
+        let other_team = view_for(&state, Seat::Red0).encode();
         assert_ne!(baseline, other_team);
+    }
+
+    /// The encoding and its inverse agree, on views reached by simulation and
+    /// on the worst case the bound is derived from.
+    ///
+    /// Not a "does the codec work" test: it is the runtime half of keeping the
+    /// two functions in one file. A field added to `encode` and forgotten in
+    /// `decode` reads the next field's bytes as its own, so the round trip
+    /// comes back wrong rather than short, which is precisely the failure a
+    /// length check would miss.
+    #[test]
+    fn a_view_survives_a_round_trip_through_its_own_encoding() {
+        let mut state = new_state(5);
+        state.place_champion(Seat::Blue0, FxVec2::ZERO, RULES.champion_max_hp);
+        state.place_champion(
+            Seat::Red0,
+            FxVec2::new(Fx::from_int(2), Fx::ONE),
+            RULES.champion_max_hp,
+        );
+        let mut state = step(
+            &state,
+            &[Input {
+                tick: Tick(0),
+                seq: 0,
+                player: Seat::Blue0,
+                action: Action::Skillshot(FxVec2::new(Fx::ONE, Fx::ZERO)),
+            }],
+        );
+        for _ in 0..3 {
+            state = step(&state, &[]);
+        }
+
+        for seat in Seat::ALL {
+            let view = view_for(&state, seat);
+            let encoded = view.encode();
+            let (decoded, read) =
+                PlayerView::decode(&encoded).expect("a view this crate encoded did not decode");
+            assert_eq!(decoded, view, "{seat:?}");
+            assert_eq!(read, encoded.len(), "{seat:?}: bytes consumed");
+        }
+    }
+
+    /// Decoding is total: no byte string panics it, and a truncated or
+    /// nonsensical one is refused rather than half-read.
+    #[test]
+    fn decoding_refuses_what_it_cannot_read() {
+        let view = view_for(&new_state(5), Seat::Blue0);
+        let encoded = view.encode();
+
+        for cut in 0..encoded.len() {
+            assert!(
+                PlayerView::decode(&encoded[..cut]).is_none(),
+                "a view truncated to {cut} bytes decoded anyway"
+            );
+        }
+        // Trailing bytes are not an error here — the frame is padded and the
+        // caller checks the remainder. What comes back is the view and the
+        // length it occupied, which is how the caller can check it at all.
+        let mut padded = encoded.clone();
+        padded.extend_from_slice(&[0u8; 64]);
+        let (decoded, read) = PlayerView::decode(&padded).expect("padding refused a valid view");
+        assert_eq!(decoded, view);
+        assert_eq!(read, encoded.len());
+
+        // A length prefix claiming more entities than the arenas can hold is
+        // refused without trying to allocate for it.
+        let mut lying = encoded.clone();
+        let visible_len_at = 4 + 6 + 21;
+        lying[visible_len_at] = 0xFF;
+        lying[visible_len_at + 1] = 0xFF;
+        assert!(PlayerView::decode(&lying).is_none());
     }
 
     /// A cast the caster's own team can see, announced with the ability that
@@ -970,11 +1441,11 @@ mod tests {
             &[Input {
                 tick: Tick(0),
                 seq: 0,
-                player: PlayerId(0),
+                player: Seat::Blue0,
                 action: Action::Skillshot(FxVec2::new(Fx::ONE, Fx::ZERO)),
             }],
         );
-        let view = view_for(&state, PlayerId(0));
+        let view = view_for(&state, Seat::Blue0);
         assert!(view.events.iter().any(|event| matches!(
             event,
             VisibleEvent::Cast {

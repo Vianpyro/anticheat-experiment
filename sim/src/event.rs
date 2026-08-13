@@ -44,16 +44,23 @@ use crate::vec2::FxVec2;
 /// Events one tick can record before it starts dropping them.
 ///
 /// Derived rather than guessed. Per tick the rules can emit at most: two casts
-/// per seat (the cooldown blocks the second of each kind), so 12; one targeted
-/// spell's damage per seat, 6; one hit per projectile in flight, and the
+/// per seat (the cooldown blocks the second of each kind), so 18; one targeted
+/// spell's damage per seat, 9; one hit per projectile in flight, and the
 /// skillshot's 240-tick cooldown against its 45-tick lifetime caps the arena's
-/// real occupancy at 6; one shot per tower, 4; one basic attack per seat, 6;
-/// one death per seat, 6. Forty. Forty-eight is that with headroom.
+/// real occupancy at one per seat, 9; one shot per tower, 6; one basic attack
+/// per seat, 9; one death per seat, 9. Sixty. Seventy-two is that with
+/// headroom.
 ///
 /// Beyond it events are dropped, in the same spirit as a full projectile arena:
 /// dropping is total, identical on every platform, and part of the rules, where
 /// growing a buffer would put an allocator inside `step`.
-pub const MAX_EVENTS: usize = 48;
+///
+/// This is what a *tick* can record. What one *message* can carry is
+/// [`crate::view::MAX_EVENTS_PER_VIEW`], which is smaller and lives outside
+/// these rules: it is a frame budget, the overflow waits for the next frame
+/// rather than being lost, and the two numbers are deliberately not the same
+/// one.
+pub const MAX_EVENTS: usize = 72;
 
 /// Which of the two abilities was cast.
 ///

@@ -8,4 +8,23 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[[bin]]
+name = "moba-client"
+path = "src/main.rs"
+
 [dependencies]
+protocol = { path = "../protocol" }
+quinn = { version = "0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+sim = { path = "../sim" }
+tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+
+# `server`, for the in-process harness that runs M3's exit criterion, and
+# nothing else. `docs/ARCHITECTURE.md` forbids `client` a *normal* dependency on
+# `server` and that stands — the check in `ci` is `cargo tree -p client --edges
+# normal`, which excludes this. It is the same allowance `cheat-client` already
+# has and for the same reason: the criterion is three clients and one server in
+# one process, and the alternative is an eighth crate whose only content is a
+# test.
+[dev-dependencies]
+server = { path = "../server" }
