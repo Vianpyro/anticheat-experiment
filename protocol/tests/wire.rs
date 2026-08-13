@@ -452,12 +452,14 @@ fn the_backlog_is_bounded_and_says_when_it_drops() {
 // Hostile input
 // ---------------------------------------------------------------------------
 
-/// The seventh seat, refused at the one place it can arrive.
+/// The tenth seat, refused at the one place it can arrive.
 ///
-/// `sim::Seat` has six values, so this is the frontier the type exists for:
+/// `sim::Seat` has nine values, so this is the frontier the type exists for:
 /// `sim/tests/properties.rs` used to assert that `PlayerId(200)` was ignored by
 /// the rules, and that claim moved here when the value stopped existing. Every
-/// byte from 6 to 255 is a `DecodeError::Seat` and never a seat.
+/// byte from `PLAYER_COUNT` to 255 is a `DecodeError::Seat` and never a seat —
+/// and the range is derived from the roster rather than written out, because a
+/// seat added to the game must not silently shrink what this test refuses.
 #[test]
 fn a_seat_byte_outside_the_match_is_refused_rather_than_folded_in() {
     let accepted = ServerFrame::encode(&ServerMessage::Accepted {
@@ -465,7 +467,7 @@ fn a_seat_byte_outside_the_match_is_refused_rather_than_folded_in() {
         seed: 1,
         rules_hash: rules_hash(),
     });
-    for byte in 6u8..=u8::MAX {
+    for byte in u8::try_from(sim::PLAYER_COUNT).expect("the roster fits a byte")..=u8::MAX {
         let mut bytes = *accepted.as_bytes();
         bytes[HEADER_BYTES] = byte;
         assert_eq!(
@@ -474,7 +476,7 @@ fn a_seat_byte_outside_the_match_is_refused_rather_than_folded_in() {
             "seat byte {byte}"
         );
     }
-    // …and the six that do name a seat still do.
+    // …and every byte that does name a seat still does.
     for seat in Seat::ALL {
         let mut bytes = *accepted.as_bytes();
         bytes[HEADER_BYTES] = seat.index() as u8;
@@ -573,8 +575,8 @@ fn a_kind_byte_that_names_no_message_is_refused() {
 /// Built by simulation from the public API, for the reason
 /// `sim/tests/view_properties.rs` gives: a state assembled field by field can
 /// be unreachable, and a property that holds only on unreachable states holds
-/// about nothing. The two spawn lines are two hundred units apart against a
-/// vision radius of twelve, so a cast at Red's spawn is a cast Blue cannot see.
+/// about nothing. Two bases are a hundred and seventy-three units apart against
+/// a vision radius of twelve, so a cast at Red's base is a cast Blue cannot see.
 fn state_with_casts_out_of_sight() -> State {
     let state = new_state(0x5EED_0F0F);
     let mut inputs = Vec::new();

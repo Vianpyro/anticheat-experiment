@@ -30,6 +30,8 @@
 
 use crate::fx::Fx;
 use crate::sha256::Digest;
+use crate::state::TEAM_COUNT;
+use crate::vec2::FxVec2;
 
 /// Simulation ticks per second.
 ///
@@ -51,15 +53,23 @@ pub struct Rules {
 
     /// Half the width and half the height of the square map, in world units.
     /// Positions are clamped into `[-extent, extent]` on both axes.
+    ///
+    /// The map is square and the *game* is a triangle inscribed in it: the
+    /// legal coordinate domain `docs/ARCHITECTURE.md` states is a property of
+    /// the fixed-point type and does not change shape when the layout does.
     pub map_half_extent: Fx,
-    /// Distance from the origin to a team's spawn line, along `x`.
-    pub spawn_x: Fx,
-    /// Spacing along `y` between the three seats of a team at spawn.
+    /// The three bases, in [`crate::Team`] order: the vertices of the triangle.
+    ///
+    /// A field rather than three, so that one destructuring in
+    /// [`crate::canonical`] covers all of them and a fourth base could not be
+    /// added without the hash noticing.
+    pub bases: [FxVec2; TEAM_COUNT],
+    /// Spacing between the three seats of a team at spawn, across the mouth of
+    /// their own base.
     pub spawn_spacing: Fx,
-    /// `x` of Blue's outer tower. Red's is the negation.
-    pub tower_outer_x: Fx,
-    /// `x` of Blue's inner tower. Red's is the negation.
-    pub tower_inner_x: Fx,
+    /// How far along its own lane a team's tower stands, as a fraction of the
+    /// distance to the base at the other end.
+    pub tower_lane_fraction: Fx,
 
     /// Hit points a champion starts and respawns with.
     pub champion_max_hp: Fx,
@@ -126,10 +136,23 @@ pub const RULES: Rules = Rules {
     ticks_per_second: TICKS_PER_SECOND,
 
     map_half_extent: Fx::from_int(128),
-    spawn_x: Fx::from_int(-100),
+    // A triangle of circumradius 100, apex up: Blue at the top, Red at the
+    // lower right, Green at the lower left. The two lower vertices are exact
+    // mirrors of each other; the apex is not related to either by an exact
+    // rotation, because a rotation by 120 degrees is not a fixed-point
+    // operation. Sides come out at 173.2 units against a vision radius of 12,
+    // so a lane is something you walk down in the dark.
+    bases: [
+        FxVec2::new(Fx::ZERO, Fx::from_int(100)),
+        FxVec2::new(Fx::from_ratio(866, 10), Fx::from_int(-50)),
+        FxVec2::new(Fx::from_ratio(-866, 10), Fx::from_int(-50)),
+    ],
     spawn_spacing: Fx::from_int(3),
-    tower_outer_x: Fx::from_int(-40),
-    tower_inner_x: Fx::from_int(-90),
+    // A quarter of the way down its own lane: far enough out that the two teams
+    // contesting a lane meet between their towers rather than under one of
+    // them, and close enough in that a tower still covers the ground its team
+    // has to cross to leave.
+    tower_lane_fraction: Fx::from_ratio(1, 4),
 
     champion_max_hp: Fx::from_int(600),
     // 6 units per second.

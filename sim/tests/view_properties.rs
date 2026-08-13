@@ -62,8 +62,8 @@
 //!   match.* `view_for` takes the seat from its caller, and the caller is the
 //!   server. Until M3 the adjacent case — a server passing an unvalidated
 //!   handle — was reachable and was drawn here, and the projection was total
-//!   for it. It is now unrepresentable: [`Seat`] has six values, the byte that
-//!   would have carried a seventh is refused by `protocol`'s decoder, and this
+//!   for it. It is now unrepresentable: [`Seat`] has nine values, the byte that
+//!   would have carried a tenth is refused by `protocol`'s decoder, and this
 //!   file stopped drawing a case the type no longer admits.
 
 // The crate under test denies these at its root; repeated here because
@@ -81,8 +81,8 @@ use proptest::test_runner::{FileFailurePersistence, TestRunner};
 use sim::view::{EntityView, PlayerView, view_for, view_for_with_rules};
 use sim::{
     Action, EntityId, Fx, FxVec2, Input, Liveness, MAX_PROJECTILES, Outcome, PLAYER_COUNT, RULES,
-    Rules, Seat, State, TOWER_COUNT, Team, Tick, champion_entity_id, new_state_with_rules,
-    step_with_rules, tower_entity_id, tower_position,
+    Rules, Seat, State, TEAM_COUNT, TOWER_COUNT, Team, Tick, champion_entity_id,
+    new_state_with_rules, step_with_rules, tower_entity_id, tower_position, tower_team,
 };
 use spec::{
     Entitled, entitled, expected_events, expected_ids, handles_with_positions, reported_ids,
@@ -126,18 +126,24 @@ const DOMAIN_RAW: i32 = 128 * 65536;
 // The constants each family is played under
 // ---------------------------------------------------------------------------
 
-/// A brawl: the game, on a map whose two spawn lines are sixteen units apart
-/// instead of two hundred, with a champion that dies to one hit of anything and
-/// comes back a fifth of a second later.
+/// A brawl: the game, on a triangle whose bases are sixteen units apart instead
+/// of a hundred and seventy-three, with a champion that dies to one hit of
+/// anything and comes back a fifth of a second later.
 ///
 /// This is the family that reaches the configurations the fixtures took nine
 /// hundred ticks to reach, and some they never did: champions dead, champions
-/// returning, several projectiles in flight at once, and — because the spawn
-/// lines are four units outside vision — a fog line that is crossed and
-/// recrossed rather than sat behind. Under the game's own constants a property
-/// test would spend its entire budget walking.
+/// returning, several projectiles in flight at once, three teams within reach of
+/// one another, and — because the bases are four units outside vision — a fog
+/// line that is crossed and recrossed rather than sat behind. Under the game's
+/// own constants a property test would spend its entire budget walking.
 const BRAWL_RULES: Rules = Rules {
-    spawn_x: Fx::from_int(-8),
+    // The three bases pulled in to a circumradius of eight, so the no man's
+    // land between them is sixteen units rather than a hundred and seventy.
+    bases: [
+        FxVec2::new(Fx::ZERO, Fx::from_int(8)),
+        FxVec2::new(Fx::from_ratio(693, 100), Fx::from_int(-4)),
+        FxVec2::new(Fx::from_ratio(-693, 100), Fx::from_int(-4)),
+    ],
     // 45 units per second: sixteen units of no man's land is crossed in eleven
     // ticks rather than in eighty, which is the difference between a script
     // that reaches a death and one that spends its whole length walking.
@@ -170,6 +176,12 @@ const SPRINT_RULES: Rules = Rules {
 /// The only way to reach a decided match inside a property test, and therefore
 /// the only way to project one. A decided match is a state `step` freezes and
 /// keeps ticking, and `view_for` still has to answer for it.
+///
+/// It got harder when the third team arrived, and that is the point of keeping
+/// it: with two teams a decided match was four hit points away from any state,
+/// and with three it takes *two* teams knocked out, so a recipe that flattens
+/// one of them reaches nothing. The floors at the end of this file caught
+/// exactly that.
 const ENDGAME_RULES: Rules = Rules {
     tower_max_hp: Fx::from_int(12),
     ..SPRINT_RULES
@@ -183,8 +195,8 @@ const ENDGAME_RULES: Rules = Rules {
 /// is played under.
 #[derive(Clone, Copy, Debug)]
 enum Family {
-    /// The game's own rules, two hundred units between the teams: the regime
-    /// where almost everything is culled almost always.
+    /// The game's own rules, a hundred and seventy-three units of lane between
+    /// any two bases: the regime where almost everything is culled almost always.
     Wander,
     /// Close quarters, frail champions, short respawns.
     Brawl,
@@ -343,7 +355,7 @@ fn handle() -> impl Strategy<Value = EntityId> {
 }
 
 /// A seat. Every one of them exists; see the module documentation on the
-/// seventh, which used to be drawn here and is now a value nobody can build.
+/// tenth, which used to be drawn here and is now a value nobody can build.
 fn seat() -> impl Strategy<Value = Seat> {
     (0usize..PLAYER_COUNT).prop_map(|index| Seat::ALL[index])
 }
@@ -401,7 +413,7 @@ fn brawl() -> impl Strategy<Value = Recipe> {
 /// Six drawn destinations, walked to at twelve units a tick and then held.
 ///
 /// This is the family that reaches the corners of the legal domain and any
-/// arrangement of six champions that a straight walk can produce, including the
+/// arrangement of nine champions that a straight walk can produce, including the
 /// ones where an entity ends up a hair inside or outside a vision radius.
 fn sprint() -> impl Strategy<Value = Recipe> {
     (
@@ -428,20 +440,35 @@ fn sprint() -> impl Strategy<Value = Recipe> {
         })
 }
 
-/// One team walks into the other's towers and knocks both down.
+/// Everybody walks into the towers of the two teams that are not the drawn
+/// survivor, and knocks all four of them down.
+///
+/// Four rather than two, because a three-team match is decided when one team is
+/// *left*, not when one team is out. The assignment rotates by seat so that all
+/// four towers are attacked rather than all nine seats piling onto one, and it
+/// steps past any tower the attacking seat's own team owns — an order to attack
+/// an ally is discarded by the rules, which would leave that tower standing and
+/// the match undecided.
 fn endgame() -> impl Strategy<Value = Recipe> {
-    (proptest::num::u64::ANY, proptest::bool::ANY).prop_map(|(seed, blue_attacks)| {
-        let (first_seat, first_tower) = if blue_attacks {
-            (0usize, 2usize)
-        } else {
-            (3, 0)
-        };
-        let orders = (0..3usize)
-            .map(|offset| Command {
-                when: When::Now,
-                seq: 0,
-                player: Seat::ALL[first_seat + offset],
-                action: Action::Attack(tower_entity_id(first_tower + offset.min(1))),
+    (proptest::num::u64::ANY, 0usize..TEAM_COUNT).prop_map(|(seed, survivor)| {
+        let targets: Vec<usize> = Team::ALL
+            .into_iter()
+            .filter(|team| team.index() != survivor)
+            .flat_map(|team| [team.index() * 2, team.index() * 2 + 1])
+            .collect();
+        let orders = Seat::ALL
+            .into_iter()
+            .map(|player| {
+                let mut choice = player.index() % targets.len();
+                while tower_team(targets[choice]) == player.team() {
+                    choice = (choice + 1) % targets.len();
+                }
+                Command {
+                    when: When::Now,
+                    seq: 0,
+                    player,
+                    action: Action::Attack(tower_entity_id(targets[choice])),
+                }
             })
             .collect();
         Recipe {
@@ -569,6 +596,59 @@ fn omniscient(rules: &Rules) -> Rules {
     }
 }
 
+/// The two teams an observer is not on.
+///
+/// A three-team map has no "the enemy", and this is where that stops being a
+/// wording problem: every rule and every property that used to say *the other
+/// team* now has to say which of two, or say neither. The properties below say
+/// neither, on purpose.
+fn enemies_of(team: Team) -> [Team; 2] {
+    let mut out = [Team::Blue; 2];
+    let mut at = 0usize;
+    for other in Team::ALL {
+        if other != team {
+            out[at] = other;
+            at += 1;
+        }
+    }
+    out
+}
+
+/// The same commands, issued by another team's seats.
+///
+/// Position within the team is preserved, so the exchanged pair of batches is
+/// the same play performed by two different teams rather than two different
+/// plays.
+fn issued_by(batch: &[Command], team: Team) -> Vec<Command> {
+    batch
+        .iter()
+        .map(|command| Command {
+            player: Seat::ALL[team.index() * sim::TEAM_SIZE + command.player.within_team()],
+            ..*command
+        })
+        .collect()
+}
+
+/// Two states that differ by which of the observer's two enemy teams did which
+/// of two things.
+fn exchange(
+    state: &State,
+    observer: Seat,
+    first: &[Command],
+    second: &[Command],
+    rules: &Rules,
+) -> (State, State) {
+    let now = state.tick();
+    let [x, y] = enemies_of(observer.team());
+    let fork = |to_first: Team, to_second: Team| {
+        let mut batch = issued_by(first, to_first);
+        batch.extend(issued_by(second, to_second));
+        let inputs: Vec<Input> = batch.iter().map(|command| command.at(now)).collect();
+        step_with_rules(state, &inputs, rules)
+    };
+    (fork(x, y), fork(y, x))
+}
+
 proptest! {
     #![proptest_config(config())]
 
@@ -648,6 +728,57 @@ proptest! {
                     player
                 );
             }
+        }
+    }
+
+
+    /// **The two enemy teams are told apart only by what is visible.**
+    ///
+    /// The generalisation of property 3 to three teams, and the property that
+    /// only a third team makes possible to state. With two sides, "which enemy
+    /// is this about" has one answer and nothing in a view can encode it; with
+    /// three, a field naming the nearest enemy team, a counter kept per enemy
+    /// team, or an order correlated with team membership are all leaks that a
+    /// two-team format has no room for.
+    ///
+    /// The construction is an **exchange** rather than an arbitrary fork: the
+    /// same two batches of commands are performed by the observer's two enemy
+    /// teams, once each way round. Everything that differs between the two
+    /// states is therefore *which enemy team* did something, and nothing else —
+    /// so when the observer's entitlement is the same in both, a view that
+    /// differs is a view carrying the identity of a team the observer cannot
+    /// see.
+    ///
+    /// The consequent is byte equality rather than value equality, because the
+    /// thing being ruled out includes an ordering: two views holding the same
+    /// entities in a different order are equal in neither, but only the
+    /// encoding makes it obvious which claim is being made.
+    #[test]
+    fn a_view_tells_the_two_enemy_teams_apart_only_by_what_it_shows(
+        (recipe, first, second) in (reachable(),
+                                    prop::collection::vec(command(), 0..=3),
+                                    prop::collection::vec(command(), 0..=3)),
+    ) {
+        let rules = recipe.rules();
+        let state = recipe.state();
+
+        for observer in Seat::ALL {
+            let (left, right) = exchange(&state, observer, &first, &second, &rules);
+            let left_entitled: Entitled = entitled(&left, observer, &rules);
+            let right_entitled: Entitled = entitled(&right, observer, &rules);
+            if left_entitled != right_entitled {
+                continue;
+            }
+            let [x, y] = enemies_of(observer.team());
+            prop_assert_eq!(
+                view_for_with_rules(&left, observer, &rules).encode(),
+                view_for_with_rules(&right, observer, &rules).encode(),
+                "{:?} can tell {:?} having acted from {:?} having acted, and is \
+                 entitled to neither",
+                observer,
+                x,
+                y
+            );
         }
     }
 
@@ -980,7 +1111,7 @@ fn offsets() -> impl Strategy<Value = FxVec2> {
 /// Two champions, exactly `offset` apart near the origin, with the other four
 /// walked into the corners of the map.
 ///
-/// Reached rather than placed: the six champions are given move orders and
+/// Reached rather than placed: the nine champions are given move orders and
 /// walked there under [`SPRINT_RULES`], and `step_toward` lands exactly on a
 /// destination it can reach, which is what makes an *exact* offset something a
 /// simulation can produce.
@@ -1035,6 +1166,7 @@ struct Reach {
     views_with_an_event: u64,
     views_with_an_event_withheld: u64,
     forks_hidden_from_somebody: u64,
+    exchanges_hidden_from_the_observer: u64,
 }
 
 /// The properties above are all conditional on the states these strategies
@@ -1132,11 +1264,23 @@ fn the_generators_reach_the_states_these_properties_are_about() {
                 }
             }
         }
+
+        // And the antecedent of the three-team property: an exchange between
+        // the observer's two enemy teams that reaches two different worlds the
+        // observer cannot tell apart.
+        for observer in Seat::ALL {
+            let (left, right) = exchange(&state, observer, &batches[0], &batches[1], &rules);
+            if left.digest() != right.digest()
+                && entitled(&left, observer, &rules) == entitled(&right, observer, &rules)
+            {
+                reach.exchanges_hidden_from_the_observer += 1;
+            }
+        }
     }
 
     println!("reach: {reach:?}");
 
-    let floors: [(&str, u64, u64); 9] = [
+    let floors: [(&str, u64, u64); 10] = [
         ("dead champions", reach.dead_champions, 100),
         ("respawns", reach.respawns, 10),
         ("projectiles in flight", reach.projectiles_in_flight, 100),
@@ -1157,6 +1301,11 @@ fn the_generators_reach_the_states_these_properties_are_about() {
             "forks a player cannot tell apart",
             reach.forks_hidden_from_somebody,
             50,
+        ),
+        (
+            "enemy-team exchanges the observer cannot tell apart",
+            reach.exchanges_hidden_from_the_observer,
+            200,
         ),
     ];
     for (what, reached, floor) in floors {

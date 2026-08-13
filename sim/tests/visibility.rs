@@ -2,7 +2,7 @@
 //!
 //! # The claim
 //!
-//! For every tick of both fixtures and for every one of the six players, no
+//! For every tick of both fixtures and for every one of the nine players, no
 //! `EntityId` outside that player's vision appears anywhere in
 //! `view_for`'s output — in the entity list or in the derived events.
 //!
@@ -40,7 +40,7 @@ mod spec;
 
 use std::collections::BTreeSet;
 
-use fixture::{DUEL_RULES, DUEL_SEED, SEED, duel_script, script};
+use fixture::{DUEL_RULES, DUEL_SEED, SEED, TICKS, duel_script, script};
 use sim::view::{EntityView, PlayerView, VisibleEvent, view_for, view_for_with_rules};
 use sim::{
     Fx, Input, Liveness, PLAYER_COUNT, RULES, Rules, Seat, TOWER_COUNT, Tick, champion_entity_id,
@@ -213,7 +213,11 @@ fn audit(seed: u64, log: &[Vec<Input>], rules: &Rules) -> Coverage {
 fn no_entity_outside_vision_appears_anywhere_in_a_view() {
     let coverage = audit(SEED, &script(), &RULES);
 
-    assert_eq!(coverage.views, 6000, "six players, one thousand ticks");
+    assert_eq!(
+        coverage.views,
+        (PLAYER_COUNT * TICKS as usize) as u64,
+        "nine players, one thousand ticks"
+    );
 
     println!(
         "visibility: views={} entities_withheld={} events_withheld={} \
@@ -238,10 +242,10 @@ fn no_entity_outside_vision_appears_anywhere_in_a_view() {
         coverage.entities_withheld
     );
     // Events are scarcer than sightings and they happen where the fighting is,
-    // which is where both teams tend to have vision — so the margin here is
-    // thin by nature. The run above withholds 30 of 258; the floor is set below
-    // that rather than at it, and a change that drops it to zero is a culling
-    // rule that stopped culling derived signals.
+    // which is where the teams contesting that lane tend to have vision — so
+    // the margin here is thin by nature. The floor is set below what the run
+    // reaches rather than at it, and a change that drops it to zero is a
+    // culling rule that stopped culling derived signals.
     assert!(
         coverage.events_withheld >= 20,
         "only {} events were withheld",
@@ -253,9 +257,10 @@ fn no_entity_outside_vision_appears_anywhere_in_a_view() {
         coverage.events_delivered
     );
     assert!(
-        coverage.ticks_smaller_than_omniscient > 5_000,
-        "only {} of 6000 views were smaller than their unculled counterpart",
-        coverage.ticks_smaller_than_omniscient
+        coverage.ticks_smaller_than_omniscient > (coverage.views * 5) / 6,
+        "only {} of {} views were smaller than their unculled counterpart",
+        coverage.ticks_smaller_than_omniscient,
+        coverage.views
     );
 }
 
@@ -327,21 +332,35 @@ fn changing_the_vision_radius_cannot_move_a_single_state_digest() {
     }
 }
 
-/// Two players on opposite teams do not receive the same message, and neither
-/// receives the whole world.
+/// No two teams receive the same message, and none of the three receives the
+/// whole world.
+///
+/// Pairwise across all three rather than "the two teams are told different
+/// things", which is the sentence a two-team map allowed. What it adds is the
+/// case only a third team has: two teams that are *both* strangers to each
+/// other and to the observer must not be told the same thing either.
 #[test]
-fn the_two_teams_are_told_different_things() {
+fn no_two_teams_are_told_the_same_thing() {
     let mut state = new_state(9);
     for _ in 0..30 {
         state = sim::step(&state, &[]);
     }
-    let blue = view_for(&state, Seat::Blue0);
-    let red = view_for(&state, Seat::Red0);
-    assert_ne!(blue.encode(), red.encode());
-
     let everything = PLAYER_COUNT + TOWER_COUNT - 1;
-    assert!(blue.visible.len() < everything, "blue sees the whole board");
-    assert!(red.visible.len() < everything, "red sees the whole board");
+    let watchers = [Seat::Blue0, Seat::Red0, Seat::Green0];
+    for (at, seat) in watchers.iter().enumerate() {
+        let view = view_for(&state, *seat);
+        assert!(
+            view.visible.len() < everything,
+            "{seat:?} sees the whole board"
+        );
+        for other in watchers.iter().skip(at + 1) {
+            assert_ne!(
+                view.encode(),
+                view_for(&state, *other).encode(),
+                "{seat:?} and {other:?} were told the same thing"
+            );
+        }
+    }
 }
 
 /// The projection does not depend on which order the caller asks in, and asking

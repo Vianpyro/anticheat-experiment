@@ -66,23 +66,31 @@ const CHECKPOINT: u32 = 100;
 /// clients do the same thing would leave them in the same place, and three
 /// champions standing on one point see the same world for a reason that has
 /// nothing to do with the projection being right.
+///
+/// They walk down the Blue–Red lane, which on the triangular map is the segment
+/// from Blue's base to Red's. A thousand ticks at six units a second covers a
+/// hundred and seventy-three, so the three of them leave their own base, pass
+/// their own tower, cross into the dark, and arrive among the Red champions
+/// standing at their spawn under Red's tower — which is what puts entities into
+/// and out of the fog rather than leaving every view empty.
 fn scripted(seat: Seat, tick: u32) -> Action {
-    let lane = match seat {
-        Seat::Blue0 => -8,
+    let home = sim::base_position(Seat::Blue0.team(), &sim::RULES);
+    let target = sim::base_position(Seat::Red0.team(), &sim::RULES);
+    let along = target.sub(home);
+    // Three files abreast, a few units apart across the lane.
+    let across = FxVec2::new(along.y.neg(), along.x).normalize_or_zero();
+    let file = match seat {
+        Seat::Blue0 => -4,
         Seat::Blue1 => 0,
-        _ => 8,
+        _ => 4,
     };
+
     if tick % 240 == 60 {
         // On cooldown, so projectiles exist and the per-recipient handle spaces
         // have something to name.
-        Action::Skillshot(FxVec2::new(Fx::ONE, Fx::from_int(lane / 8)))
+        Action::Skillshot(along)
     } else if tick.is_multiple_of(120) {
-        // Toward the enemy base. A thousand ticks at six units a second covers
-        // the two hundred units between the spawn lines, so the three of them
-        // walk out of their own half, meet the Red team standing at its spawn,
-        // and take tower fire on the way — which is what puts entities into and
-        // out of the fog rather than leaving every view empty.
-        Action::Move(FxVec2::new(Fx::from_int(120), Fx::from_int(lane)))
+        Action::Move(target.add(across.scale(Fx::from_int(file))))
     } else {
         Action::Idle
     }
@@ -318,22 +326,27 @@ async fn three_headless_clients_agree_and_the_log_resimulates() {
 /// Cargo only sets for a package's *own* binaries and `resim` belongs to
 /// `replay`.
 ///
-/// It is built on demand because the obvious assumption is wrong, and CI is
-/// where that showed: `cargo test --workspace` does **not** build every binary
-/// in the workspace. It builds what each package's test targets need, and no
-/// test target needs `resim` — locally it existed only because a
+/// It is built here because the obvious assumption is wrong, and CI is where
+/// that showed: `cargo test --workspace` does **not** build every binary in the
+/// workspace. It builds what each package's test targets need, and no test
+/// target needs `resim` — locally it existed only because a
 /// `cargo build --all-targets` had happened to run first, which is the shape of
 /// green that turns red on a clean checkout. Building it here makes the test
 /// self-contained on any machine, and the nested invocation is safe because the
 /// outer cargo is not holding the build lock while its tests run.
+///
+/// **Built every time, not only when missing.** The `if it exists, use it`
+/// version had a worse failure than the one it fixed: a `resim` left over from
+/// a previous build resimulates under the rules *it* was compiled with, so a
+/// change to `sim` makes the criterion compare a new server against an old
+/// verifier — which fails, correctly, for a reason that has nothing to do with
+/// the change. Cargo is a no-op when the binary is current, and the seconds it
+/// costs otherwise are seconds the alternative spends misleading somebody.
 fn resim_binary() -> PathBuf {
     let mut path = std::env::current_exe().expect("the test binary has a path");
     path.pop(); // deps/
     path.pop(); // debug/ or release/
     path.push(if cfg!(windows) { "resim.exe" } else { "resim" });
-    if path.exists() {
-        return path;
-    }
 
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

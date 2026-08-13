@@ -29,7 +29,7 @@ use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 use sim::{
     Action, EntityId, Fx, FxVec2, Input, Liveness, MAX_PROJECTILES, Outcome, PLAYER_COUNT, RULES,
-    Rng, Seat, State, Tick, new_state, step,
+    Rng, Seat, State, TEAM_COUNT, TEAM_SIZE, Team, Tick, new_state, step,
 };
 
 /// Where a counter-example is written down, and why it is written down at all.
@@ -444,7 +444,7 @@ proptest! {
 }
 
 /// Every seat can be driven, and the seat that acts is the seat named. Not a
-/// property test — six cases is the whole domain.
+/// property test — nine cases is the whole domain.
 #[test]
 fn each_seat_responds_to_its_own_input_only() {
     let state = new_state(11);
@@ -472,17 +472,29 @@ fn each_seat_responds_to_its_own_input_only() {
 /// It asserted that `PlayerId(200)` was ignored rather than folded back into
 /// the match by a modulo. That assertion was worth making while the type
 /// allowed the value; since M3 it does not, so the claim moved down a level —
-/// from "the rules ignore it" to "it does not exist" — and the six variants
+/// from "the rules ignore it" to "it does not exist" — and the nine variants
 /// below are the whole domain. The byte that would have carried a
 /// two-hundredth seat is refused by `protocol`'s decoder, and that is where
 /// the test for it now lives.
 #[test]
-fn the_seats_are_exactly_six_and_they_map_to_their_indices() {
+fn the_seats_are_exactly_the_roster_and_they_map_to_their_indices() {
+    assert_eq!(Seat::ALL.len(), PLAYER_COUNT);
+    assert_eq!(PLAYER_COUNT, TEAM_COUNT * TEAM_SIZE);
     for (index, seat) in Seat::ALL.iter().enumerate() {
         assert_eq!(seat.index(), index);
         assert_eq!(Seat::from_index(index as u8), Some(*seat));
+        assert_eq!(seat.team().index() * TEAM_SIZE + seat.within_team(), index);
     }
-    for outside in [PLAYER_COUNT as u8, 7, 100, u8::MAX] {
+    for outside in [PLAYER_COUNT as u8, PLAYER_COUNT as u8 + 1, 100, u8::MAX] {
         assert_eq!(Seat::from_index(outside), None, "{outside} named a seat");
+    }
+    // Three teams of three, and every team the same size — which is what makes
+    // "the seats of a team" a phrase the rules can use without a second rule.
+    for team in Team::ALL {
+        assert_eq!(
+            Seat::ALL.iter().filter(|seat| seat.team() == team).count(),
+            TEAM_SIZE,
+            "{team:?}"
+        );
     }
 }

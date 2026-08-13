@@ -191,6 +191,7 @@ impl Canonical for Team {
         match self {
             Self::Blue => 0u8.hash_into(hasher),
             Self::Red => 1u8.hash_into(hasher),
+            Self::Green => 2u8.hash_into(hasher),
         }
     }
 }
@@ -419,10 +420,9 @@ impl Canonical for Rules {
             frac_bits,
             ticks_per_second,
             map_half_extent,
-            spawn_x,
+            bases,
             spawn_spacing,
-            tower_outer_x,
-            tower_inner_x,
+            tower_lane_fraction,
             champion_max_hp,
             champion_speed,
             champion_radius,
@@ -450,10 +450,9 @@ impl Canonical for Rules {
         frac_bits.hash_into(hasher);
         ticks_per_second.hash_into(hasher);
         map_half_extent.hash_into(hasher);
-        spawn_x.hash_into(hasher);
+        bases.hash_into(hasher);
         spawn_spacing.hash_into(hasher);
-        tower_outer_x.hash_into(hasher);
-        tower_inner_x.hash_into(hasher);
+        tower_lane_fraction.hash_into(hasher);
         champion_max_hp.hash_into(hasher);
         champion_speed.hash_into(hasher);
         champion_radius.hash_into(hasher);

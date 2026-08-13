@@ -9,7 +9,7 @@
 //! disagree in a field nothing reads still produce two different digests. Every
 //! field below is one the rules actually write.
 //!
-//! Sizes are fixed: six champions, four towers, a projectile arena of a fixed
+//! Sizes are fixed: nine champions, six towers, a projectile arena of a fixed
 //! capacity, and no `Vec` anywhere. `docs/RISKS.md` R10 asks for this so that
 //! the reusable-buffer `step_into` the reinforcement-learning sub-project will
 //! eventually want is an addition beside `step` rather than a redesign of the
@@ -23,23 +23,36 @@ use crate::sha256::Digest;
 use crate::vec2::FxVec2;
 
 /// Players in a match, three per team.
-pub const PLAYER_COUNT: usize = 6;
+pub const PLAYER_COUNT: usize = 9;
 
 /// Players on one team.
 pub const TEAM_SIZE: usize = 3;
 
-/// Towers on the map, two per team.
-pub const TOWER_COUNT: usize = 4;
+/// Teams in a match.
+///
+/// Three, on a triangular map: a base at each vertex, a lane along each edge,
+/// and every lane contested by exactly the two teams whose bases it joins. The
+/// third team is not a variation on the two-team game — it is a different game,
+/// and `docs/SCOPE.md` records the exploit class it introduces that a two-team
+/// format does not have.
+pub const TEAM_COUNT: usize = 3;
+
+/// Towers on the map, two per team: one on each of the two lanes that leave a
+/// team's own base.
+pub const TOWER_COUNT: usize = 6;
 
 /// Projectiles that can be in flight at once.
 ///
-/// A cast that finds no free slot is dropped rather than queued. With one
-/// skillshot on a long cooldown and six players this is unreachable in play;
-/// the bound exists so that the arena is a fixed-size array, and dropping is
-/// the behaviour that keeps the rules total.
+/// A cast that finds no free slot is dropped rather than queued. The skillshot's
+/// lifetime is shorter than its cooldown, so a seat has at most one projectile
+/// in flight and the arena cannot hold more than [`PLAYER_COUNT`] of them under
+/// the game's constants; the capacity is far above that. The bound exists so
+/// that the arena is a fixed-size array, and dropping is the behaviour that
+/// keeps the rules total under a fixture's own constants, where the ratio can
+/// go the other way.
 pub const MAX_PROJECTILES: usize = 32;
 
-/// First `EntityId` handed to a tower. Champions occupy `0..6`.
+/// First `EntityId` handed to a tower. Champions occupy `0..9`.
 ///
 /// Public because the handle layout is not an implementation detail: a
 /// champion's handle *is* its seat and a tower's handle is derivable from the
@@ -60,7 +73,7 @@ pub const PROJECTILE_ID_BASE: u16 = 1000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct Tick(pub u32);
 
-/// A seat in the match. There are exactly six, and there is no seventh.
+/// A seat in the match. There are exactly nine, and there is no tenth.
 ///
 /// # Why this is an enum and not an integer
 ///
@@ -80,8 +93,8 @@ pub struct Tick(pub u32);
 /// remains is [`Seat::from_index`], and it belongs at the frontier where an
 /// untrusted byte becomes a seat: `protocol`'s decoder, and nowhere else.
 ///
-/// Seats `Blue0..Blue2` are [`Team::Blue`]; the discriminants are the indices
-/// into every per-seat array in this crate.
+/// Seats `Blue0..Blue2` are [`Team::Blue`] and so on round the triangle; the
+/// discriminants are the indices into every per-seat array in this crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Seat {
@@ -97,6 +110,12 @@ pub enum Seat {
     Red1 = 4,
     /// Red's third seat.
     Red2 = 5,
+    /// Green's first seat.
+    Green0 = 6,
+    /// Green's second seat.
+    Green1 = 7,
+    /// Green's third seat.
+    Green2 = 8,
 }
 
 impl Seat {
@@ -108,6 +127,9 @@ impl Seat {
         Self::Red0,
         Self::Red1,
         Self::Red2,
+        Self::Green0,
+        Self::Green1,
+        Self::Green2,
     ];
 
     /// The index this seat occupies in every per-seat array.
@@ -123,13 +145,14 @@ impl Seat {
 
     /// Which side this seat plays for.
     ///
-    /// Exhaustive rather than arithmetic on the index: a seventh variant would
-    /// stop this compiling instead of quietly joining Red.
+    /// Exhaustive rather than arithmetic on the index: a tenth variant would
+    /// stop this compiling instead of quietly joining Green.
     #[must_use]
     pub const fn team(self) -> Team {
         match self {
             Self::Blue0 | Self::Blue1 | Self::Blue2 => Team::Blue,
             Self::Red0 | Self::Red1 | Self::Red2 => Team::Red,
+            Self::Green0 | Self::Green1 | Self::Green2 => Team::Green,
         }
     }
 
@@ -149,6 +172,9 @@ impl Seat {
             3 => Some(Self::Red0),
             4 => Some(Self::Red1),
             5 => Some(Self::Red2),
+            6 => Some(Self::Green0),
+            7 => Some(Self::Green1),
+            8 => Some(Self::Green2),
             _ => None,
         }
     }
@@ -157,9 +183,9 @@ impl Seat {
     #[must_use]
     pub const fn within_team(self) -> usize {
         match self {
-            Self::Blue0 | Self::Red0 => 0,
-            Self::Blue1 | Self::Red1 => 1,
-            Self::Blue2 | Self::Red2 => 2,
+            Self::Blue0 | Self::Red0 | Self::Green0 => 0,
+            Self::Blue1 | Self::Red1 | Self::Green1 => 1,
+            Self::Blue2 | Self::Red2 | Self::Green2 => 2,
         }
     }
 }
@@ -172,25 +198,39 @@ const _: () = assert!(Seat::ALL.len() == PLAYER_COUNT);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EntityId(pub u16);
 
-/// One of the two sides.
+/// One of the three sides.
+///
+/// Three rather than two, and there is deliberately no `opponent()`: a team has
+/// two of them, and a function that had to pick one would be picking it for a
+/// rule that should be asking "not mine" instead. Every rule that used it — the
+/// towers' target selection, the projectile's collision filter — now compares
+/// team membership directly, which is the form that stayed correct when the
+/// third team arrived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Team {
-    /// Spawns at negative `x` and defends the towers there.
-    Blue,
-    /// Spawns at positive `x`.
-    Red,
+    /// Base at the apex of the triangle.
+    Blue = 0,
+    /// Base at the lower-right vertex.
+    Red = 1,
+    /// Base at the lower-left vertex.
+    Green = 2,
 }
 
 impl Team {
-    /// The other side.
+    /// Every team, in index order.
+    pub const ALL: [Self; TEAM_COUNT] = [Self::Blue, Self::Red, Self::Green];
+
+    /// The index this team occupies in every per-team array.
     #[must_use]
-    pub const fn opponent(self) -> Self {
-        match self {
-            Self::Blue => Self::Red,
-            Self::Red => Self::Blue,
-        }
+    pub const fn index(self) -> usize {
+        self as usize
     }
 }
+
+/// What makes [`Team::index`] a total index. A variant added without growing
+/// the arrays stops the build here.
+const _: () = assert!(Team::ALL.len() == TEAM_COUNT);
 
 /// Whether a champion is on the map, and what it is waiting for if not.
 ///
@@ -240,7 +280,7 @@ pub struct Cooldowns {
     pub targeted: u16,
 }
 
-/// One of the six champions. Its identity is its index in
+/// One of the nine champions. Its identity is its index in
 /// [`State::champions`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Champion {
@@ -254,7 +294,7 @@ pub struct Champion {
     pub cooldowns: Cooldowns,
 }
 
-/// One of the four towers. Its position and team follow from its index.
+/// One of the six towers. Its position and team follow from its index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tower {
     /// Remaining hit points; zero means destroyed, permanently.
@@ -429,36 +469,71 @@ pub fn new_state_with_rules(seed: u64, rules: &Rules) -> State {
     }
 }
 
+/// Where a team's base stands.
+///
+/// The three bases are the vertices of the triangle, and they are constants
+/// rather than a rotation of one another: a rotation by 120 degrees needs
+/// `sqrt(3)/2`, which is not a fixed-point number, so a computed layout would
+/// be three approximations with a trigonometric function in the middle of the
+/// rules. Written down, they are exact values the hash covers.
+///
+/// The map is symmetric about `x = 0` and not under rotation, which is a real
+/// asymmetry between Blue and the other two and is stated rather than papered
+/// over. It is worth about a raw unit of position, on a map two hundred units
+/// across, in a game `docs/SCOPE.md` calls a fixture.
+#[must_use]
+pub fn base_position(team: Team, rules: &Rules) -> FxVec2 {
+    rules.bases[team.index()]
+}
+
 /// Where the champion in `seat` starts, and returns to on respawn.
 ///
-/// The three seats of a team are spread along `y` so that they do not begin
+/// The three seats of a team are spread across the mouth of their own base —
+/// perpendicular to the line from the origin — so that they do not begin
 /// stacked on one point, which would make the first tick's collision geometry
-/// degenerate.
+/// degenerate, and so that the spread is the same shape for all three teams
+/// rather than along an axis that means something different to each of them.
 pub(crate) fn spawn_position(seat: Seat, rules: &Rules) -> FxVec2 {
+    let base = base_position(seat.team(), rules);
+    let across = FxVec2::new(base.y.neg(), base.x).normalize_or_zero();
     let offset = Fx::from_int(seat.within_team() as i32)
         .sub(Fx::ONE)
         .mul(rules.spawn_spacing);
-    let x = match seat.team() {
-        Team::Blue => rules.spawn_x,
-        Team::Red => rules.spawn_x.neg(),
-    };
-    FxVec2::new(x, offset)
+    base.add(across.scale(offset))
 }
 
-/// Where the tower in `index` stands. Towers `0..2` are Blue's, outer first.
+/// The lane a tower stands on: whose tower it is, and which base the lane runs
+/// to.
+///
+/// A table rather than arithmetic on the index. Three lanes — Blue–Red,
+/// Red–Green, Green–Blue — each contested by exactly the two teams whose bases
+/// it joins, and each carrying one tower per contestant, at that contestant's
+/// own end. Two towers per team, two lanes per team, and every entry visible in
+/// one place.
+#[must_use]
+pub const fn tower_lane(index: usize) -> (Team, Team) {
+    match index {
+        0 => (Team::Blue, Team::Red),
+        1 => (Team::Blue, Team::Green),
+        2 => (Team::Red, Team::Green),
+        3 => (Team::Red, Team::Blue),
+        4 => (Team::Green, Team::Blue),
+        _ => (Team::Green, Team::Red),
+    }
+}
+
+/// Where the tower in `index` stands: along its own lane, a fixed fraction of
+/// the way from its own base toward the base at the other end.
 ///
 /// Takes its rules explicitly rather than reading [`crate::RULES`]: tower
 /// placement is derived from the constants, so a caller simulating under other
 /// constants must be unable to ask this question without saying which ones.
 #[must_use]
 pub fn tower_position(index: usize, rules: &Rules) -> FxVec2 {
-    let x = match index {
-        0 => rules.tower_outer_x,
-        1 => rules.tower_inner_x,
-        2 => rules.tower_outer_x.neg(),
-        _ => rules.tower_inner_x.neg(),
-    };
-    FxVec2::new(x, Fx::ZERO)
+    let (own, toward) = tower_lane(index);
+    let from = base_position(own, rules);
+    let to = base_position(toward, rules);
+    from.add(to.sub(from).scale(rules.tower_lane_fraction))
 }
 
 /// Where an [`EntityId`] points, once it has been checked.
@@ -486,7 +561,7 @@ pub const fn entity_team(entity: EntityRef) -> Team {
 /// Which team owns the tower in `index`.
 #[must_use]
 pub const fn tower_team(index: usize) -> Team {
-    if index < 2 { Team::Blue } else { Team::Red }
+    tower_lane(index).0
 }
 
 /// The handle of the champion in `seat`.

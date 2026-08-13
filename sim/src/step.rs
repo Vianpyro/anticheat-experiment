@@ -396,7 +396,7 @@ fn fire_towers(state: &mut State, rules: &Rules) {
 
         let Some(seat) = lowest_enemy_in_range(
             state,
-            tower_team(index).opponent(),
+            tower_team(index),
             tower_position(index, rules),
             rules.tower_range,
         ) else {
@@ -410,14 +410,20 @@ fn fire_towers(state: &mut State, rules: &Rules) {
     }
 }
 
-/// The lowest-numbered seat of `team` that is alive and within `radius`.
+/// The lowest-numbered seat *not* on `team` that is alive and within `radius`.
 ///
 /// Lowest seat rather than nearest, lowest health, or most recent aggressor.
 /// All four are defensible game design and this one is a fixture, so the
 /// tie-break that needs no second rule wins.
+///
+/// "Not on `team`" rather than "on the opposing team", and the difference is
+/// the whole of what three teams changed here: a tower has two enemies, and a
+/// rule that named one of them would have to say which. Seat order decides
+/// between them, exactly as it decides between two enemies on one team, so
+/// there is no second tie-break and no team the towers prefer to shoot.
 fn lowest_enemy_in_range(state: &State, team: Team, origin: FxVec2, radius: Fx) -> Option<Seat> {
     for seat in Seat::ALL {
-        if seat.team() != team {
+        if seat.team() == team {
             continue;
         }
         let champion = state.champion(seat);
@@ -537,33 +543,48 @@ fn resolve_deaths(state: &mut State, rules: &Rules) {
     }
 }
 
+/// The match is decided when at most one team still has a tower standing.
+///
+/// The two-team rule was "a team that has lost both its towers loses", and with
+/// three teams that is not the same sentence as "somebody has won": a team can
+/// be knocked out while two are still playing. So the condition is stated from
+/// the other end — the match ends when the *count* of teams still standing
+/// falls to one — which is the two-team rule generalised rather than replaced,
+/// because with two teams the two sentences coincide.
+///
+/// A team with no tower left keeps its champions on the map. Removing them
+/// would be a rule about how a knocked-out team behaves, which is game design,
+/// and `docs/SCOPE.md` freezes the game as a fixture: the champions of an
+/// eliminated team are exactly as much of the world as the champions of an
+/// unoccupied seat, which the rules already handle.
 fn decide_outcome(state: &mut State) {
     if matches!(state.outcome, Outcome::Decided { .. }) {
         return;
     }
 
-    let mut blue_stands = false;
-    let mut red_stands = false;
+    let mut standing = [false; crate::state::TEAM_COUNT];
     for (index, tower) in state.towers.iter().enumerate() {
-        if !Tower::is_standing(*tower) {
-            continue;
-        }
-        match tower_team(index) {
-            Team::Blue => blue_stands = true,
-            Team::Red => red_stands = true,
+        if Tower::is_standing(*tower) {
+            standing[tower_team(index).index()] = true;
         }
     }
 
-    let winner = match (blue_stands, red_stands) {
-        (true, true) => return,
-        (true, false) => Team::Blue,
-        (false, true) => Team::Red,
-        // Both sides losing their last tower on the same tick is reachable —
-        // two projectiles land in the same tick — and needs an answer that is
-        // a rule rather than whichever loop happened to run last. Blue is
-        // awarded it. Arbitrary, stated, and identical on every platform.
-        (false, false) => Team::Blue,
-    };
+    let mut count = 0usize;
+    let mut last = None;
+    for team in Team::ALL {
+        if standing[team.index()] {
+            count = count.saturating_add(1);
+            last = Some(team);
+        }
+    }
+    if count > 1 {
+        return;
+    }
+    // Every team losing its last tower on the same tick is reachable — three
+    // projectiles land in one tick — and needs an answer that is a rule rather
+    // than whichever loop happened to run last. The first team is awarded it.
+    // Arbitrary, stated, and identical on every platform.
+    let winner = last.unwrap_or(Team::Blue);
     state.outcome = Outcome::Decided {
         winner,
         at: state.tick,
@@ -833,11 +854,28 @@ mod tests {
         );
     }
 
+    /// Knocking a team out does not end a three-team match, and knocking the
+    /// second one out does.
+    ///
+    /// The two-team rule said "a team that loses both its towers loses". With
+    /// three teams that sentence stops meaning "somebody won", and this is the
+    /// difference: Red losing both towers leaves Blue and Green playing.
     #[test]
-    fn destroying_both_enemy_towers_decides_the_match_and_freezes_it() {
+    fn a_match_is_decided_when_one_team_is_left_standing_and_not_before() {
         let mut state = new_state(7);
+        // Red's two towers, by the layout in `tower_lane`.
         state.set_tower_hp(2, Fx::ZERO);
         state.set_tower_hp(3, Fx::ZERO);
+        let knocked_out = step(&state, &[]);
+        assert_eq!(
+            knocked_out.outcome(),
+            Outcome::InProgress,
+            "a three-team match with two teams still standing is not decided"
+        );
+
+        // …and then Green's.
+        state.set_tower_hp(4, Fx::ZERO);
+        state.set_tower_hp(5, Fx::ZERO);
         let state = step(&state, &[]);
         assert_eq!(
             state.outcome(),

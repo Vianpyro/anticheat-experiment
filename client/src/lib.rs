@@ -235,6 +235,7 @@ fn encode_outcome(out: &mut Vec<u8>, outcome: Outcome) {
             out.push(match winner {
                 sim::Team::Blue => 0,
                 sim::Team::Red => 1,
+                sim::Team::Green => 2,
             });
             out.extend_from_slice(&at.0.to_be_bytes());
         }

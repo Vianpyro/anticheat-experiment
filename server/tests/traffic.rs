@@ -71,7 +71,7 @@ fn config() -> ProptestConfig {
 // Driving a match
 // ---------------------------------------------------------------------------
 
-/// One tick's worth of what the six clients ask for.
+/// One tick's worth of what the nine clients ask for.
 ///
 /// A batch rather than a per-seat action, because the thing under test is what
 /// the *server* does with a tick's traffic, and a seat that says nothing this
@@ -408,28 +408,24 @@ fn nothing_about_the_traffic_follows_the_number_of_visible_entities() {
     let mut ticks: u64 = 0;
 
     for tick in 0..400u32 {
-        // Everybody walks toward the enemy base and casts on cooldown, so the
-        // run passes through an empty view, a busy one, and the crossing in
-        // between.
+        // All nine walk at the middle of the triangle and cast on cooldown, so
+        // the run passes through a view with nothing but one's own team in it,
+        // a view with two other teams in it, and the crossing in between. The
+        // middle rather than "the enemy base", because on a three-team map
+        // there is no such place — which is exactly the sort of sentence that
+        // used to be written as `x = 120` and now has to be a position.
         let mut batch = Vec::new();
         if tick % 90 == 0 {
-            for (index, seat) in Seat::ALL.iter().enumerate() {
-                let toward = if seat.team() == sim::Team::Blue {
-                    Fx::from_int(120)
-                } else {
-                    Fx::from_int(-120)
-                };
-                batch.push((index, Action::Move(FxVec2::new(toward, Fx::ZERO))));
+            for (index, _) in Seat::ALL.iter().enumerate() {
+                batch.push((index, Action::Move(FxVec2::ZERO)));
             }
         }
         if tick % 240 == 30 {
             for (index, seat) in Seat::ALL.iter().enumerate() {
-                let toward = if seat.team() == sim::Team::Blue {
-                    Fx::ONE
-                } else {
-                    Fx::NEG_ONE
-                };
-                batch.push((index, Action::Skillshot(FxVec2::new(toward, Fx::ZERO))));
+                // Aimed from its own base at the origin, so every skillshot
+                // flies into the middle whichever vertex it started from.
+                let home = sim::base_position(seat.team(), &RULES);
+                batch.push((index, Action::Skillshot(home.neg())));
             }
         }
 
@@ -461,9 +457,9 @@ fn nothing_about_the_traffic_follows_the_number_of_visible_entities() {
     // Not "some tick showed a player nothing", which this game cannot produce:
     // vision is a team property and a living ally stands inside its own radius,
     // so a seat with a teammate alive always sees at least that teammate. The
-    // variation that matters is the enemy side of the fog, and what this asks
-    // for is that the run crossed it — the busiest tick shows a player several
-    // more entities than the quietest.
+    // variation that matters is what is on the far side of the fog, and what
+    // this asks for is that the run crossed it — the busiest tick shows a
+    // player several more entities than the quietest.
     let (fewest, most) = (
         *counts.iter().next().expect("no views at all"),
         *counts.iter().next_back().expect("no views at all"),
@@ -506,36 +502,43 @@ fn nothing_about_the_traffic_follows_the_number_of_visible_entities() {
 /// The projectile-handle channel, closed at the frame the client actually
 /// receives.
 ///
-/// # Why this is a scripted scenario and not a property
+/// # Why this is a scripted scenario and not a property, and what changed
 ///
-/// It is here because the property above does not catch this, and that was
+/// It was written because the property above could not catch this, and that was
 /// established by breaking it rather than by reasoning about it: `localize` was
 /// mutated to name every projectile in the arena instead of only the ones the
 /// recipient was shown — the exact leak the handle space exists to close — and
-/// `two_states_a_player_cannot_tell_apart_produce_the_same_bytes` stayed green
-/// at 4096 cases with an eight-tick tail.
+/// at two teams `two_states_a_player_cannot_tell_apart_produce_the_same_bytes`
+/// stayed green at 4096 cases with an eight-tick tail.
 ///
-/// The reason is structural rather than a budget problem. That property's
-/// antecedent is *full* entitlement equality, and a hidden cast advances a
-/// recipient's handle counter without changing anything the recipient is
-/// entitled to — so the frames only differ on a later tick, on which a visible
-/// projectile is named, and by then almost every fork has diverged in something
-/// the seat can see. The forks that stay indistinguishable are exactly the ones
-/// where nothing visible happened, which are exactly the ones in which the
-/// counter never reaches a frame.
+/// The reason was structural rather than a budget problem, and it was an
+/// anti-correlation: that property's antecedent is *full* entitlement equality,
+/// and on a two-team map a fork the recipient could not tell apart was almost
+/// always a fork in which nothing had happened anywhere near anybody. The forks
+/// that stayed indistinguishable were exactly the ones with no hidden activity
+/// to leak.
 ///
-/// So the leak needs a state built to expose it: three casts out of sight
-/// before one in sight. This is the transport-level twin of
-/// `protocol/tests/wire.rs::a_gap_in_the_global_counter_is_not_observable`, and
-/// it exists because a property that cannot see a channel is not evidence the
-/// channel is closed.
+/// **Three teams filled that hole rather than deepening it.** A whole enemy
+/// team can now act at a vertex a hundred and seventy-three units away while
+/// the observer's entitlement is untouched, so "hidden activity" and "equal
+/// entitlement" stopped being opposites. Re-run at nine seats, the same
+/// mutation fails the property on its **first case**, one tick after the fork:
+/// `Blue0 was sent different bytes 1 ticks after a fork it cannot tell apart`.
+///
+/// This scenario stays anyway, and not out of sentiment. A property that
+/// happens to reach a channel is evidence about this generator on this map; a
+/// scripted state built to expose the channel — three casts out of sight before
+/// one in sight — is evidence about the channel. It is the transport-level twin
+/// of `protocol/tests/wire.rs::a_gap_in_the_global_counter_is_not_observable`,
+/// and the two of them together are what makes the closure checkable rather
+/// than sampled.
 #[test]
 fn a_frame_never_carries_the_count_of_casts_the_recipient_did_not_see() {
     let mut game = seated(0x0CA5_7000_0000_0001);
     let mut seq = [0u32; PLAYER_COUNT];
 
-    // Tick 0: the Red seats cast, two hundred units from anything Blue can
-    // see. Drained in seat order, so these take the first three global handles.
+    // Tick 0: the Red seats cast, a lane away from anything Blue can see.
+    // Drained in seat order, so these take the first three global handles.
     let red_casts = Batch(
         [3usize, 4, 5]
             .into_iter()

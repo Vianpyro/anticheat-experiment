@@ -511,6 +511,7 @@ impl Encode for Team {
         match self {
             Self::Blue => 0u8.encode_into(out),
             Self::Red => 1u8.encode_into(out),
+            Self::Green => 2u8.encode_into(out),
         }
     }
 }
@@ -886,6 +887,7 @@ impl Decode for Team {
         match u8::decode_from(cursor)? {
             0 => Some(Self::Blue),
             1 => Some(Self::Red),
+            2 => Some(Self::Green),
             _ => None,
         }
     }
@@ -1032,7 +1034,7 @@ mod tests {
         for seat in [Seat::Red0, Seat::Red1, Seat::Red2] {
             assert!(
                 !ids(&view).contains(&champion_entity_id(seat)),
-                "{seat:?} is two hundred units away and still in the view"
+                "{seat:?} is a lane away and still in the view"
             );
         }
         // …and the culling is not "return nothing": the allies at spawn are
@@ -1206,7 +1208,7 @@ mod tests {
     ///
     /// This used to assert that `view_for(&state, PlayerId(200))` returned a
     /// view rather than panicking, which was the best a `u8` allowed. The
-    /// replacement is not another assertion: it is [`Seat`], which has six
+    /// replacement is not another assertion: it is [`Seat`], which has nine
     /// values, so the call this test used to make no longer type-checks. What
     /// remains to be tested is the frontier that turns a byte into a seat, and
     /// that lives in `protocol` with the rest of the decoder.
@@ -1255,7 +1257,7 @@ mod tests {
                 hp: Fx::ONE,
             });
         }
-        for index in 0..4 {
+        for index in 0..crate::state::TOWER_COUNT {
             visible.push(EntityView::Tower {
                 id: tower_entity_id(index),
                 position: FxVec2::ZERO,

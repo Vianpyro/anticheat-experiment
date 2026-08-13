@@ -76,11 +76,11 @@ pub struct MatchConfig {
     pub seed: u64,
     /// How many seats must be filled and ready before the first tick runs.
     ///
-    /// Three at M3, because the exit criterion is three headless clients. The
-    /// three seats nobody occupies still hold champions — `State` always has
-    /// six — and they stand at their spawn taking no orders, which is a
-    /// perfectly ordinary state for the rules and one the fixtures already
-    /// cover.
+    /// Three at M3, because the exit criterion is three headless clients: one
+    /// team of the three. The seats nobody occupies still hold champions —
+    /// `State` always has [`sim::PLAYER_COUNT`] — and they stand at their base
+    /// taking no orders, which is a perfectly ordinary state for the rules and
+    /// one the fixtures already cover.
     pub players: usize,
 }
 

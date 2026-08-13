@@ -20,7 +20,7 @@
 //!   that wraps teleports across the map; a position that saturates stops at
 //!   the edge. Only one of those is debuggable.
 //! - *Not panicking*, because `step` runs inside an authoritative server for
-//!   six players and a panic is a match everyone loses. A total function has no
+//!   nine players and a panic is a match everyone loses. A total function has no
 //!   failure path to get wrong.
 //! - Saturation is nevertheless still a silent change of value, so it is not
 //!   trusted as a design: the *legal domain* below is stated, and the property
@@ -44,8 +44,9 @@
 //! Toward zero rather than toward negative infinity — which an arithmetic shift
 //! would have given for free — so that the type is symmetric about the origin:
 //! `(-a) * b == -(a * b)` holds, and the property tests assert it. On a map
-//! whose origin is the middle of the lane, a rounding rule that drifts one
-//! direction is a rounding rule that treats the two teams differently.
+//! whose origin is the middle of the map, a rounding rule that drifts one
+//! direction is a rounding rule that treats one team differently from the
+//! others.
 
 use core::fmt;
 use core::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};

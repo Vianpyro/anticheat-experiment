@@ -53,7 +53,14 @@ use sim::{Action, Digest, EntityId, Fx, FxVec2, Input, Seat, State, Tick, new_st
 /// Not the protocol version and not `sim`'s: one is how two processes talk to
 /// each other, one is how a file is laid out, one is what the rules do, and
 /// they change for different reasons.
-pub const FORMAT: u16 = 1;
+///
+/// It moved to 2 when the match went to nine seats. The layout did not change —
+/// a seat is still one byte — and that is exactly why it had to move: a
+/// format-1 recording holds seat bytes `0..6` that this build would read as
+/// perfectly good seats belonging to other teams, and resimulate into a
+/// different match. `rules_hash` would catch it a moment later, which is a
+/// reason to be relieved rather than a reason to leave the version alone.
+pub const FORMAT: u16 = 2;
 
 /// What every recording starts with, so that a file that is not one is refused
 /// by its first eight bytes rather than by an arithmetic error further in.
