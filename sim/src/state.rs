@@ -50,7 +50,69 @@ pub const TOWER_COUNT: usize = 6;
 /// that the arena is a fixed-size array, and dropping is the behaviour that
 /// keeps the rules total under a fixture's own constants, where the ratio can
 /// go the other way.
+///
+/// The sentence above used to be the whole guarantee, which is the failure mode
+/// [`MAX_PROJECTILES_IN_FLIGHT`] exists to remove: it is the same derivation,
+/// executable, and the assertion beside it is what a change to the roster or to
+/// the two constants it reads runs into.
 pub const MAX_PROJECTILES: usize = 32;
+
+/// Projectiles the rules can actually have in flight at once, derived.
+///
+/// A seat casts at most once every `cooldown_ticks` and each cast lives
+/// `lifetime_ticks`, so a seat holds at most `ceil(lifetime / cooldown)` of them
+/// at any moment. Under [`RULES`] that is `ceil(45 / 240)` — one — and nine
+/// seats make nine.
+///
+/// Unclamped by the arena on purpose: clamping would make the assertion below
+/// tautological, and the question it exists to ask is whether the arena is still
+/// wide enough for what the rules can produce.
+pub const MAX_PROJECTILES_IN_FLIGHT: usize = projectiles_in_flight(
+    PLAYER_COUNT,
+    RULES.skillshot_lifetime_ticks,
+    RULES.skillshot_cooldown_ticks,
+);
+
+/// How many projectiles `seats` seats can hold in flight at once, given the
+/// lifetime and the cooldown of the cast that produces them.
+///
+/// A `const fn` rather than a sentence in a comment, so that the derivation is
+/// the thing the compiler checks rather than the thing a reader is asked to
+/// re-do. A cooldown of zero means a seat may cast every tick, which no
+/// constants in this repository use and which the arena is the only bound on;
+/// it is answered rather than divided by.
+#[must_use]
+pub const fn projectiles_in_flight(
+    seats: usize,
+    lifetime_ticks: u16,
+    cooldown_ticks: u16,
+) -> usize {
+    if cooldown_ticks == 0 {
+        return usize::MAX;
+    }
+    let per_seat = (lifetime_ticks as usize).div_ceil(cooldown_ticks as usize);
+    seats.saturating_mul(per_seat)
+}
+
+/// The arena has to be at least as wide as the rules can fill it, or a cast the
+/// game's own cooldowns permit is dropped for want of a slot.
+///
+/// This is the sentence in [`MAX_PROJECTILES`]'s documentation, made executable.
+/// It was true and unchecked through three milestones, which is exactly how long
+/// a comment stays right by accident.
+const _: () = assert!(
+    MAX_PROJECTILES >= MAX_PROJECTILES_IN_FLIGHT,
+    "the projectile arena is narrower than the rules can fill it: raise MAX_PROJECTILES, \
+     or lower the skillshot's lifetime against its cooldown"
+);
+
+/// The roster is three teams of three, and three places say so. A fourth seat
+/// per team that reached only one of them would leave the other two describing a
+/// match nobody plays.
+const _: () = assert!(PLAYER_COUNT == TEAM_COUNT.saturating_mul(TEAM_SIZE));
+
+/// Two towers per team, one on each lane leaving its own base.
+const _: () = assert!(TOWER_COUNT == TEAM_COUNT.saturating_mul(2));
 
 /// First `EntityId` handed to a tower. Champions occupy `0..9`.
 ///
@@ -68,6 +130,15 @@ pub const TOWER_ID_BASE: u16 = 10;
 /// the casts that happened out of their sight — which is why `protocol` gives
 /// every recipient a handle space of its own above this base.
 pub const PROJECTILE_ID_BASE: u16 = 1000;
+
+/// The three handle ranges do not overlap, and the margins are thinner than
+/// they look: `TOWER_ID_BASE` is *one* above the last champion handle. A fourth
+/// seat per team would put a champion on a tower's handle, and every consumer of
+/// the layout — `protocol`'s handle space, the client's local world, the
+/// culling proof — would agree about a world with two entities wearing one name.
+/// Nothing would fail; the wrong thing would simply be true everywhere at once.
+const _: () = assert!(TOWER_ID_BASE as usize >= PLAYER_COUNT);
+const _: () = assert!(PROJECTILE_ID_BASE as usize >= (TOWER_ID_BASE as usize).saturating_add(TOWER_COUNT));
 
 /// A simulation tick. The only notion of time `sim` has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]

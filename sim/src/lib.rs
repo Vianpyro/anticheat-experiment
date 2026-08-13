@@ -85,18 +85,18 @@ mod vec2;
 /// (`docs/RISKS.md` R5).
 pub mod view;
 
-pub use crate::event::{Ability, Event, EventKind, Events, MAX_EVENTS};
+pub use crate::event::{Ability, Event, EventKind, Events, MAX_EVENTS, derived_max_events};
 pub use crate::fx::{FRAC_BITS, Fx};
 pub use crate::input::{Action, Input};
 pub use crate::rng::Rng;
 pub use crate::rules::{RULES, Rules, TICKS_PER_SECOND, rules_hash};
 pub use crate::sha256::Digest;
 pub use crate::state::{
-    Champion, Cooldowns, EntityId, EntityRef, Liveness, MAX_PROJECTILES, Order, Outcome,
-    PLAYER_COUNT, PROJECTILE_ID_BASE, Projectile, Projectiles, Seat, State, TEAM_COUNT, TEAM_SIZE,
-    TOWER_COUNT, TOWER_ID_BASE, Team, Tick, Tower, base_position, champion_entity_id, entity_id,
-    entity_team, new_state, new_state_with_rules, tower_entity_id, tower_lane, tower_position,
-    tower_team,
+    Champion, Cooldowns, EntityId, EntityRef, Liveness, MAX_PROJECTILES, MAX_PROJECTILES_IN_FLIGHT,
+    Order, Outcome, PLAYER_COUNT, PROJECTILE_ID_BASE, Projectile, Projectiles, Seat, State,
+    TEAM_COUNT, TEAM_SIZE, TOWER_COUNT, TOWER_ID_BASE, Team, Tick, Tower, base_position,
+    champion_entity_id, entity_id, entity_team, new_state, new_state_with_rules,
+    projectiles_in_flight, tower_entity_id, tower_lane, tower_position, tower_team,
 };
 pub use crate::step::{step, step_with_rules};
 pub use crate::vec2::FxVec2;

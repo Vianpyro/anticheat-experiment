@@ -43,24 +43,106 @@ use crate::vec2::FxVec2;
 
 /// Events one tick can record before it starts dropping them.
 ///
-/// Derived rather than guessed. Per tick the rules can emit at most: two casts
-/// per seat (the cooldown blocks the second of each kind), so 18; one targeted
-/// spell's damage per seat, 9; one hit per projectile in flight, and the
-/// skillshot's 240-tick cooldown against its 45-tick lifetime caps the arena's
-/// real occupancy at one per seat, 9; one shot per tower, 6; one basic attack
-/// per seat, 9; one death per seat, 9. Sixty. Seventy-two is that with
-/// headroom.
+/// Seventy-two is [`derived_max_events`] with headroom, and the assertion below
+/// is what keeps that sentence true.
 ///
-/// Beyond it events are dropped, in the same spirit as a full projectile arena:
-/// dropping is total, identical on every platform, and part of the rules, where
-/// growing a buffer would put an allocator inside `step`.
+/// # Why the derivation is a function and not a comment
 ///
-/// This is what a *tick* can record. What one *message* can carry is
-/// [`crate::view::MAX_EVENTS_PER_VIEW`], which is smaller and lives outside
-/// these rules: it is a frame budget, the overflow waits for the next frame
-/// rather than being lost, and the two numbers are deliberately not the same
-/// one.
+/// It was a comment, and the comment went stale in exactly the way a comment
+/// does. `MAX_EVENTS` was 48, derived for a match of six seats; the roster went
+/// to nine at M3 and the same derivation now gives 60, so the buffer had
+/// silently stopped being a bound and a busy tick would have dropped events that
+/// the rules produced. Nothing failed, because nothing was checking: the
+/// derivation existed only in prose, and prose does not get recompiled.
+///
+/// Raising the number to 72 fixes that instance. Making the derivation
+/// executable fixes the mechanism — a change to the roster, to the tower count,
+/// or to the skillshot's lifetime against its cooldown now stops the build here
+/// rather than quietly widening the gap between what a tick can produce and what
+/// it can record.
+///
+/// # Why it is not simply set equal to the derivation
+///
+/// The headroom is deliberate. `MAX_EVENTS` is an array length inside [`State`]
+/// and therefore under [`State::digest`], so moving it invalidates every digest
+/// committed in this repository — the two fixtures, and from M4 every recorded
+/// match. A bound with slack in it absorbs a rule that emits one more event
+/// without costing a re-recording; a bound sitting exactly on its derivation
+/// would turn every such change into a corpus migration.
+///
+/// [`State`]: crate::State
+/// [`State::digest`]: crate::State::digest
+///
+/// # What is outside the derivation, stated rather than hidden
+///
+/// It is a bound under [`crate::RULES`]. A fixture running through
+/// [`crate::step_with_rules`] with a shorter skillshot cooldown can put more
+/// projectiles in flight than [`crate::MAX_PROJECTILES_IN_FLIGHT`] counts, and
+/// therefore produce more hits in one tick than this bound allows. That is not
+/// unsound — beyond the bound events are dropped, which is total, identical on
+/// every platform and part of the rules, in the same spirit as a full projectile
+/// arena — but it means a fixture with unusual constants can lose a cue, and no
+/// assertion here can see that coming. `MAX_EVENTS` is an array length and
+/// cannot be a function of a runtime `Rules`.
+///
+/// # This is a tick's capacity, not a frame's
+///
+/// What one *message* can carry is [`crate::view::MAX_EVENTS_PER_VIEW`], which
+/// is smaller and lives outside these rules: it is a frame budget, the overflow
+/// waits for the next frame rather than being lost, and the two numbers are
+/// deliberately not the same one.
 pub const MAX_EVENTS: usize = 72;
+
+/// The most events the rules can emit in one tick, derived from the roster and
+/// the arena rather than remembered.
+///
+/// Every term is a place in [`crate::step`] that calls `emit`, and the order is
+/// that function's order of operations:
+///
+/// | Term | Where | Count |
+/// | --- | --- | --- |
+/// | Casts | step 3, and a cooldown blocks a second cast of each ability | `2 × seats` |
+/// | The targeted spell's damage | step 3, dealt in the tick it is cast | `seats` |
+/// | Projectile hits | step 5, one per projectile in flight | `in_flight` |
+/// | Tower shots | step 6, one per standing tower | `towers` |
+/// | Basic attacks | step 7, one per seat | `seats` |
+/// | Deaths | step 8, resolved once per seat | `seats` |
+///
+/// Under [`crate::RULES`] that is `2×9 + 9 + 9 + 6 + 9 + 9 = 60`.
+#[must_use]
+pub const fn derived_max_events(seats: usize, towers: usize, in_flight: usize) -> usize {
+    let casts = seats.saturating_mul(2);
+    let targeted_damage = seats;
+    let projectile_hits = in_flight;
+    let tower_shots = towers;
+    let basic_attacks = seats;
+    let deaths = seats;
+
+    casts
+        .saturating_add(targeted_damage)
+        .saturating_add(projectile_hits)
+        .saturating_add(tower_shots)
+        .saturating_add(basic_attacks)
+        .saturating_add(deaths)
+}
+
+/// The guard the comment used to be.
+///
+/// A seat added to the roster, a tower added to the map, or a skillshot whose
+/// lifetime catches up with its cooldown stops the build here instead of
+/// silently turning a bound into a budget.
+const _: () = assert!(
+    MAX_EVENTS
+        >= derived_max_events(
+            crate::state::PLAYER_COUNT,
+            crate::state::TOWER_COUNT,
+            crate::state::MAX_PROJECTILES_IN_FLIGHT,
+        ),
+    "MAX_EVENTS is no longer a bound on what one tick can record: a tick can now produce more \
+     events than the buffer holds, and the excess is dropped. Raise MAX_EVENTS to at least \
+     derived_max_events(PLAYER_COUNT, TOWER_COUNT, MAX_PROJECTILES_IN_FLIGHT) — and note that \
+     moving it changes every State::digest in the repository"
+);
 
 /// Which of the two abilities was cast.
 ///
