@@ -65,8 +65,6 @@ pub struct Play {
     /// A one-shot ability asked for since the last frame. Takes precedence for
     /// the tick it was asked on and leaves the standing order alone.
     once: Option<Action>,
-    /// The player wants out.
-    leave: bool,
 }
 
 impl Default for Play {
@@ -90,7 +88,6 @@ impl Play {
             viewport: Viewport::new(1280, 800),
             standing: Action::Idle,
             once: None,
-            leave: false,
         }
     }
 
@@ -115,12 +112,6 @@ impl Play {
     #[must_use]
     pub const fn trace(&self) -> &InputTrace {
         &self.trace
-    }
-
-    /// Whether the player asked to leave.
-    #[must_use]
-    pub const fn leaving(&self) -> bool {
-        self.leave
     }
 
     /// One raw motion event from a pointing device.
@@ -169,11 +160,6 @@ impl Play {
             }
             Control::Stop => self.standing = Action::Idle,
         }
-    }
-
-    /// The player asked to leave.
-    pub const fn leave(&mut self) {
-        self.leave = true;
     }
 
     /// The intention for this tick, and forgets the one-shot.

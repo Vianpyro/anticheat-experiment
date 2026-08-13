@@ -176,7 +176,20 @@ struct Session {
     seat: Seat,
     inbox: Receiver<[u8; SERVER_FRAME_BYTES]>,
     outbox: tokio::sync::mpsc::Sender<ClientFrame>,
-    failure: Option<String>,
+    /// Why the loop stopped. `Over` is not an error: the server closing the
+    /// connection is what the end of a match looks like from here, and it has
+    /// its own variant rather than a string somebody has to compare, because a
+    /// normal ending reported as a failure is a client that exits non-zero on
+    /// every match it finishes.
+    outcome: Option<Ending>,
+}
+
+/// Why the playable client's event loop stopped.
+enum Ending {
+    /// The match ended, or the player left.
+    Over,
+    /// Something to print once and exit on.
+    Failed(String),
 }
 
 impl Session {
@@ -192,13 +205,12 @@ impl Session {
                 Ok(bytes) => bytes,
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => {
-                    self.failure
-                        .get_or_insert_with(|| "the server hung up".to_owned());
+                    self.outcome.get_or_insert(Ending::Over);
                     return;
                 }
             };
             if let Err(error) = self.headless.receive(&bytes) {
-                self.failure = Some(describe(error));
+                self.outcome = Some(Ending::Failed(describe(error)));
                 return;
             }
             let Some(view) = self.headless.view().cloned() else {
@@ -222,8 +234,7 @@ impl Session {
             prediction.sent(seq, action);
             let frame = self.headless.intend(action, now_ms());
             if self.outbox.try_send(frame).is_err() {
-                self.failure
-                    .get_or_insert_with(|| "the connection is gone".to_owned());
+                self.outcome.get_or_insert(Ending::Over);
                 return;
             }
         }
@@ -245,7 +256,7 @@ impl Session {
         if let Some(screen) = self.screen.as_mut()
             && let Err(error) = screen.present(&marks, viewport)
         {
-            self.failure = Some(error);
+            self.outcome = Some(Ending::Failed(error));
         }
     }
 
@@ -273,7 +284,7 @@ impl ApplicationHandler<Wake> for Session {
                 event_loop.listen_device_events(DeviceEvents::WhenFocused);
             }
             Err(error) => {
-                self.failure = Some(error);
+                self.outcome = Some(Ending::Failed(error));
                 event_loop.exit();
             }
         }
@@ -281,7 +292,7 @@ impl ApplicationHandler<Wake> for Session {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _wake: Wake) {
         self.advance();
-        if self.failure.is_some() {
+        if matches!(self.outcome, Some(Ending::Failed(_))) {
             event_loop.exit();
             return;
         }
@@ -364,7 +375,7 @@ impl Session {
     /// the match, because whether a team that concedes loses is a rule and rules
     /// live in `sim` where a replay resimulates them.
     fn surrender(&mut self, event_loop: &ActiveEventLoop) {
-        self.play.leave();
+        self.outcome.get_or_insert(Ending::Over);
         let _ = self
             .outbox
             .try_send(ClientFrame::encode(&ClientMessage::Surrender));
@@ -472,18 +483,16 @@ pub fn play(address: std::net::SocketAddr, certificate: &[u8]) -> Result<(), Str
         seat,
         inbox: in_rx,
         outbox: out_tx,
-        failure: None,
+        outcome: None,
     };
     event_loop
         .run_app(&mut session)
         .map_err(|error| error.to_string())?;
 
     report(session.play.trace().stats());
-    match session.failure {
-        // The server hanging up is how the end of a match looks from here.
-        Some(ref reason) if reason == "the server hung up" => Ok(()),
-        Some(reason) => Err(reason),
-        None => Ok(()),
+    match session.outcome {
+        Some(Ending::Failed(reason)) => Err(reason),
+        Some(Ending::Over) | None => Ok(()),
     }
 }
 
