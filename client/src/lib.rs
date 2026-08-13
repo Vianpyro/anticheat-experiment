@@ -114,6 +114,9 @@ pub struct LocalWorld {
     /// not. Held apart from `entities` because a dead champion is not on the
     /// map — for its own team either — and folding a corpse in would make this
     /// world disagree with a teammate's about a square nobody is standing on.
+    ///
+    /// **Not hashed**, and that is a correction rather than an omission; see
+    /// [`LocalWorld::digest`].
     own_liveness: Liveness,
 }
 
@@ -143,7 +146,8 @@ impl LocalWorld {
         self.entities.is_empty()
     }
 
-    /// The 32-byte fingerprint of this world.
+    /// The 32-byte fingerprint of the part of this world two teammates are
+    /// supposed to agree about.
     ///
     /// Hand-written and exhaustively destructured, exactly as `sim`'s canonical
     /// encoding is and for the same reason: a field added to the local world and
@@ -151,6 +155,34 @@ impl LocalWorld {
     /// stopped fully comparing. `sim::digest_bytes` is the hash, so that the
     /// client and everything else in the workspace compute SHA-256 the same way
     /// rather than through a second implementation.
+    ///
+    /// # Why `own_liveness` is deliberately outside it
+    ///
+    /// This digest exists for one purpose: `docs/MILESTONES.md` M3's exit
+    /// criterion, which compares the reconciled worlds of three clients on one
+    /// team. That comparison is only meaningful over what the three are
+    /// *entitled to the same view of*, and `own_liveness` is the one field that
+    /// is not — it is this player's own hit points and its own respawn timer,
+    /// and `docs/ARCHITECTURE.md` is explicit that an ally's respawn timer is
+    /// information about a player rather than about the world and is withheld
+    /// from teammates on purpose.
+    ///
+    /// Hashing it made the criterion false the first time anybody took damage,
+    /// and it went unnoticed for a milestone because M3's scripted match
+    /// produces no damage at all: the three clients walk a lane and nothing
+    /// touches them, so their own hit points stayed equal by accident. M4's loss
+    /// tests walk them into a tower's range instead, and the criterion reported
+    /// `Blue0 disagrees with Blue1 about the world at tick 620` — with the two
+    /// worlds identical except for Blue0's own 555 hit points against Blue1's
+    /// 600, which every one of the three could see and only one of them was
+    /// hashing.
+    ///
+    /// Nothing is lost by the exclusion. A living champion is folded into
+    /// `entities` with the hit points every teammate is shown, and a dead one is
+    /// absent there — which is exactly what a teammate observes, because a dead
+    /// champion is not on the map for its own team either. What leaves the
+    /// digest is the respawn timer, which no teammate is entitled to and which
+    /// therefore had no business in a cross-client comparison.
     #[must_use]
     pub fn digest(&self) -> Digest {
         let LocalWorld {
@@ -158,14 +190,18 @@ impl LocalWorld {
             outcome,
             entities,
             events,
-            own_liveness,
+            // Bound and deliberately not hashed. Named rather than skipped with
+            // `..`, so that the exclusion is a decision somebody made and not a
+            // field somebody forgot: `..` here would let the *next* field be
+            // dropped by accident, which is the failure `sim::canonical` bans
+            // the pattern for.
+            own_liveness: _,
         } = self;
 
         let mut out = Vec::with_capacity(256);
-        out.extend_from_slice(b"moba/client/world/v1");
+        out.extend_from_slice(b"moba/client/world/v2");
         out.extend_from_slice(&tick.0.to_be_bytes());
         encode_outcome(&mut out, *outcome);
-        encode_liveness(&mut out, *own_liveness);
 
         out.extend_from_slice(&(entities.len() as u64).to_be_bytes());
         for (handle, sighting) in entities {
@@ -239,19 +275,6 @@ fn encode_outcome(out: &mut Vec<u8>, outcome: Outcome) {
                 sim::Team::Green => 2,
             });
             out.extend_from_slice(&at.0.to_be_bytes());
-        }
-    }
-}
-
-fn encode_liveness(out: &mut Vec<u8>, liveness: Liveness) {
-    match liveness {
-        Liveness::Alive { hp } => {
-            out.push(0);
-            out.extend_from_slice(&hp.to_raw().to_be_bytes());
-        }
-        Liveness::Dead { respawn_at } => {
-            out.push(1);
-            out.extend_from_slice(&respawn_at.0.to_be_bytes());
         }
     }
 }
