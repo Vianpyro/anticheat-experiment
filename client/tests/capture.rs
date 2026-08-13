@@ -378,8 +378,23 @@ fn the_reported_distribution_is_the_one_the_stream_had() {
     assert_eq!(stats.moves, events);
     assert_eq!(stats.gaps_ns.min, 8_000_000);
     assert_eq!(stats.gaps_ns.p50, 8_000_000);
+    assert_eq!(stats.gaps_ns.p95, 8_000_000);
+    assert_eq!(stats.gaps_ns.p99, 8_000_000);
     assert_eq!(stats.gaps_ns.max, 8_000_000);
     assert_eq!(stats.span_ns, (SLOW + FAST - 1) * 8_000_000);
+    // The pair R14's timestamp half is closed against, on a stream whose answer
+    // is exactly zero spread. An instrument that reported a spread here would
+    // make every number in that entry a number about itself.
+    assert!(
+        (stats.gap_mean_ns - 8_000_000.0).abs() < 1e-6,
+        "the mean gap is {} ns",
+        stats.gap_mean_ns
+    );
+    assert_eq!(
+        stats.gap_sd_ns, 0.0,
+        "a stream with a constant period reported a spread of {} ns",
+        stats.gap_sd_ns
+    );
 
     // The finest motion in the stream is the slow stretch's 0.03 counts, which
     // is 0.0015 world units — against a terminal cell of 1.16 world units

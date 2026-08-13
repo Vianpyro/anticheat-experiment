@@ -541,31 +541,110 @@ device count — **0.05 world units**, 23 times finer than a cell across and 82
 times finer down, with the 3.55 anisotropy gone because the capture no longer
 touches a projection.
 
-### What R14 becomes: reduced, not closed, and moved rather than deleted
+### What R14 becomes: reduced, and its last live half now measured rather than feared
 
-Three things, and the middle one is why this entry stays open.
+Three things. The middle one was why this entry stayed open; the measurement
+below it is what closed it.
 
 - **The aim-resolution half is closed.** A curvature detector at M8 is now a
   detector that may be written against this corpus. That is a permission and not
   a promise: `SCOPE.md` still reserves "delivered" for a class with an exploit
   failing against it in CI, and nothing here says the detector will work.
-- **The timestamp half is reduced and still open, and this is the live risk.**
-  No platform in `ENGINEERING.md`'s matrix hands this client a device timestamp
-  through `winit` — the data exists on Wayland and macOS and the library discards
-  it, and on Windows it does not exist for raw mouse input at all. The client
-  records the *dequeue* time and `client::input::CLOCK` says so in a type rather
-  than substituting silently. The residual is real: a dequeue time carries kernel
-  and scheduler latency, which is jitter M8's timing detectors will have to
-  attribute. **The decision point is before M6**, because a corpus half of whose
-  timestamps are device times and half dequeue times has a covariate nobody can
-  remove afterwards — so if `winit` gains timestamps, or if reading `evdev`
-  directly is ever judged worth a second input stack and a per-participant device
-  permission, it happens before the first recording session or not at all.
+- **The timestamp half is quantified and closed as a live risk.** See the
+  section below, which is the measurement it was closed on. The substitution
+  itself stands and is unchanged: no platform in `ENGINEERING.md`'s matrix hands
+  this client a device timestamp through `winit` — the data exists on Wayland and
+  macOS and the library discards it, and on Windows it does not exist for raw
+  mouse input at all — so the client records the *dequeue* time and
+  `client::input::CLOCK` says so in a type rather than substituting silently.
+  What has changed is that the residual has a number on it instead of a worry.
 - **The general form is what the number is now attached to.** R14 was an entry
   about a renderer. It is an entry about the client: what a corpus can support is
   fixed by what the capture path records, and every claim of the form "this
   signal is untouched" has to name the mechanism that takes the sample, not the
   component that draws the screen.
+
+### The measurement that closed the timestamp half, run 2026-08-13
+
+The number above — a standard deviation of 0.247 ms on a stream emitted at 8 ms
+— was taken **on an idle container, with no renderer and no socket**, which is
+the condition under which the answer was always going to be flattering. A
+corpus is not recorded under that condition. So the measurement was repeated
+with the client doing its job, and it reports the tail rather than only the
+spread, because a Gaussian jitter of a quarter of a millisecond and an
+occasional stall of fifteen are two different things and only one of them
+matters: 0.25 ms of Gaussian noise against a human signal whose spread is of the
+order of ten milliseconds is a few per cent of the signal and destroys nothing,
+whereas one sample in a hundred arriving fifteen milliseconds late looks exactly
+like a hand that hesitated, and a detector calibrated on that has been
+calibrated on the client's scheduler.
+
+`client/tests/jitter.rs` is the instrument. What is real in it: the rasteriser,
+over the mark list of an actual view into an actual 1280×800 framebuffer; a
+`quinn` endpoint with a real server ticking at 30 Hz; real datagrams, real
+reassembly, real reconciliation; and the thread arrangement `client::gfx::play`
+uses, where one thread drains device events and draws while a `tokio` runtime
+beside it carries the socket. What is synthesised: the device events, because CI
+has no display server and `winit` cannot open a window without one — a thread
+emits them on an absolute schedule at 125 Hz and the capture loop stamps each
+one as it drains it, which is `Session::device_event`'s first line.
+
+| | R14's first run (idle, no renderer, no socket) | Rendering and talking, `release` | Rendering and talking, `dev` |
+| --- | --- | --- | --- |
+| Samples recorded / emitted | 1200 / 1200 | 1200 / 1200 | 1200 / 1200 |
+| Views reconciled, frames rasterised | none, none | 290, 532 | 290, 447 |
+| Median inter-arrival | 7.992 ms | 8.000 ms | 8.000 ms |
+| Mean | 8.000 ms | 8.000 ms | 8.000 ms |
+| **Standard deviation** | **0.247 ms** | **0.039 ms** | **0.761 ms** |
+| 95th percentile | — | 8.032 ms | 9.646 ms |
+| **99th percentile** | — | **8.081 ms** | **9.826 ms** |
+| Maximum | — | 8.736 ms | 11.026 ms |
+
+**The conclusion, and it is the one the arithmetic supports rather than the one
+the numbers flatter.** In the profile a player runs, the client's own
+contribution to a timestamp is a standard deviation of **39 microseconds** and a
+worst case, over 1200 samples, of **0.74 ms above nominal**. Against the
+grandeurs M8 will look for — inter-arrival distributions and reaction latencies
+whose human spreads are tens of milliseconds — that is a fraction of a per cent
+of the signal, and the tail is bounded rather than heavy: there is no
+fifteen-millisecond mode, in either profile. The unoptimised build is twenty
+times worse and still under a millisecond of spread, which is worth recording
+because it is the upper end of what a slow frame costs: the band there is
+±2 ms, and 2 ms is what an unoptimised `rasterize` takes, so the mechanism is
+visible and it is bounded by the frame rather than unbounded.
+
+**So the residual is quantified and without consequence for the detectors in
+scope, and R14's timestamp half stops being a live risk.** What replaces it is a
+test that runs on every pull request and prints the distribution, so a
+regression is a number in a log rather than a discovery at M8.
+
+**Three things this does not establish**, because a table is exactly where a
+reader stops asking:
+
+- **The synthesised half is not measured.** The kernel input stack and the
+  compositor are not in this loop, so the number is a **lower bound** on the real
+  residual. What it does cover is the mechanism the worry was actually about: a
+  long frame does not delay an event in the kernel, it delays the *drain*, and
+  that is in the covered half. The uncovered contribution is a roughly constant
+  offset plus its own jitter, and a constant offset is invisible to every signal
+  on M8's list, all of which are differences.
+- **It is one host.** These are numbers from one container on one machine. The
+  test prints them everywhere it runs and asserts only what is about the
+  mechanism rather than about the host — every event produces exactly one
+  sample, no two samples share a timestamp, and the 99th percentile is inside
+  four emission periods. Reading the clock once per frame instead of once per
+  event fails those immediately, with the frame period visible in the printed
+  distribution as a median of 0.000 ms and a 95th percentile of 18.124 ms.
+- **`evdev` stays refused, and this measurement is why.** A per-platform input
+  stack would buy a device timestamp on Linux and nothing on Windows, at the cost
+  of a `/dev/input` permission each participant has to be granted and a corpus
+  whose timestamps mean different things on the two platforms it is recorded on.
+  That was a defensible trade against an unmeasured residual. Against 39
+  microseconds it is not a trade at all. **This reopens only if a detector at M8
+  turns out to depend on a quantity at the scale of a millisecond**, which none
+  of the candidates in `MILESTONES.md` M8 does — and the reopening would then be
+  a decision about that detector, taken before M6 or not at all, for the covariate
+  reason the paragraph above this one used to give.
 
 **One more thing this found, and it is the reason to measure rather than
 argue.** The first run of the new client reported a median inter-arrival of
