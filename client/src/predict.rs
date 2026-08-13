@@ -136,13 +136,30 @@ pub struct Prediction {
     anchor_order: Predicted,
     /// Sent and not yet acknowledged, oldest first.
     outstanding: VecDeque<Outstanding>,
+    /// The position this client last reported from [`Prediction::position`],
+    /// which is the position it drew.
+    ///
+    /// Recorded in [`Prediction::sent`] rather than in `position`, so that the
+    /// measurement below is against what was actually on the screen and
+    /// `position` can stay a `&self` function a renderer may call as often as it
+    /// likes.
+    rendered: Option<FxVec2>,
     /// How far the last authoritative position was from where this client had
-    /// predicted it would be, in raw fixed-point units.
+    /// drawn its champion, in raw fixed-point units.
     ///
     /// Not a diagnostic afterthought: prediction that is quietly wrong looks
     /// exactly like prediction that is right, and the number is what
-    /// `client/tests/prediction.rs` asserts on and what the playable client
-    /// shows in its corner.
+    /// `client/tests/prediction.rs` and `client/tests/m4_exit.rs` assert on and
+    /// what the playable client shows in its corner.
+    ///
+    /// It is measured against the *drawn* position rather than recomputed from
+    /// the acknowledgement, and the difference is not cosmetic. Recomputing
+    /// would apply only the intentions this view acknowledged, and a tick in
+    /// which the server applied none of them — the client's frame arrived a
+    /// moment late — would recompute a champion that never moved, against a
+    /// server that moved it on its standing order. The number would then report
+    /// the *network's* timing as a prediction error. Over a real transport that
+    /// happens constantly, which is how this was found.
     last_correction: i32,
     worst_correction: i32,
 }
@@ -162,14 +179,21 @@ impl Prediction {
             anchor_tick: view.tick,
             anchor_order: Predicted::Idle,
             outstanding: VecDeque::new(),
+            rendered: None,
             last_correction: 0,
             worst_correction: 0,
         }
     }
 
-    /// Records an intention this client has just sent.
+    /// Records an intention this client has just sent, and with it the position
+    /// the client is about to draw.
+    ///
+    /// The two are one operation because they are one moment: after this call
+    /// [`Prediction::position`] is what goes on the screen, and it is that value
+    /// the next view is measured against.
     pub fn sent(&mut self, seq: u32, action: Action) {
         self.outstanding.push_back(Outstanding { seq, action });
+        self.rendered = Some(self.position());
     }
 
     /// Folds in a view and the acknowledgement that came with it.
@@ -183,12 +207,13 @@ impl Prediction {
         // this client predicted for *this* tick — which is the position it
         // reported when it had exactly the intentions the server has now
         // acknowledged. Measuring it after would be measuring nothing.
-        let acknowledged = self.acknowledged_by(applied_through);
-        let predicted = self.position_after(acknowledged);
-        let correction = predicted.sub(view.own.position).length().to_raw();
-        self.last_correction = correction;
-        self.worst_correction = self.worst_correction.max(correction);
+        if let Some(predicted) = self.rendered.take() {
+            let correction = predicted.sub(view.own.position).length().to_raw();
+            self.last_correction = correction;
+            self.worst_correction = self.worst_correction.max(correction);
+        }
 
+        let acknowledged = self.acknowledged_by(applied_through);
         for _ in 0..acknowledged {
             let Some(intention) = self.outstanding.pop_front() else {
                 break;
