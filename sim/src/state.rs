@@ -138,7 +138,8 @@ pub const PROJECTILE_ID_BASE: u16 = 1000;
 /// culling proof — would agree about a world with two entities wearing one name.
 /// Nothing would fail; the wrong thing would simply be true everywhere at once.
 const _: () = assert!(TOWER_ID_BASE as usize >= PLAYER_COUNT);
-const _: () = assert!(PROJECTILE_ID_BASE as usize >= (TOWER_ID_BASE as usize).saturating_add(TOWER_COUNT));
+const _: () =
+    assert!(PROJECTILE_ID_BASE as usize >= (TOWER_ID_BASE as usize).saturating_add(TOWER_COUNT));
 
 /// A simulation tick. The only notion of time `sim` has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]

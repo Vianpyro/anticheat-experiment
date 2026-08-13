@@ -104,7 +104,9 @@ two states a player cannot tell apart produce byte-identical frames for that
 player, which covers the padding, the framing, the handle space and the event
 backlog at once. `ARCHITECTURE.md` carries the padding budget with the numbers
 in it — two datagrams of 555 bytes a tick a player, 266 kbit/s, ten times the
-unpadded mean — instead of the sentence that used to stand in for them.
+unpadded mean — instead of the sentence that used to stand in for them. (M4 put
+five bytes of input acknowledgement beside the view; the numbers there are 558
+and 268 now, and `ARCHITECTURE.md` carries the current arithmetic.)
 
 That budget was re-cut once, and the question that re-cut it is worth recording
 because it had not been asked: **is the worst case the bound is derived from

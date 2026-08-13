@@ -114,6 +114,21 @@ struct Session {
     events: EventBacklog,
     /// The highest sequence number accepted from this seat.
     highest_seq: Option<u32>,
+    /// The highest sequence number from this seat that has been drained into a
+    /// tick, which is what the frame acknowledges.
+    ///
+    /// Distinct from `highest_seq` in what it means rather than, today, in what
+    /// it holds: an input is *accepted* the moment it decodes and sequences, and
+    /// *applied* when the loop below drains it, and since the loop drains its
+    /// whole queue before emitting a frame the two coincide on the wire. What
+    /// they do not share is the refusals — `highest_seq` is untouched by a
+    /// refused input and so is this, which is the half a client depends on.
+    ///
+    /// Written where the meaning is rather than where it is currently
+    /// convenient, so that a rate policy which one day holds an input across a
+    /// tick does not silently start acknowledging intentions the world has not
+    /// seen.
+    applied_seq: Option<u32>,
     /// What this seat has asked for since the last tick.
     pending: Vec<Pending>,
     /// Inputs refused for sequencing or for rate. Never read by a rule; it is
@@ -247,6 +262,7 @@ impl Match {
             handles: HandleSpace::new(),
             events: EventBacklog::new(),
             highest_seq: None,
+            applied_seq: None,
             pending: Vec::new(),
             refused: 0,
         });
@@ -363,6 +379,10 @@ impl Match {
                     player: seat,
                     action: pending.action,
                 };
+                // Recorded here rather than in `deliver`, because this is the
+                // line at which the intention stops being queued and starts
+                // being part of the world. The frames below carry it back.
+                session.applied_seq = Some(pending.seq);
                 inputs.push(input);
                 self.log.push(TimedInput {
                     input,
@@ -389,7 +409,13 @@ impl Match {
             // recipient calls things, `shape` decides how much of it fits in
             // one frame and holds the rest for the next.
             let shaped = session.events.shape(&localized);
-            frames.push((seat, ServerFrame::encode(&ServerMessage::View(shaped))));
+            frames.push((
+                seat,
+                ServerFrame::encode(&ServerMessage::View {
+                    view: shaped,
+                    applied_through: session.applied_seq,
+                }),
+            ));
         }
         frames
     }

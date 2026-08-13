@@ -477,12 +477,15 @@ pub enum ClientMessage {
 pub enum ServerMessage {
     Accepted { seat: Seat, seed: u64, rules_hash: [u8; 32] },
     Rejected(RejectReason),
-    View(PlayerView),                 // already culled, in this recipient's handles
+    View {                            // already culled, in this recipient's handles
+        view: PlayerView,
+        applied_through: Option<u32>, // this recipient's own last applied input
+    },
 }
 
 pub struct ClientFrame([u8; CLIENT_FRAME_BYTES]);      // 24
-pub struct ServerFrame([u8; SERVER_FRAME_BYTES]);      // 1096
-pub struct ServerShard([u8; SERVER_DATAGRAM_BYTES]);   // 555, and there are two
+pub struct ServerFrame([u8; SERVER_FRAME_BYTES]);      // 1102
+pub struct ServerShard([u8; SERVER_DATAGRAM_BYTES]);   // 558, and there are two
 pub struct ShardAssembler { .. }     // puts a frame back together, or gives up
 pub struct HandleSpace { .. }        // one recipient's naming of the projectiles
 pub struct EventBacklog { .. }       // one recipient's undelivered events
@@ -551,14 +554,14 @@ if the bucket is chosen without looking at the content — and a bucket chosen
 without looking at the content is one bucket with extra steps.
 
 **The frame is cut into a constant number of constant-size datagrams.** Two
-shards of 555 bytes, every tick, per player, whatever the match is doing. That
+shards of 558 bytes, every tick, per player, whatever the match is doing. That
 is the padding scheme in one line — *constant cadence, constant count, constant
 size* — and it is a stronger statement than the one it replaces. The old frame
 travelled on a reliable stream and the invariant was carried by an argument
 about QUIC's packetiser ("a constant number of bytes at a constant period is
 packetised into a constant number of packets"); it is now a fact about
 `protocol::ServerFrame::shards`, which returns a fixed-size array of a newtype
-over a fixed-size array. An observer counts two packets of 555 bytes per player
+over a fixed-size array. An observer counts two packets of 558 bytes per player
 per tick and learns the tick rate and the number of connected players, both of
 which they already knew.
 
@@ -571,8 +574,9 @@ which they already knew.
 | `MAX_PROJECTILES` = 32 projectiles, 19 bytes each | 608 |
 | `MAX_EVENTS_PER_VIEW` = 16 events, 15 bytes each | 240 |
 | **`PlayerView::MAX_ENCODED_BYTES`** | **1093** |
-| plus a 3-byte frame header, rounded to 2 shards | **1096** |
-| on the wire: 2 × (7-byte shard header + 548) | **1110** |
+| plus M4's input acknowledgement, `APPLIED_BYTES` | 5 |
+| plus a 3-byte frame header, rounded to 2 shards | **1102** |
+| on the wire: 2 × (7-byte shard header + 551) | **1116** |
 
 **What it costs, measured.** Over the thousand-tick nine-player fixture in which
 the teams walk their lanes and fight, the encoded views come out at a median of
@@ -581,7 +585,7 @@ a bound of 1093.
 
 | | Per player | Per match (9) |
 | --- | --- | --- |
-| Padded, at 30 Hz | 33.3 kB/s — **266 kbit/s** | 300 kB/s — 2.40 Mbit/s |
+| Padded, at 30 Hz | 33.5 kB/s — **268 kbit/s** | 301 kB/s — 2.41 Mbit/s |
 | Unpadded, at the measured mean | 3.2 kB/s — 26 kbit/s | 29 kB/s — 231 kbit/s |
 | Inflation | **10×** | 10× |
 
@@ -590,10 +594,17 @@ kbit/s per player.
 
 For comparison, the frame this replaced was 1501 bytes at six players: 360
 kbit/s each and 2.16 Mbit/s for the match. Per player the new scheme is
-**cheaper** — 266 against 360 — and the match total rises only because there are
+**cheaper** — 268 against 360 — and the match total rises only because there are
 half again as many players in it.
 
-**Is 266 kbit/s acceptable?** For this project, yes, and the comparison worth
+M4 added five bytes to it, and the arithmetic is worth stating rather than
+absorbing: the input acknowledgement prediction needs is a tag byte and a
+four-byte sequence number, present whether or not there is anything to
+acknowledge. It moved the frame from 1096 to 1102 and the datagram from 555 to
+558, which is two kbit/s per player and no change at all to the shard count or
+to any claim resting on it.
+
+**Is 268 kbit/s acceptable?** For this project, yes, and the comparison worth
 making is not to the unpadded stream but to what a game of this shape normally
 costs. A competitive shooter budgets a few hundred kbit/s per client; a MOBA much
 less. It is inside that envelope, it is a constant rather than a peak, and the
@@ -649,7 +660,7 @@ rejected are rejected for the same reasons:
   nothing, since the padding target is what determines the bandwidth.
 
 **The consequence for the transport, which is now a gain rather than a cost.**
-1110 bytes in two datagrams fit any path MTU, so state travels on QUIC datagrams
+1116 bytes in two datagrams fit any path MTU, so state travels on QUIC datagrams
 and a lost packet costs the tick it belonged to instead of blocking every frame
 behind it. `RISKS.md` R6's original hedge — "datagrams for state, reliable
 streams for session commands" — is restored, and it is exactly what the code
@@ -733,14 +744,33 @@ The client at M3 is headless: input scripts in, digests out. Its reconciled
 local world is what it was told, with `own` folded into the entity list at a
 teammate's fidelity, which is what makes the three seats of a team comparable.
 
-**What M3 discovered that M4 has to answer.** Client-side prediction cannot be
-built on this protocol. Prediction needs the client to know *which of its inputs
-the server applied to which tick*, and nothing tells it: the server buckets an
-intention into whichever tick it is about to run, and `PlayerView` carries no
-acknowledgement — no last-applied sequence number, and deliberately no standing
-order, because an order names an `EntityId` the player may no longer see. M4
-needs one more field or one more message, and choosing its shape is M4's
-decision rather than one M3 should make by accident.
+**What M3 discovered, and the shape M4 gave it.** Prediction needs the client to
+know *which of its inputs the server applied to which tick*, and at M3 nothing
+told it: the server buckets an intention into whichever tick it is about to run,
+and `PlayerView` carries no acknowledgement — no last-applied sequence number,
+and deliberately no standing order, because an order names an `EntityId` the
+player may no longer see.
+
+M4's answer is one field, and **it is outside `PlayerView`**:
+`ServerMessage::View` carries `applied_through: Option<u32>` beside the view.
+The placement is the decision rather than the field. A view is what
+`sim::view::view_for` computes from a `State`, and that function has no session
+to ask; an acknowledgement is a fact about a connection. Putting it inside the
+view would have meant either a projection taking a session argument — a second
+argument to the most sensitive function in the project — or a view type with a
+field its own constructor cannot fill, which is how a type stops meaning what
+its name says. It stays out of `State`, out of the digest, and out of the
+projection.
+
+It is not a channel: it is a number this recipient wrote and sent, it says
+nothing about the world or about any other seat, and its width is constant in
+both cases so the frame's size does not follow it. What it does change is the
+statement of the byte-equality property in `server/tests/traffic.rs`, which is
+now explicit that a frame is a function of what the recipient is entitled to
+know about the world **and** of what the recipient itself said — both things the
+recipient already has. The property's fork is constructed so that the two
+branches never differ in which seats spoke, which keeps every seat eligible for
+the comparison rather than retiring the ones a fork happened to separate.
 
 ### `replay`
 

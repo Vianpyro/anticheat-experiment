@@ -246,14 +246,15 @@ not, on the half that mattered. `MAX_EVENTS` is what a *tick* can record; a
 frame arrives a thirtieth of a second later rather than not at all. So the view
 gained an event budget of its own — `MAX_EVENTS_PER_VIEW`, sixteen — with a
 per-recipient queue that defers the overflow in rule order, and the frame fell
-to 1096 bytes. It now travels as **two datagrams of 555 bytes**, each far inside
+to 1096 bytes — 1102 since M4 put the input acknowledgement prediction needs
+beside the view. It travels as **two datagrams of 558 bytes**, each far inside
 any path MTU, and the session's own messages keep the reliable stream, which is
 the hedge as written.
 
 The invariant is stated more directly than it was rather than more weakly: it
 used to be an argument about QUIC's packetiser, and it is now a constant number
 of datagrams of a constant size at a constant period, carried by the type that
-produces them. Per player the traffic *fell*, from 360 kbit/s to 266.
+produces them. Per player the traffic *fell*, from 360 kbit/s to 268.
 `ARCHITECTURE.md` carries the arithmetic under "The padding budget", including
 what is still not taken and why: the projectile arena stays at 32 because
 shrinking it to the occupancy the game's cooldowns actually permit would be

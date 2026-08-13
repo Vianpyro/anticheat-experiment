@@ -262,6 +262,14 @@ pub struct Headless {
     seed: u64,
     world: LocalWorld,
     seq: u32,
+    /// The highest sequence number of this client's own inputs that the server
+    /// says it has folded into the world.
+    ///
+    /// The field M3 could not build against and M4 added — see
+    /// `protocol::ServerMessage::View`. The headless client does not predict, so
+    /// it records the acknowledgement and nothing more; `Predicted` is what
+    /// consumes it.
+    applied_through: Option<u32>,
     /// Views discarded for being no newer than what the client already holds.
     /// The transport is reliable and ordered, so a non-zero count here means
     /// something upstream is wrong rather than that the network reordered.
@@ -289,8 +297,16 @@ impl Headless {
                 own_liveness: Liveness::Alive { hp: Fx::ZERO },
             },
             seq: 0,
+            applied_through: None,
             stale: 0,
         }
+    }
+
+    /// The highest sequence number of this client's own inputs the server says
+    /// it has applied.
+    #[must_use]
+    pub const fn applied_through(&self) -> Option<u32> {
+        self.applied_through
     }
 
     /// The seat the server assigned, once it has.
@@ -369,10 +385,14 @@ impl Headless {
                 Ok(())
             }
             ServerMessage::Rejected(reason) => Err(ClientError::Rejected(reason)),
-            ServerMessage::View(view) => {
+            ServerMessage::View {
+                view,
+                applied_through,
+            } => {
                 if self.seat.is_none() {
                     return Err(ClientError::OutOfOrder);
                 }
+                self.applied_through = applied_through;
                 self.reconcile(&view);
                 Ok(())
             }

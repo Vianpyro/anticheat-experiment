@@ -145,7 +145,7 @@ fn frame_for(frames: &[(Seat, ServerFrame)], seat: Seat) -> Option<&ServerFrame>
 /// The projectile handles a frame names, in the order it names them.
 fn projectiles_in(frame: &ServerFrame) -> Vec<u16> {
     match ServerFrame::decode(frame.as_bytes()) {
-        Ok(ServerMessage::View(view)) => view
+        Ok(ServerMessage::View { view, .. }) => view
             .visible
             .iter()
             .filter_map(|entity| match entity {
@@ -160,7 +160,7 @@ fn projectiles_in(frame: &ServerFrame) -> Vec<u16> {
 /// How many entities a seat was told about in a frame.
 fn visible_count(frame: &ServerFrame) -> usize {
     match ServerFrame::decode(frame.as_bytes()) {
-        Ok(ServerMessage::View(view)) => view.visible.len(),
+        Ok(ServerMessage::View { view, .. }) => view.visible.len(),
         other => panic!("a tick produced {other:?} rather than a view"),
     }
 }
@@ -218,6 +218,39 @@ fn batch() -> impl Strategy<Value = Batch> {
             )
         },
     )
+}
+
+/// Two batches that differ in what the seats say, never in which seats speak.
+///
+/// The fork has to produce two *worlds*; it must not produce two *sessions*.
+/// Since M4 a frame carries the recipient's own input acknowledgement, so a seat
+/// that spoke in one branch and stayed silent in the other is legitimately sent
+/// different bytes — it told the server different things, and the frame is a
+/// function of that as well as of the world. A fork that separated the seat sets
+/// would report exactly that as a leak, and worse, would retire the affected
+/// seat from the comparison for the whole of the run, because the sequence
+/// numbers never come back together.
+///
+/// Sharing the seat set is therefore the stronger construction rather than a
+/// concession: every seat stays eligible on every tick, and the divergence
+/// between the two branches is entirely in the world, which is what the property
+/// is about. Constructed rather than filtered, for the reason `batch` is.
+fn fork() -> impl Strategy<Value = (Batch, Batch)> {
+    proptest::collection::vec(
+        proptest::option::weighted(0.4, (action(), action())),
+        PLAYER_COUNT,
+    )
+    .prop_map(|per_seat| {
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for (index, spoken) in per_seat.into_iter().enumerate() {
+            if let Some((theirs, ours)) = spoken {
+                left.push((index, theirs));
+                right.push((index, ours));
+            }
+        }
+        (Batch(left), Batch(right))
+    })
 }
 
 fn script(ticks: usize) -> impl Strategy<Value = Script> {
@@ -319,10 +352,16 @@ proptest! {
     /// A padding scheme that derived a byte from the content, a frame that
     /// carried a length, or a handle allocator that counted projectiles the
     /// recipient never saw all fail here and pass everything else in this file.
+    ///
+    /// The antecedent is entitlement about the *world*. Since M4 the frame also
+    /// carries the recipient's own input acknowledgement, which is a function of
+    /// what that recipient itself sent rather than of anything hidden — so the
+    /// fork is constructed to leave every seat's own traffic identical across
+    /// the two branches. See [`fork`].
     #[test]
     fn two_states_a_player_cannot_tell_apart_produce_the_same_bytes(
-        (prefix, left_batch, right_batch, tail) in
-            (script(24), batch(), batch(), proptest::collection::vec(batch(), 0..=8)),
+        (prefix, (left_batch, right_batch), tail) in
+            (script(24), fork(), proptest::collection::vec(batch(), 0..=8)),
     ) {
         let mut left = seated(prefix.seed);
         let mut right = seated(prefix.seed);
@@ -644,4 +683,102 @@ fn the_generators_reach_forks_a_player_cannot_tell_apart() {
         "only {hidden_forks} of {SAMPLES} forks were hidden from anybody, so the \
          byte-equality property is drifting toward vacuity"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The acknowledgement, which is the field M4 added
+// ---------------------------------------------------------------------------
+
+/// The frame acknowledges an input the world has seen, and never one the server
+/// refused.
+///
+/// `docs/MILESTONES.md` M3 closed on the thing it could not build: prediction
+/// needs the client to know which of its inputs the server applied to which
+/// tick. The field is only worth anything if it means what it says, and the way
+/// for it to be wrong that costs something is acknowledging an input the world
+/// will never see — the client would drop an outstanding intention from its
+/// prediction and snap back to a position the server never moved it to.
+///
+/// **What this test does not distinguish, stated because the field's
+/// documentation could be read as claiming it does.** The acknowledgement is
+/// written where the loop drains the queue, and today that is one tick after the
+/// input was accepted — but `Match::tick` drains and emits in the same call, so
+/// every accepted input is applied by the very next tick and no frame is ever
+/// emitted in between. Writing it in `Match::deliver` instead would therefore be
+/// observationally identical from the wire, and this test stays green under that
+/// mutation. It is written at the drain because that is where the meaning is,
+/// and the day a rate policy holds an input across a tick the two stop
+/// coinciding; until then, "applied" and "accepted" are the same event seen
+/// twice, and only "refused" is a difference anybody can see.
+#[test]
+fn a_frame_acknowledges_the_input_the_world_saw_and_never_a_refused_one() {
+    let mut game = seated(0x4CC0_0000_0000_0001);
+
+    // Accepted between two ticks, and therefore not yet applied: the frame of
+    // the tick that ran *before* the input was delivered acknowledges nothing.
+    let frames = game.tick();
+    assert_eq!(applied_in(&frames, Seat::Blue0), None, "nothing sent yet");
+
+    let send = |game: &mut Match, seq: u32| {
+        game.deliver(
+            Seat::Blue0,
+            ClientFrame::encode(&ClientMessage::Input {
+                seq,
+                claimed_at_ms: 0,
+                action: Action::Move(FxVec2::ZERO),
+            })
+            .as_bytes(),
+            0,
+        )
+    };
+
+    send(&mut game, 4).expect("a first input was refused");
+    let frames = game.tick();
+    assert_eq!(
+        applied_in(&frames, Seat::Blue0),
+        Some(4),
+        "the tick that drained it has to say so"
+    );
+
+    // A sequence number that does not advance is refused, and a refusal must
+    // not move the acknowledgement: the client would drop an outstanding
+    // intention the world will never see.
+    assert!(send(&mut game, 4).is_err(), "a repeated seq was accepted");
+    assert!(send(&mut game, 3).is_err(), "a lowered seq was accepted");
+    let frames = game.tick();
+    assert_eq!(
+        applied_in(&frames, Seat::Blue0),
+        Some(4),
+        "a refused input moved the acknowledgement"
+    );
+
+    // A tick in which this seat said nothing repeats the last acknowledgement
+    // rather than forgetting it. A field that reset to `None` on a quiet tick
+    // would be a field a client cannot reconcile against.
+    let frames = game.tick();
+    assert_eq!(applied_in(&frames, Seat::Blue0), Some(4));
+
+    // And it follows the seat rather than the match: nobody else's number
+    // reaches this session.
+    send(&mut game, 9).expect("a later input was refused");
+    let frames = game.tick();
+    assert_eq!(applied_in(&frames, Seat::Blue0), Some(9));
+    for seat in Seat::ALL.into_iter().filter(|seat| *seat != Seat::Blue0) {
+        assert_eq!(
+            applied_in(&frames, seat),
+            None,
+            "{seat:?} was told about somebody else's sequence number"
+        );
+    }
+}
+
+/// What a seat's frame acknowledges this tick.
+fn applied_in(frames: &[(Seat, ServerFrame)], seat: Seat) -> Option<u32> {
+    let frame = frame_for(frames, seat).expect("a seated player received no frame");
+    match ServerFrame::decode(frame.as_bytes()) {
+        Ok(ServerMessage::View {
+            applied_through, ..
+        }) => applied_through,
+        other => panic!("a tick produced {other:?} rather than a view"),
+    }
 }
