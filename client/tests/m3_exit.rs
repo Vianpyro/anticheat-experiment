@@ -261,20 +261,44 @@ async fn three_headless_clients_agree_and_the_log_resimulates() {
     );
 }
 
-/// The `resim` binary this workspace just built.
+/// The `resim` binary, built if it is not there yet.
 ///
 /// Found beside the test binary rather than through `CARGO_BIN_EXE_`, which
-/// Cargo only sets for a package's own binaries and `resim` belongs to
-/// `replay`. `cargo test --workspace` builds every binary in the workspace
-/// before running anything, so it is there.
+/// Cargo only sets for a package's *own* binaries and `resim` belongs to
+/// `replay`.
+///
+/// It is built on demand because the obvious assumption is wrong, and CI is
+/// where that showed: `cargo test --workspace` does **not** build every binary
+/// in the workspace. It builds what each package's test targets need, and no
+/// test target needs `resim` — locally it existed only because a
+/// `cargo build --all-targets` had happened to run first, which is the shape of
+/// green that turns red on a clean checkout. Building it here makes the test
+/// self-contained on any machine, and the nested invocation is safe because the
+/// outer cargo is not holding the build lock while its tests run.
 fn resim_binary() -> PathBuf {
     let mut path = std::env::current_exe().expect("the test binary has a path");
     path.pop(); // deps/
     path.pop(); // debug/ or release/
     path.push(if cfg!(windows) { "resim.exe" } else { "resim" });
+    if path.exists() {
+        return path;
+    }
+
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the client crate has a parent directory")
+        .join("Cargo.toml");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let built = std::process::Command::new(cargo)
+        .args(["build", "--locked", "-p", "replay", "--bin", "resim"])
+        .arg("--manifest-path")
+        .arg(&workspace)
+        .status()
+        .expect("run cargo to build resim");
+    assert!(built.success(), "cargo could not build resim");
     assert!(
         path.exists(),
-        "the resim binary is not at {}; build the workspace rather than this crate alone",
+        "resim was built but is not at {}",
         path.display()
     );
     path
