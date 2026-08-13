@@ -143,6 +143,32 @@ as a release asset or a separate repository, never committed to git history,
 because deleting a committed file does not delete it. Default to publishing
 derived statistics only.
 
+### What M6 added, and the one thing it made mechanical
+
+The hedge above is a page of text, a mapping held outside the repository, and a
+`.gitignore`. M6 keeps all of it and adds the piece that was missing: **which
+version of the text somebody signed**. A consent document that later gains a
+field — and this milestone added several, see `docs/SCHEMA.md` §4 — has stopped
+being the document a participant read six months ago, and nothing in a corpus of
+replays would have said so.
+
+So `docs/CONSENT.md` declares a `consent-version`, `replay::consent::CURRENT`
+repeats it, a test fails if they disagree, `ci` refuses an edit to the document
+that leaves the version alone, and `Corpus::store` refuses a match whose
+participant consented under another version — or under none, because a record
+written before the field existed does not decode and is therefore not a consent
+record. That last equivalence is the deliberate half: absent and stale have to
+fail alike, or a corpus assembled under an older regime is readmitted by the
+silence of its own files.
+
+The schema M6 added is personal information like everything else here, so it is
+named in `docs/CONSENT.md` field by field and destroyed by withdrawal. It lives
+inside the match directory that `withdraw` already removes whole; and because it
+names **no pseudonym** — deliberately, so the signed manifest stays the one naming
+of a person — a search for a name cannot find one left behind, which is why
+`Corpus::audit` reports a match directory whose replay *or* session record fails
+to read, unconditionally, for every pseudonym.
+
 One distinction worth recording, because it changes what is owed: this corpus is
 collected to calibrate detectors, never to verify or confirm anyone's identity.
 That is what keeps it outside the biometric-database regime of the *Act to
@@ -872,3 +898,124 @@ counter as a proof: a reach assertion says the fixture arrived at the case, not
 that the case is the interesting one. It converts "this test is about nothing"
 into a red, which is the only failure mode listed above, and leaves "this test is
 about the wrong thing" exactly where it was.
+
+---
+
+## R16 — The client's tick budget was set on a fixture, and a corpus is not one
+
+**Not irreversible, and it is here because the cost lands on the corpus rather
+than on the code.** A client that cannot complete a pass of its capture loop
+within one tick does not lose data. It writes a **delay** into the record: the
+intention it decides one pass late is recorded as though the hand were late, and
+that is indistinguishable, afterwards, from a hesitation. It is R14's failure
+arriving through a different door — a property of the client contaminating a
+signal M8 rests on — and it is worth its own entry because the door is different
+and R14's hedge does not cover it.
+
+**What the evidence for the budget actually was.** Two numbers, both from
+fixtures, and the second one is the interesting one:
+
+- `client/tests/m4_exit.rs` compresses the server's period so that a thousand
+  ticks run in seconds. It was **four** milliseconds, and four was enough.
+- Then `docs/RISKS.md` R15's pass gave that match something to happen in —
+  walking the three clients under Red's tower instead of turning them round at
+  the halfway point — and four was **no longer enough**. Both `check` jobs
+  reported `worst correction 13106 raw units`, which is one tick of
+  `champion_speed` and is the documented shape of a client that fell behind. The
+  period moved to ten.
+
+So the only tick budget this project has ever had evidence for was set by a
+fixture with three seats in it, and it moved the first time the fixture reached
+more of the game. **Nine occupied seats in one place, with views full and events
+at the frame's cap, is strictly more of the game and had never been run.**
+
+**Decide:** M6, before the first recording session, because the reversal costs a
+re-recording and a re-recording costs nine people an evening.
+
+**Hedge, in two parts.**
+
+*Measure the case, rather than reasoning about it.*
+`client/tests/cadence.rs` is the dense match: nine sessions on one server at the
+game's own 30 Hz, the nine of them walking to the centroid and then standing
+inside one another's `attack_range`, with one of them rasterising real frames
+from real views into a real 1280×800 framebuffer while it captures. It reports
+what one pass of the capture loop costs, at the real tick and at M4's compressed
+ten milliseconds.
+
+*And record it per session, so that a session that fell behind is visible in the
+corpus rather than pooled into it.* `client::health::Cadence` counts the passes
+that exceeded the budget and the worst overrun; the client prints both on the way
+out and writes them into its session part; `Corpus::store` files them beside the
+replay; and `replay census` reports how many sessions in the corpus are degraded
+and by how much. `docs/SCHEMA.md` §5 carries the rule: **a degraded session is
+never pooled into a distribution with sessions that are not.**
+
+### What the measurement found, run 2026-08-13
+
+One container, nine clients and a server sharing it, 700 ticks at 30 Hz, of which
+the last 180 are the fight. The pass count is the loop's own, and the budget is
+one tick derived from `sim::TICKS_PER_SECOND` rather than a number anybody chose.
+
+| | `release` | `dev` |
+| --- | --- | --- |
+| Passes of the capture loop | 11 650 | 10 808 |
+| Views reconciled / frames rasterised | 700 / 1 293 | 700 / 1 067 |
+| Pass duration, median | 2.039 ms | 2.040 ms |
+| …95th percentile | 2.291 ms | 5.492 ms |
+| …99th percentile | 2.332 ms | 5.691 ms |
+| **…maximum** | **5.144 ms** | **7.910 ms** |
+| Passes over the game's tick (33.333 ms) | **0** | **0** |
+| Passes over M4's compressed budget (10 ms) | **0** | **0** |
+| Entities visible at once, at most | 11 | 11 |
+| Events on the busiest view, against `MAX_EVENTS_PER_VIEW` = 16 | 11 | 11 |
+| Views on which the measured client was under fire | 180 | 180 |
+
+**The conclusion, and it is narrower than the numbers invite.** At nine seats in a
+group fight, on this host, the worst single pass is **5.1 ms** optimised and
+**7.9 ms** unoptimised, against a tick of 33.3 ms — so the budget holds with a
+factor of six in hand, and it holds against M4's ten-millisecond harness too,
+though only by a factor of one and a quarter in `dev`. The worry that raised this
+entry was reasonable and the answer is that ten milliseconds is not short at nine
+players; what is short is the margin in an unoptimised build, which is why the
+harness compresses to ten rather than to four and why the number is recorded here
+with the profile beside it.
+
+**Four things this does not establish**, because a table is where a reader stops
+asking:
+
+- **It is one host, and the assertion is deliberately not.** These numbers are
+  from one container. What the test *asserts* is machine-independent: that the
+  fixture reached a dense match at all, and that `Cadence` counted every pass the
+  loop made and agrees with an independently kept maximum and an independently
+  re-derived overrun count. The distribution is printed, never thresholded — a
+  threshold on a shared runner is a check that goes red for reasons that have
+  nothing to do with this repository.
+- **The dominant cost is the rasteriser, not the roster.** A pass median of 2 ms
+  is `rasterize` over 1.02 million pixels, which is the same work at one visible
+  entity as at eleven. So the *fight* is not what this measures well; what it
+  measures well is that the fight does not add a pass long enough to matter. A
+  future renderer, a larger window, or a machine slower than this one moves the
+  number, and none of those is a change to `sim`.
+- **Eight of the nine do not render.** They fill seats and fight, which is what
+  makes the measured client's views full; they are not nine renderers on nine
+  machines. The real session has more rendering and less contention, and the two
+  push in opposite directions by amounts nobody here has measured.
+- **A session that overruns is now visible, not prevented.** The corpus records
+  the fact; deciding what to do with a degraded session is a judgement for whoever
+  builds a distribution, which is the same division `docs/SCOPE.md` makes about
+  detector findings and for the same reason.
+- **One link in the chain is covered by no test and says so.** `Cadence` is
+  tested directly, the loop is measured against a real match, the session part is
+  round-tripped against the corpus's reader — but the two callbacks in
+  `client::gfx` that *attach* the measurement to the playable client
+  (`new_events` and `about_to_wait`) are checked by nobody, because `winit` needs
+  a display server and CI has none. `client/src/gfx.rs` carries the admission
+  where a reader will meet it. What limits the damage is that the failure mode is
+  loud: an unpaired bracket records no pass at all, so a broken wiring produces a
+  session part reporting `passes: 0`, which is a thing an operator reads as broken
+  rather than as healthy.
+
+**Reopened by**, any one of: a renderer that is not a CPU rasteriser over this
+scene; a window materially larger than 1280×800; a recording session whose census
+reports degraded matches; or any change that puts work on the thread between
+`new_events` and `about_to_wait`.

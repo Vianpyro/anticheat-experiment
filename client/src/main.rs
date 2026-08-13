@@ -17,6 +17,10 @@
 //! moba-client <address> <certificate-hex>              # play
 //! moba-client <address> <certificate-hex> --headless   # idle, print digests
 //! moba-client --probe-input [seconds]                  # measure the capture path
+//!
+//! # and, for a recording session (docs/MILESTONES.md M6):
+//! moba-client <address> <certificate-hex> \
+//!     --record <directory> --cpi <n> --polling <hz> --acceleration off
 //! ```
 //!
 //! The address and the certificate are printed by `moba-server` on startup. The
@@ -27,20 +31,72 @@
 //! event for a few seconds, and prints the inter-arrival distribution and the
 //! finest motion it saw — the measurement behind the claim that this client's
 //! sampling rate no longer follows the pointer's speed.
+//!
+//! # The recording flags, and why the client asks rather than measures
+//!
+//! `--cpi` and `--polling` are what the participant was asked, because no
+//! process can read them: a mouse reports counts, not the inch it crossed to
+//! produce them. `--acceleration` is asked and required to be `off`, and a
+//! session that says otherwise refuses to start rather than recording something
+//! the corpus cannot use. `docs/SCHEMA.md` is the field-by-field account,
+//! including what is measured beside each of these and what stays unknown.
+//!
+//! Without `--record` the client writes nothing at all. A person playing for fun
+//! is not a recording session, and a flag is the difference.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
+use client::health::{Declared, Recorded};
 use client::{Headless, net::Wire};
 use sim::{Action, Tick};
+
+/// The value of `--name`, if it was given.
+fn flag<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
+    let at = arguments.iter().position(|argument| argument == name)?;
+    arguments.get(at.checked_add(1)?).map(String::as_str)
+}
+
+/// What the participant declared, or a message saying which answer is missing.
+///
+/// All three are required together: a corpus that held some sessions' hardware
+/// and not others' would have a covariate present on part of the data, which is
+/// worse than not having it at all — a detector fitted on the subset that has it
+/// is fitted on a subset chosen by whoever remembered a flag.
+fn declared(arguments: &[String]) -> Result<Declared, String> {
+    let number = |name: &str| -> Result<u32, String> {
+        flag(arguments, name)
+            .ok_or_else(|| format!("--record needs {name} <n>"))?
+            .parse::<u32>()
+            .map_err(|_| format!("{name} takes a whole number"))
+    };
+    let acceleration = match flag(arguments, "--acceleration") {
+        Some("off") => false,
+        Some("on") => true,
+        _ => return Err("--record needs --acceleration on|off".to_owned()),
+    };
+    Ok(Declared {
+        device_cpi: number("--cpi")?,
+        device_polling_hz: number("--polling")?,
+        pointer_acceleration: acceleration,
+    })
+}
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let headless = arguments.iter().any(|argument| argument == "--headless");
     let probing = arguments.iter().any(|argument| argument == "--probe-input");
+    let recording = flag(&arguments, "--record").map(PathBuf::from);
+    // The flags and their values both start with no `--`, so the values have to
+    // come out of the positional list explicitly rather than by prefix.
+    let flagged: Vec<String> = ["--record", "--cpi", "--polling", "--acceleration"]
+        .into_iter()
+        .filter_map(|name| flag(&arguments, name).map(str::to_owned))
+        .collect();
     let positional: Vec<&String> = arguments
         .iter()
-        .filter(|argument| !argument.starts_with("--"))
+        .filter(|argument| !argument.starts_with("--") && !flagged.contains(argument))
         .collect();
 
     if probing {
@@ -54,6 +110,8 @@ fn main() -> ExitCode {
     let [address, certificate] = positional.as_slice() else {
         eprintln!(
             "usage: moba-client <address> <certificate-hex> [--headless]\n       \
+             moba-client <address> <certificate-hex> --record <dir> --cpi <n> \
+             --polling <hz> --acceleration off\n       \
              moba-client --probe-input [seconds]"
         );
         return ExitCode::from(2);
@@ -84,7 +142,21 @@ fn main() -> ExitCode {
         };
         return finish(runtime.block_on(idle(address, &certificate)));
     }
-    finish(client::gfx::play(address, &certificate))
+
+    let recorded = match recording {
+        None => None,
+        Some(directory) => match declared(&arguments) {
+            Ok(declared) => Some(Recorded {
+                directory,
+                declared,
+            }),
+            Err(message) => {
+                eprintln!("moba-client: {message}");
+                return ExitCode::from(2);
+            }
+        },
+    };
+    finish(client::gfx::play(address, &certificate, recorded.as_ref()))
 }
 
 fn finish(played: Result<(), String>) -> ExitCode {
