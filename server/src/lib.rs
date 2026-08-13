@@ -451,6 +451,24 @@ impl Match {
         }
     }
 
+    /// Events this match will never deliver to anybody, across every seat.
+    ///
+    /// **This number is a defect count, not a statistic.** A non-zero value
+    /// means some client permanently missed something that happened to it: the
+    /// frame's event budget defers its overflow rather than dropping it, and the
+    /// queue that holds the deferral is a tick's capacity deep, so reaching the
+    /// bound needs a sustained rate no reachable state under the game's
+    /// constants produces. `docs/ARCHITECTURE.md` calls it a tripwire rather
+    /// than a budget, and the tests that drive a whole match assert it is zero
+    /// so that the wire is what trips rather than a metric nobody reads.
+    #[must_use]
+    pub fn events_lost(&self) -> u32 {
+        Seat::ALL
+            .into_iter()
+            .map(|seat| self.events_owed(seat).1)
+            .fold(0, u32::saturating_add)
+    }
+
     fn everybody_ready(&self) -> bool {
         let seated = self.seated();
         seated.len() >= self.expected_players
