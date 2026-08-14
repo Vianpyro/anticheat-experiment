@@ -1301,6 +1301,88 @@ fn a_substituted_companion_is_refused_at_the_door() {
     println!("store: {error}");
 }
 
+/// **A stream with no view anchors is a client whose wiring is broken.**
+///
+/// The one part of the anchor's path no test can reach is where it is attached:
+/// `client::gfx::Session::advance` needs a display server and CI has none, which
+/// is the same admission `client::health::Cadence`'s bracket carries. So the
+/// failure is made loud instead — a seat that played a match received frames, so
+/// a stream with none in it is not a session, and `Corpus::store` says so at the
+/// door rather than letting a corpus be recorded that cannot answer the question
+/// it was recorded for.
+#[test]
+fn a_traced_seat_with_no_view_anchor_is_refused() {
+    let scratch = Scratch::new("no-anchor");
+    let corpus = scratch.corpus();
+    for pseudonym in ["alizarin", "bistre"] {
+        corpus
+            .enrol(&consent(pseudonym), &format!("{pseudonym}@example.invalid"))
+            .expect("enrol");
+    }
+
+    let mut log = replay::TelemetryLog::new();
+    for seat in 0..2usize {
+        let mut stream = a_stream(seat);
+        stream
+            .samples
+            .retain(|sample| !matches!(sample.event, replay::telemetry::Event::Viewed { .. }));
+        log.seats[seat] = Some(stream);
+    }
+    let mut id = [b'-'; 16];
+    for (slot, byte) in id.iter_mut().zip("2026-09-03-a".bytes()) {
+        *slot = byte;
+    }
+    let mut slots: [Option<Pseudonym>; PLAYER_COUNT] = [const { None }; PLAYER_COUNT];
+    slots[0] = Pseudonym::parse("alizarin");
+    slots[1] = Pseudonym::parse("bistre");
+    let facts = |telemetry| SessionFacts {
+        match_id: MatchId(id),
+        started_at_unix_ms: 1_786_000_000_000,
+        participants: slots.clone(),
+        sim_commit: SimCommit::Unknown,
+        telemetry,
+    };
+    let key = SigningKey::from_seed(SEAL_SEED);
+    let companion = replay::telemetry::seal(&log, &facts(replay::Commitment::Absent), &key);
+    let sealed = replay::seal(
+        &a_recording(),
+        &facts(replay::Commitment::Sealed(companion.digest())),
+        &key,
+    );
+
+    // The device events still count, so the silent-seat refusal does not fire and
+    // this is the anchor check or nothing.
+    // …and the fixture the rest of this file uses does carry anchors, so the
+    // refusal above is reachable only by removing them on purpose.
+    let (_, ordinary) = a_traced_match("2026-09-11-a", &["alizarin", "bistre"]);
+    assert!(
+        ordinary.manifest.seats[0].expect("seat 0 is traced").views > 0,
+        "the ordinary fixture has no anchors either, so every traced test in this \
+         file is passing on a stream this corpus would refuse"
+    );
+    assert!(
+        companion.manifest.seats[0]
+            .expect("seat 0 is traced")
+            .samples
+            > 0,
+        "the seat records no device event either, so the silent-seat check would \
+         catch this and the assertion below would be about the wrong refusal"
+    );
+
+    let error = corpus
+        .store(
+            &sealed,
+            &a_traced_session("2026-09-03-a", 2),
+            Some(&companion),
+        )
+        .expect_err("a stream with no view anchor was stored");
+    assert!(
+        error.to_string().contains("no view anchor"),
+        "refused for the wrong reason: {error}"
+    );
+    println!("store: {error}");
+}
+
 /// A session record survives its own encoding, field for field.
 #[test]
 fn a_session_record_reads_back_as_what_was_written() {

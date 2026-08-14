@@ -59,6 +59,21 @@
 //! the way out is zero, and a session part with `passes: 0` is a session part an
 //! operator reads as broken.
 //!
+//! # The view anchor is attached here, and that wiring is uncovered too
+//!
+//! [`Session::advance`] records a `client::input::Event::Viewed` for every frame
+//! it folds in, which is what ties the device stream to the match
+//! (`docs/SCHEMA.md` §11c). It is one line in the same callback as everything
+//! else here, and it is checked by nobody for the same reason the `Cadence`
+//! bracket is: this loop needs a display server and CI has none.
+//!
+//! **So the failure was made loud rather than left silent.** A stream with no
+//! anchors in it is a client whose wiring is broken, not a session — a seat that
+//! played a match received frames — so `replay::Corpus::store` refuses a traced
+//! seat whose companion carries zero view anchors, by name and at the door. An
+//! operator finds out when they file the match rather than when a detector reads
+//! a corpus that cannot answer the question it was recorded for.
+//!
 //! # The pointer is hidden and not grabbed, and that was measured
 //!
 //! Cursor visibility is state on a device the process does not own; it is

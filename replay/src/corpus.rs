@@ -120,6 +120,7 @@
 //! | a telemetry companion the replay does not commit to, or a commitment with no companion | a companion nobody named cannot be bound to a match, and a promise with no file behind it is a corpus that cannot account for itself |
 //! | a companion that does not verify against the replay that named it | `crate::telemetry::verify`, at the door rather than at the first reader |
 //! | a seat the session record and the companion describe differently | the two files hold the same numbers about each seat and neither is derived from the other, so both can drift |
+//! | a traced seat whose stream holds no view anchor | a seat that played a match received frames; a stream with none is a client whose anchor wiring is broken, and it is the one part of that wiring no test can reach |
 
 use std::fs;
 use std::io;
@@ -526,6 +527,15 @@ impl Corpus {
                                     trace.samples,
                                     trace.motions
                                 ))
+                            } else if trace.views == 0 {
+                                Some(
+                                    "recorded no view anchor at all. A seat that \
+                                     played a match received frames, so a stream \
+                                     with none in it is a client whose anchor \
+                                     wiring is broken rather than a session \
+                                     (docs/SCHEMA.md §11c)"
+                                        .to_owned(),
+                                )
                             } else if measured.clock != trace.clock
                                 || measured.platform != trace.platform
                                 || measured.world_units_per_count_e6

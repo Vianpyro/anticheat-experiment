@@ -559,6 +559,16 @@ events, which is the corpus's one mechanical defence against a headless client �
 and a headless client *receives views*. Counting anchors among the samples would
 hand that defence to the exact attacker it exists to catch.
 
+**And a traced seat with zero anchors is refused**, which is the mirror of that
+rule and exists for a different reason. The place the anchor is *attached* —
+`client::gfx::Session::advance` — is the one part of the capture path no test can
+reach, because the loop needs a display server and CI has none, which is the same
+admission `docs/RISKS.md` R16 makes about the tick-budget bracket. A seat that
+played a match received frames, so a stream with no anchor in it is a client whose
+wiring is broken rather than a session, and `Corpus::store` says so at the door.
+An operator finds out when they file the match rather than when a detector reads a
+corpus that cannot answer the question it was recorded for.
+
 ### 11d. What is deliberately not in it
 
 Named, because what is missing here is missing from the whole corpus.
