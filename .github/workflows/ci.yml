@@ -56,11 +56,19 @@ jobs:
       # case, and 4096 costs about twenty seconds against this job's five-minute
       # budget. Raising it further buys sampling in a space the scripted
       # scenarios beside those properties already cover deliberately.
+      #
+      # `anticheat`'s joined at M8 and costs a fraction of a second: its draws
+      # are lists of latencies rather than whole matches, and what it asserts is
+      # the *meaning* of a score — the spread is zero exactly when every answer
+      # took the same number of ticks — which the mutation pass showed is the
+      # load-bearing choice in that statistic.
       - name: Property suites at CI's budget
         if: runner.os == 'Linux'
         env:
           PROPTEST_CASES: 4096
-        run: cargo test -p protocol -p server --locked --test wire --test traffic
+        run: |
+          cargo test -p protocol -p server -p anticheat --locked \
+            --test wire --test traffic --test statistics
 
       # docs/RISKS.md R5: `State` must not be serializable, anywhere, ever.
       # Today the enforcement is stronger than this grep — `sim` has no
