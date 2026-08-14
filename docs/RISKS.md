@@ -359,6 +359,32 @@ injector, no hooking library), and is useless against anything else.
 are refused. Keep the exploits expressed as test assertions rather than as a
 usable tool.
 
+### Taken at M7, and the hedge is now enforced rather than described
+
+Every exploit is a `#[test]` assertion — *the attacker learns X*, *the server
+accepts Y* — and there is no binary in the crate, so there is nothing to point at
+anything. The dependency list is the mechanism: `protocol`, plus `ed25519-dalek`
+because `forge` has to sign, and `ci` asserts it with `cargo tree` in both
+directions — the attacker links no `client`, `server`, `replay` or `anticheat`,
+and no production crate links the attacker.
+
+**What is in it that is worth being precise about, since "no generic technique" is
+a claim a reader should check.** A protocol session that constructs frames; a
+reader of `PlayerView`s; an observer of datagram sizes and counts; a writer of
+this project's replay container; a bot that sends one intention per tick. Every
+one of those is a function of *this* wire format and *this* file format, and
+none of them is a technique. The one thing that looks generic is the Ed25519
+dependency, and it signs a container whose layout is this repository's.
+
+**The judgement that stays a judgement.** Two exploits here do not fail — the
+projectile back-track and the bot — and publishing an attack nothing stops is the
+part of R7 that cannot be delegated to a dependency list. They are kept because a
+milestone that publishes only the attacks that fail has been curated, and because
+both are already stated in `docs/SCOPE.md` as limits: neither tells a reader
+anything the documents did not already say the project could not defend. Neither
+is a tool. The bot plays this game and nothing else, and the back-track is
+arithmetic on two numbers in a message this project defines.
+
 ## R8 — Corpus size versus detector claims
 
 **Not irreversible, but unrecoverable within the project's budget.** A corpus of
