@@ -20,7 +20,9 @@ use replay::consent::ConsentVersion;
 use replay::corpus::{ConsentRecord, Corpus};
 use replay::keys::SigningKey;
 use replay::manifest::{MatchId, Pseudonym, SessionFacts, SimCommit};
-use replay::session::{Clock, Declared, Measured, Platform, SeatRecord, SessionRecord};
+use replay::session::{
+    Clock, Declared, Measured, Platform, SeatRecord, SessionRecord, Supervision,
+};
 use replay::{Recording, Replay};
 use sim::{Outcome, PLAYER_COUNT, new_state, rules_hash};
 
@@ -107,6 +109,7 @@ fn a_session(match_id: &str, participants: usize) -> SessionRecord {
         match_id: a_replay(match_id, &[]).manifest.match_id,
         consent_version: ConsentVersion::current(),
         recorded_on: "2026-09-03".to_owned(),
+        supervision: Supervision::InPerson,
         seats,
     }
 }
@@ -936,4 +939,66 @@ fn a_session_record_reads_back_as_what_was_written() {
         "a seat over budget is a degraded session"
     );
     assert_eq!(record.occupied(), vec![0, 1, 2]);
+}
+
+/// The supervision conditions survive the encoding, and their **absence does not
+/// decode**.
+///
+/// `docs/SCHEMA.md` §5a: what makes a match human is the operator having been
+/// there, which is a fact about a person rather than a property of any file — so
+/// the fact is recorded, and a record that does not carry it is refused rather
+/// than assumed.
+///
+/// The refusal is the half that matters and it is the same equivalence
+/// `docs/RISKS.md` R3 draws for the consent version: **absent and wrong have to
+/// fail alike**, or a corpus assembled before the field existed is readmitted by
+/// the silence of its own files, filed as though somebody had been watching.
+#[test]
+fn a_session_records_its_supervision_and_refuses_to_be_read_without_it() {
+    for conditions in [
+        Supervision::InPerson,
+        Supervision::Remote,
+        Supervision::Unsupervised,
+    ] {
+        let mut record = a_session("2026-09-03-b", 3);
+        record.supervision = conditions;
+        let text = record.encode();
+        assert!(
+            text.contains(&format!("supervision: {}", conditions.tag())),
+            "the encoding does not name the supervision: {text}"
+        );
+        assert_eq!(
+            SessionRecord::decode(&text),
+            Some(record),
+            "{conditions:?} did not survive the round trip"
+        );
+    }
+
+    // A record written before this field existed. It does not decode, so a match
+    // recorded under an older regime cannot enter a corpus that now stratifies on
+    // this — which is the point: the silence would otherwise read as "supervised".
+    let record = a_session("2026-09-03-c", 3);
+    let older: String = record
+        .encode()
+        .lines()
+        .filter(|line| !line.starts_with("supervision: "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert!(
+        SessionRecord::decode(&older).is_none(),
+        "a session record with no supervision line decoded anyway, so an older \
+         corpus would be readmitted as though somebody had been watching"
+    );
+
+    // And a value that names no conditions is refused rather than mapped onto the
+    // nearest one.
+    let invented = record
+        .encode()
+        .replace("supervision: ", "supervision: sort-of-");
+    assert!(
+        SessionRecord::decode(&invented).is_none(),
+        "an unknown supervision value decoded"
+    );
+    assert!(Supervision::parse("").is_none());
+    assert!(Supervision::parse("supervised").is_none());
 }

@@ -36,7 +36,9 @@
 use cheat_client::bot::Bot;
 use protocol::Action;
 use replay::manifest::Build;
-use replay::session::{Clock, Declared, Measured, Platform, SeatRecord, SessionRecord};
+use replay::session::{
+    Clock, Declared, Measured, Platform, SeatRecord, SessionRecord, Supervision,
+};
 use sim::{RULES, Seat, base_position};
 
 #[path = "harness/authority.rs"]
@@ -169,6 +171,7 @@ fn the_corpus_refuses_a_silent_bot_and_cannot_touch_a_mouse_moving_one() {
         match_id: replay::MatchId(*b"headless-bot-000"),
         consent_version: replay::consent::ConsentVersion::current(),
         recorded_on: "2026-08-13".to_owned(),
+        supervision: Supervision::InPerson,
         seats: {
             let mut seats = [SeatRecord::Empty; sim::PLAYER_COUNT];
             seats[Seat::Blue0.index()] = SeatRecord::Human {
@@ -190,6 +193,7 @@ fn the_corpus_refuses_a_silent_bot_and_cannot_touch_a_mouse_moving_one() {
         match_id: replay::MatchId(*b"mouse-moving-bot"),
         consent_version: replay::consent::ConsentVersion::current(),
         recorded_on: "2026-08-13".to_owned(),
+        supervision: Supervision::InPerson,
         seats: {
             let mut seats = [SeatRecord::Empty; sim::PLAYER_COUNT];
             seats[Seat::Blue0.index()] = SeatRecord::Human {

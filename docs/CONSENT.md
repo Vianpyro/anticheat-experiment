@@ -1,6 +1,6 @@
 # CONSENT
 
-consent-version: 2026-08-13
+consent-version: 2026-08-14
 
 The text every participant reads and agrees to **in writing, before the first
 recording**, and the rules this project holds itself to afterwards.
@@ -131,6 +131,20 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 > **Nothing here identifies a device.** No model, no serial number, no
 > manufacturer, no operating-system version, no machine name. A number is not a
 > fingerprint of a mouse.
+>
+> The same file also records **how the session was supervised** — whether the
+> person running it was in the room with you, on a call with you, or not present
+> at all. It is one value for the whole session, written down by the operator, and
+> it is about the session rather than about any one of you.
+>
+> It is there for a reason worth stating plainly, because it is the one place this
+> project relies on a person rather than on a program. Nothing in a recorded file
+> can tell a person playing from a program moving a real mouse: the two produce
+> the same kind of record, and this project says so in its own documents rather
+> than implying otherwise. What tells them apart is that somebody was there. So the
+> project writes down whether somebody was, instead of remembering it — and when it
+> later publishes a number about how people play, it can say which sessions that
+> number rests on. If nobody was watching, the file says nobody was watching.
 >
 > **4. What else the project holds.**
 >

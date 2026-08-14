@@ -208,6 +208,56 @@ exists to refuse.
 
 `replay census` prints the count and the worst overrun across the corpus.
 
+## 5a. Supervision, and why it is in the schema rather than in a habit
+
+**What makes a match in this corpus a human match is not a property of any file.
+It is a fact about a person: somebody was watching.** §6 below states the one
+mechanical thing a file *can* say — a seat that recorded zero device events is
+refused, which catches a scripted or headless client — and states its narrowness
+in the same breath: a bot that moves a real mouse records exactly as many samples
+as a person and is not reachable from anything in this directory. That is
+`docs/SCOPE.md`'s ceiling of behavioural detection, and M7's `cheat-client`
+executes both halves of it (`cheat-client/tests/botting.rs`): the bot plays a
+whole match, the server accepts every frame, the replay verifies, and the only
+thing that catches the crude version is the sample count.
+
+So the guarantee is the operator, and a guarantee that lives in somebody's memory
+of an evening six months ago is not one. Every session record therefore carries
+**one** of:
+
+| Value | What it asserts |
+| --- | --- |
+| `in-person` | The operator was physically present for the whole session |
+| `remote` | The operator was on a live call with the participants throughout, but not in the room |
+| `unsupervised` | Nobody was watching; participants recorded on their own |
+
+Four rules go with it.
+
+**It is the operator's observation, not a measurement and not a declaration.** No
+client can measure whether somebody was in the room, and a participant's own
+self-report would mean nothing if they were the one cheating. So it is not in a
+session *part* — which is what a client writes — it sits beside `recorded_on`,
+which is the other thing an operator fills in, and `replay store` takes it as an
+argument.
+
+**A mixed session takes the weakest of the three**, for the reason §5 gives about
+degradation: a match is one interleaved log, its seats are not independent
+observations, and "seven of the nine were in the room" invites exactly the partial
+pooling this schema refuses.
+
+**Absence does not decode.** A session record with no supervision line is not read
+as supervised, or as anything else — it is refused, which is the same equivalence
+`docs/RISKS.md` R3 draws between an absent consent version and a stale one. A
+corpus assembled before this field existed must not be readmitted by the silence
+of its own files.
+
+**And a distribution over more than one stratum says so.** `replay census` prints
+the three counts on every run with that sentence beside them. What M8 does with
+them is M8's decision — calibrate on the best-attested stratum and test on the
+rest, or exclude the weakest and report the smaller `N` — but it is a decision
+made in the open, and the two confidence bounds in §8 are computed over whatever
+stratum a claim is actually made on.
+
 ## 6. What does not enter the corpus
 
 | Excluded | How it is enforced |
@@ -223,9 +273,15 @@ reader to conclude more.** A scripted or headless client touches no device and
 records no sample, so it is caught. **A bot that moves a real mouse records exactly
 as many samples as a person and is not reachable from any file in this corpus** —
 which is `docs/SCOPE.md`'s stated ceiling for behavioural detection arriving early
-rather than a hole this schema could close. What keeps it closed at M6 is that the
+rather than a hole this schema could close. What keeps it closed is that the
 operator is in the room while the match is played, and that is a fact about a
-person rather than a property of a format.
+person rather than a property of a format — which is why §5a makes it a field
+rather than a habit, and why a session that had no operator in the room says so.
+
+Both halves of that narrowness are executed rather than asserted, in
+`cheat-client/tests/botting.rs`: a bot plays a whole match, the server accepts
+every frame it sends, its replay verifies, and the silent-seat check catches the
+headless version and is blind to the mouse-moving one.
 
 ### Partially filled seats, and short matches
 
