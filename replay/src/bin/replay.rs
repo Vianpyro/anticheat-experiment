@@ -35,7 +35,7 @@
 //! replay verify <replay> <keys>         # resimulate, check the seal, report
 //! replay inspect <replay>               # print the manifest, check nothing
 //! replay enrol <corpus> <pseudonym> <identity> <consented-on> <retention-until> <publication>
-//! replay store <corpus> <replay> <parts-dir> <recorded-on>
+//! replay store <corpus> <replay> <parts-dir> <recorded-on> <supervision>
 //! replay census <corpus>                # what the corpus is, and what it supports
 //! replay withdraw <corpus> <pseudonym> <date>
 //! replay audit <corpus> <pseudonym>     # non-zero if anything is left
@@ -66,12 +66,13 @@
 //! requires the two confidence bounds to travel together — a reader shown the
 //! friendlier one has been handled.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::ExitCode;
 
 use replay::consent::ConsentVersion;
 use replay::corpus::{ConsentRecord, Corpus};
-use replay::session::{SeatRecord, SessionRecord};
+use replay::session::{SeatRecord, SessionRecord, Supervision};
 use replay::split::{HOLDOUT_IN, Split, split_of};
 use replay::{Build, KeyRegistry, KeyStatus, Replay, SigningKey, VerifyError};
 
@@ -92,11 +93,12 @@ fn main() -> ExitCode {
             &arguments[5],
             &arguments[6],
         ),
-        ("store", 5) => store(
+        ("store", 6) => store(
             &arguments[1],
             Path::new(&arguments[2]),
             Path::new(&arguments[3]),
             &arguments[4],
+            &arguments[5],
         ),
         ("census", 2) => census(&arguments[1]),
         ("withdraw", 4) => withdraw(&arguments[1], &arguments[2], &arguments[3]),
@@ -113,7 +115,10 @@ fn usage() -> ExitCode {
         "       replay enrol <corpus> <pseudonym> <identity> <consented-on> \
          <retention-until> <publication:yes|no>"
     );
-    eprintln!("       replay store <corpus> <replay> <parts-dir> <recorded-on>");
+    eprintln!(
+        "       replay store <corpus> <replay> <parts-dir> <recorded-on> \
+         <in-person|remote|unsupervised>"
+    );
     eprintln!("       replay census <corpus>");
     eprintln!("       replay withdraw <corpus> <pseudonym> <date>");
     eprintln!("       replay audit <corpus> <pseudonym>");
@@ -172,7 +177,23 @@ fn enrol(
 }
 
 /// Files a sealed match and the session it was recorded in.
-fn store(root: &str, replay_path: &Path, parts: &Path, recorded_on: &str) -> ExitCode {
+fn store(
+    root: &str,
+    replay_path: &Path,
+    parts: &Path,
+    recorded_on: &str,
+    supervision: &str,
+) -> ExitCode {
+    let Some(supervision) = Supervision::parse(supervision) else {
+        eprintln!(
+            "replay: {supervision:?} is not a supervision condition. One of \
+             in-person, remote, unsupervised — what makes a match human is a fact \
+             about a person rather than a property of the file, so the fact is \
+             recorded (docs/SCHEMA.md)."
+        );
+        return ExitCode::from(2);
+    };
+
     let Some(replay) = read(replay_path) else {
         return ExitCode::from(2);
     };
@@ -211,6 +232,7 @@ fn store(root: &str, replay_path: &Path, parts: &Path, recorded_on: &str) -> Exi
         replay.manifest.match_id,
         ConsentVersion::current(),
         recorded_on,
+        supervision,
         &collected,
     ) {
         Ok(session) => session,
@@ -223,10 +245,11 @@ fn store(root: &str, replay_path: &Path, parts: &Path, recorded_on: &str) -> Exi
     match Corpus::open(root).store(&replay, &session) {
         Ok(()) => {
             println!(
-                "replay: stored {} — {} seat(s) occupied, {}, {}",
+                "replay: stored {} — {} seat(s) occupied, {}, supervision {}, {}",
                 replay.manifest.match_id,
                 session.occupied().len(),
                 split_of(replay.manifest.match_id).tag(),
+                session.supervision.tag(),
                 if session.degraded() {
                     "DEGRADED: a client fell behind the tick"
                 } else {
@@ -269,6 +292,7 @@ fn census(root: &str) -> ExitCode {
     let mut unaccountable: Vec<String> = Vec::new();
     let mut ticks = 0u64;
     let mut worst_overrun_ns = 0u64;
+    let mut supervision: BTreeMap<Supervision, u32> = BTreeMap::new();
 
     for match_id in &matches {
         let (Ok(replay), Ok(session)) = (corpus.replay_of(match_id), corpus.session_of(match_id))
@@ -291,6 +315,7 @@ fn census(root: &str) -> ExitCode {
         if session.degraded() {
             degraded = degraded.saturating_add(1);
         }
+        *supervision.entry(session.supervision).or_insert(0) += 1;
         for seat in &session.seats {
             if let SeatRecord::Human { measured, .. } = seat {
                 worst_overrun_ns = worst_overrun_ns.max(measured.worst_overrun_ns);
@@ -319,6 +344,25 @@ fn census(root: &str) -> ExitCode {
         "corpus: {degraded} session(s) degraded; worst tick-budget overrun {:.3} ms \
          (docs/RISKS.md R16)",
         (worst_overrun_ns as f64) / 1e6
+    );
+    // The supervision strata, printed beside the counts they qualify. What makes
+    // a match human is the operator having been there, not anything in the file
+    // (docs/SCHEMA.md, docs/SCOPE.md's ceiling) — so a corpus that mixes the
+    // three has a covariate in it, and this is the line that says so before
+    // anybody builds a distribution over the whole of it.
+    println!(
+        "corpus: supervision — {} in person, {} remote, {} unsupervised; a \
+         distribution over more than one of these has a provenance covariate in it \
+         (docs/SCHEMA.md)",
+        supervision
+            .get(&Supervision::InPerson)
+            .copied()
+            .unwrap_or(0),
+        supervision.get(&Supervision::Remote).copied().unwrap_or(0),
+        supervision
+            .get(&Supervision::Unsupervised)
+            .copied()
+            .unwrap_or(0)
     );
     println!(
         "corpus: {held} held out, {} for training, one in {HOLDOUT_IN} by \

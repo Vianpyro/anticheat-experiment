@@ -48,7 +48,7 @@ required.
 
 | Workflow | Trigger | Jobs | Permissions | Budget |
 | --- | --- | --- | --- | --- |
-| `ci` | PR, push to `main` | `check` (fmt + clippy `-D warnings` + test, matrixed over Linux and Windows, plus four Linux-only additions: the property suites outside `sim` at a raised case budget, a grep for a serialization derive in `sim` — `RISKS.md` R5 — `cargo tree -p sim --edges normal`, which must print `sim` and nothing else, and `cargo tree -p client --edges normal`, which must show no path to `anticheat` or `server`), and from M7 `exploits` (Linux) | `contents: read` | < 5 min wall, warm |
+| `ci` | PR, push to `main` | `check` (fmt + clippy `-D warnings` + test, matrixed over Linux and Windows, plus the Linux-only additions below), `consent-version` | `contents: read` | < 5 min wall, warm |
 | `pr-hygiene` | PR, push to any branch but `main` | `branch-name` (skipped for pull requests from a fork, whose branch names are the fork's business), `pr-title` (Conventional Commits, every pull request) | `contents: read` | seconds |
 | `determinism` | PR and push touching `sim/`, `replay/`, the fixtures, the lockfile or the toolchain pin | `fixture` (the fixtures on Linux x86-64, Windows x86-64, macOS aarch64, under `--release`, each compared against digests committed in the repository, plus the replay sealed on Linux and committed, which every target must reproduce byte for byte and then verify), `properties` (the same three targets with a raised `PROPTEST_CASES`), and `sim-version` (a PR touching `sim/` must raise the crate version — `RISKS.md` R13) | `contents: read` | < 6 min |
 | `supply-chain` | PR touching a manifest, the lockfile or `deny.toml` (licenses, bans, sources) and weekly cron (advisories) | `cargo-deny` | `contents: read` | < 2 min |
@@ -61,6 +61,27 @@ for all three green on both platforms. On an already-compiled workspace the two
 extra Windows steps cost seconds, and a Windows-only clippy finding — from a
 `cfg`-gated path, most likely — is exactly the kind of thing a Linux-only lint
 job would let through.
+
+`check`'s Linux-only steps, each of which reads the working tree or the resolved
+dependency graph rather than the build, so running them twice would buy nothing:
+the property suites outside `sim` at a raised case budget; a grep for a
+serialization derive in `sim` (`RISKS.md` R5); `cargo tree -p sim --edges normal`,
+which must print `sim` and nothing else; `cargo tree -p client --edges normal`,
+which must show no path to `anticheat` or `server`; the two graph checks M7 added
+around the attacker (`ARCHITECTURE.md` invariants 6 and 6a) — it links nothing of
+the victim, and no production crate links it; the checks that no recording,
+consent record or signing key is tracked in git; and the exploit suite's own
+report.
+
+**The `exploits` job planned for M7 is a step in `check` instead, and that is a
+deliberate demotion.** `cargo test --workspace` already runs the exploit suite, on
+both platforms — which is more than the planned Linux-only job — so a separate job
+would re-run tests that have just run and return the same information, which is
+exactly the second automation R11 says to refuse. What the step buys is
+`--nocapture`, so the exploit-by-exploit account is in the run summary rather than
+only in a failure: `RISKS.md` R15's hedge is that the number is printed even when
+it passes, because the value of a counter is that a reader sees it and asks the
+question. It costs seconds on an already-compiled workspace.
 
 The determinism job compares against committed digests rather than shipping each
 job's result to a fourth job that compares them. That is strictly stronger and

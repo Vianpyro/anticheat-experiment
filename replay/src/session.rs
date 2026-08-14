@@ -129,6 +129,95 @@ pub struct Measured {
     pub worst_pass_ns: u64,
 }
 
+/// The conditions a recording session was operated under.
+///
+/// # Why the corpus records this, and why it is not a measurement
+///
+/// `docs/SCOPE.md` states the ceiling of behavioural detection and M6 stated the
+/// one mechanical thing a file can say about synthetic play: a seat that recorded
+/// **zero device events** is refused, which catches a scripted or headless client.
+/// A bot that moves a real mouse records exactly as many samples as a person and
+/// is not reachable from any file in this corpus.
+///
+/// So **what makes a match human is not a property of the format — it is a fact
+/// about a person, and the fact is that somebody was watching.** That is a real
+/// guarantee and it is the only one there is, which makes it exactly the sort of
+/// thing that must be written down rather than assumed: a corpus assembled over
+/// months, some of it in a room and some of it over a voice call, is a corpus
+/// whose provenance varies and whose files cannot say so.
+///
+/// Recording it buys two things. M8 can **stratify** — calibrate on the sessions
+/// whose authenticity is best attested and test on the rest, or exclude the
+/// weakest stratum from a null model and say so. And a reader can tell what a
+/// claim rests on, which is the standard `docs/RISKS.md` R8 sets for everything
+/// else in this corpus.
+///
+/// # Why it is one value for the match and not one per seat
+///
+/// It is an **operator's** observation, not a participant's declaration and not a
+/// client's measurement. No client can measure whether somebody was in the room,
+/// and no participant self-report would mean anything if they were the one
+/// cheating — so it does not belong in a session *part*, which is what a client
+/// writes. It sits beside `recorded_on`, which is the other thing the operator
+/// fills in.
+///
+/// A session with a mixed audience takes the **weakest** of the three, for the
+/// same reason [`SessionRecord::degraded`] is true when one seat fell behind: a
+/// match is one interleaved log, its seats are not independent observations, and
+/// telling a reader "seven of nine were supervised" invites exactly the partial
+/// pooling `docs/SCHEMA.md` refuses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Supervision {
+    /// The operator was physically present for the whole session.
+    ///
+    /// The strongest attestation available: somebody watched nine people play.
+    InPerson,
+    /// The operator was on a live call with the participants throughout, but not
+    /// in the room.
+    ///
+    /// Weaker than being present and a great deal stronger than nothing: a bot
+    /// driving a mouse on a machine whose owner is talking to you is a thing
+    /// somebody would have to arrange deliberately, and the session has a
+    /// continuous witness. What it does not cover is the screen.
+    Remote,
+    /// Nobody was watching. Participants recorded on their own.
+    ///
+    /// The provenance this corpus can say least about, and it is admitted as a
+    /// value rather than refused because a match recorded this way is still a
+    /// match — what must not happen is it being *pooled* with the others without
+    /// a document saying so.
+    Unsupervised,
+}
+
+impl Supervision {
+    /// The tag this is written as.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::InPerson => "in-person",
+            Self::Remote => "remote",
+            Self::Unsupervised => "unsupervised",
+        }
+    }
+
+    /// The conditions this tag names, or `None`.
+    ///
+    /// There is deliberately **no default**. A session record with no supervision
+    /// line does not decode, which makes a match recorded before this field
+    /// existed a match this build refuses to read rather than one it silently
+    /// files as supervised — the same equivalence `docs/RISKS.md` R3 draws between
+    /// an absent consent version and a stale one, and for the same reason.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "in-person" => Some(Self::InPerson),
+            "remote" => Some(Self::Remote),
+            "unsupervised" => Some(Self::Unsupervised),
+            _ => None,
+        }
+    }
+}
+
 /// The platform a session was recorded on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Platform {
@@ -298,6 +387,10 @@ pub struct SessionRecord {
     /// The day it was recorded, `YYYY-MM-DD`. The manifest carries the
     /// millisecond; this is what an operator writes on a form.
     pub recorded_on: String,
+    /// The conditions the operator ran the session under. See [`Supervision`]:
+    /// what makes a match human is a fact about a person rather than a property
+    /// of this format, so the fact is recorded.
+    pub supervision: Supervision,
     /// One entry per seat, in seat order.
     pub seats: [SeatRecord; PLAYER_COUNT],
 }
@@ -316,6 +409,7 @@ impl SessionRecord {
         match_id: MatchId,
         consent_version: ConsentVersion,
         recorded_on: &str,
+        supervision: Supervision,
         parts: &[(String, String)],
     ) -> Result<Self, String> {
         let mut seats = [SeatRecord::Empty; PLAYER_COUNT];
@@ -336,6 +430,7 @@ impl SessionRecord {
             match_id,
             consent_version,
             recorded_on: recorded_on.to_owned(),
+            supervision,
             seats,
         })
     }
@@ -352,6 +447,7 @@ impl SessionRecord {
             match_id,
             consent_version,
             recorded_on,
+            supervision,
             seats,
         } = self;
         let mut out = String::new();
@@ -359,6 +455,7 @@ impl SessionRecord {
         out.push_str(&format!("match_id: {match_id}\n"));
         out.push_str(&format!("consent_version: {consent_version}\n"));
         out.push_str(&format!("recorded_on: {recorded_on}\n"));
+        out.push_str(&format!("supervision: {}\n", supervision.tag()));
         for (index, seat) in seats.iter().enumerate() {
             match seat {
                 SeatRecord::Empty => {
@@ -429,6 +526,9 @@ impl SessionRecord {
         let match_id = MatchId::parse(field("match_id")?)?;
         let consent_version = ConsentVersion::parse(field("consent_version")?)?;
         let recorded_on = field("recorded_on")?.to_owned();
+        // No default: a record with no supervision line does not decode. See
+        // `Supervision::parse`.
+        let supervision = Supervision::parse(field("supervision")?)?;
 
         let mut seats = [SeatRecord::Empty; PLAYER_COUNT];
         for (index, slot) in seats.iter_mut().enumerate() {
@@ -470,6 +570,7 @@ impl SessionRecord {
             match_id,
             consent_version,
             recorded_on,
+            supervision,
             seats,
         })
     }

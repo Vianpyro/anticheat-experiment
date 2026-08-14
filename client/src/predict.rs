@@ -124,6 +124,58 @@ struct Outstanding {
     action: Action,
 }
 
+/// What one view did to the prediction that was standing when it arrived.
+///
+/// # Why the two counts travel with the correction
+///
+/// A correction on its own does not say whether the *rule* is wrong or whether
+/// the *transport* was out of step, and those need different answers. The
+/// prediction advances one tick of movement per outstanding intention, which is
+/// exact exactly when the server runs one tick per intention — the lockstep the
+/// protocol's one-message-per-tick shape produces. When two of a client's frames
+/// reach the server between two of its ticks, the server folds both into one
+/// tick and moves the champion once, while the client had drawn it twice: a
+/// correction of one tick of movement, from a prediction that applied the rule
+/// perfectly.
+///
+/// `client/src/predict.rs`'s header already said that would happen ("a client
+/// that sent four intentions in one tick would … over-predict and be corrected …
+/// a degradation of prediction quality, not of correctness"). What was missing
+/// was any way for a caller to *tell the two apart*, so `client/tests/m4_exit.rs`
+/// asserted a flat `worst_correction == 0` — which is a claim about the
+/// scheduler, and which went red intermittently on `windows-latest` for exactly
+/// this reason. `docs/RISKS.md` R16 carries the account.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reconciled {
+    /// Intentions outstanding when the client drew the position this view
+    /// corrected. One is the lockstep case.
+    pub predicted_from: usize,
+    /// Intentions this view acknowledged. One is the lockstep case; zero is a
+    /// frame that reached the server too late for the tick it was answering, and
+    /// more than one is the server folding several into one tick.
+    pub acknowledged: usize,
+    /// How far the authoritative position was from the drawn one, in raw
+    /// fixed-point units.
+    pub correction: i32,
+}
+
+impl Reconciled {
+    /// Whether the client and the server were in step for this view: exactly one
+    /// intention outstanding when it drew, and exactly that one applied by the
+    /// tick the view describes.
+    ///
+    /// **This is the condition under which the prediction must be bit-exact**,
+    /// and it is a statement about the rule rather than about a network: the
+    /// server ran one tick applying one intention, and the client folded one
+    /// intention forward by one tick of movement. Anything else is the transport
+    /// out of step, which is a real thing that happens and is not a defect in
+    /// this module.
+    #[must_use]
+    pub const fn in_lockstep(&self) -> bool {
+        self.predicted_from == 1 && self.acknowledged == 1
+    }
+}
+
 /// The client's belief about where its own champion is, ahead of the server.
 #[derive(Clone, Debug)]
 pub struct Prediction {
@@ -162,6 +214,10 @@ pub struct Prediction {
     /// happens constantly, which is how this was found.
     last_correction: i32,
     worst_correction: i32,
+    /// Intentions outstanding when the client drew [`Prediction::rendered`].
+    rendered_from: usize,
+    /// What the last view did, if it corrected anything. See [`Reconciled`].
+    last: Option<Reconciled>,
 }
 
 impl Prediction {
@@ -182,6 +238,8 @@ impl Prediction {
             rendered: None,
             last_correction: 0,
             worst_correction: 0,
+            rendered_from: 0,
+            last: None,
         }
     }
 
@@ -194,6 +252,9 @@ impl Prediction {
     pub fn sent(&mut self, seq: u32, action: Action) {
         self.outstanding.push_back(Outstanding { seq, action });
         self.rendered = Some(self.position());
+        // How many ticks of movement went into that position, which is what the
+        // next view's correction has to be read against — see [`Reconciled`].
+        self.rendered_from = self.outstanding.len();
     }
 
     /// Folds in a view and the acknowledgement that came with it.
@@ -203,6 +264,8 @@ impl Prediction {
     /// outstanding intentions without re-anchoring loses them, and re-anchoring
     /// without dropping them re-applies inputs the world has already seen.
     pub fn observe(&mut self, view: &PlayerView, applied_through: Option<u32>) {
+        let acknowledged = self.acknowledged_by(applied_through);
+
         // The correction is measured before the anchor moves, and against what
         // this client predicted for *this* tick — which is the position it
         // reported when it had exactly the intentions the server has now
@@ -211,9 +274,19 @@ impl Prediction {
             let correction = predicted.sub(view.own.position).length().to_raw();
             self.last_correction = correction;
             self.worst_correction = self.worst_correction.max(correction);
+            // Recorded with the two counts that say whether the client and the
+            // server were in step, so a caller can tell a prediction that is
+            // wrong from a transport that bunched. `Reconciled` is the type and
+            // its documentation is the argument.
+            self.last = Some(Reconciled {
+                predicted_from: self.rendered_from,
+                acknowledged,
+                correction,
+            });
+        } else {
+            self.last = None;
         }
 
-        let acknowledged = self.acknowledged_by(applied_through);
         for _ in 0..acknowledged {
             let Some(intention) = self.outstanding.pop_front() else {
                 break;
@@ -278,6 +351,17 @@ impl Prediction {
     #[must_use]
     pub const fn corrections(&self) -> (i32, i32) {
         (self.last_correction, self.worst_correction)
+    }
+
+    /// What the last view did, with the counts that say whether the client and
+    /// the server were in step when it arrived.
+    ///
+    /// `None` when the last view corrected nothing measurable — the client had
+    /// not drawn since the previous one, so there is no drawn position to compare
+    /// against. See [`Reconciled`] for why the counts matter.
+    #[must_use]
+    pub const fn reconciliation(&self) -> Option<Reconciled> {
+        self.last
     }
 
     /// The predicted position after the first `count` outstanding intentions.

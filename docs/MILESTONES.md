@@ -10,10 +10,11 @@ CI is not a delivered detector.**
 
 ## Current state
 
-**M0, M1, M2, M3 and M5 are reached**, and M3's is for a game that is now
-3v3v3 on a triangular map. M5 is out of order deliberately: its criterion is a
-table of tamper cases and a verifier, and neither of them needs a person, whereas
-M4's remaining clause and M6 are both waiting on a calendar. **M4 is built and
+**M0, M1, M2, M3, M5 and M7 are reached**, and M3's is for a game that is now
+3v3v3 on a triangular map. M5 and M7 are out of order deliberately: their criteria
+are code — a table of tamper cases and a verifier, then the attacker that runs
+against it — and neither needs a person, whereas M4's remaining clause and M6 are
+both waiting on a calendar. **M4 is built and
 not reached**: everything its
 criterion asks for except the three humans on two operating systems runs in
 `client/tests/m4_exit.rs`, and that clause is a fact about a calendar rather
@@ -203,8 +204,19 @@ executes the procedure end to end on every pull request. What does not exist is 
 corpus, and this document proposes the revision — hold nine people, drop to twenty
 matches — rather than declaring the criterion met on one that cannot support it.
 
-Next is M4's remaining clause and M6's recordings, both of which are waiting on
-people rather than on hours; M7 is the next milestone that is only work.
+**M7 is reached**, and it is the milestone at which `docs/SCOPE.md`'s "defense in
+scope" column stops being an intention: every exploit class now carries the
+attack written against it and the verdict, including the two that are **not**
+caught and are correct not to be. The account is under M7 below; the two things
+worth knowing from here are that the weakened build is a weakened *projection*
+rather than a Cargo feature — a feature on `sim` is a switch any crate can throw
+for the server binary, which is the shape `docs/ARCHITECTURE.md` already refuses —
+and that the mutation pass found the defect in the exploit suite rather than in
+the defences, which is recorded there.
+
+What is left is M4's remaining clause and M6's recordings, both of which are
+waiting on people rather than on hours, and then M8. M8's own baseline exists
+now: `cheat-client::bot::Bot` plays a whole match that nothing delivered catches.
 
 ---
 
@@ -695,6 +707,50 @@ computes and prints the summary set the criterion asks for, and on an empty corp
 it correctly prints that the corpus supports nothing at all. That is a working
 instrument, not a satisfied criterion, and the milestone stays open.
 
+### Nine participants is decided, and these are its consequences
+
+**Nine distinct people in total** — the nine seats of one 3v3v3 match, the same
+people from one match to the next. Not a number to revise; what needed writing
+down is what follows from it, and it is written before the first session rather
+than discovered at M8. `docs/SCOPE.md` carries the same three under "The corpus is
+nine people", because they constrain what may be *claimed* as much as what may be
+*collected*.
+
+1. **The "style" bound stays at about 33% and no number of matches improves it.**
+   `3/9` is a function of the people, and recording a hundred more matches from
+   the same nine moves it by nothing. Only the "circumstances" bound —
+   `3/40 ≈ 7.5%`, or `3/20 ≈ 15%` at the reduced count proposed below — improves
+   with matches. **The two travel together everywhere a claim is made**, and
+   `replay census` prints both on every run.
+2. **M8 can produce detectors that flag for review and nothing else.** No
+   threshold calibrated on nine people supports an automatic sanction of any kind
+   — a 33% upper bound on the false-positive rate means one flagged player in
+   three could be innocent and this corpus cannot rule it out. **This is a decision
+   taken here, not a limitation discovered at M8**, and M8's exit criterion below
+   carries it: a detector ships as a score and an evidence bundle, and a human
+   decides.
+3. **Generalisation to a hand this project has never recorded is out of reach.** A
+   detector calibrated on nine people has learned nine hands and says nothing about
+   a tenth player — not less, nothing. `docs/SCOPE.md` says so in plain words under
+   "What this project does not demonstrate", because the failure this guards
+   against is a reader taking a measured number for a general one.
+
+### And what M6 established about synthetic play, which M7 executed
+
+The corpus refuses a seat that recorded **zero device events**, which catches a
+scripted or headless client. **A bot that moves a real mouse is indistinguishable
+in a file** — it records as many samples as a person, at the same rate, through
+the same capture path.
+
+So what guarantees authenticity is **supervision**, which is a fact about a person
+rather than a property of the format. Every session record therefore carries its
+conditions — in person, remote, or unsupervised — so that M8 can stratify and a
+reader can tell what a claim rests on; `docs/SCHEMA.md` §5a is the schema, and a
+record without them does not decode, which is R3's equivalence between an absent
+consent version and a stale one. M7's `cheat-client/tests/botting.rs` executes
+both halves: a bot plays a whole match nothing catches, and the silent-seat check
+catches the headless version and is blind to the mouse-moving one.
+
 ### The exit criterion needs a revision, and here it is
 
 The arithmetic above says forty matches is four to seven evenings of nine adults,
@@ -775,6 +831,85 @@ that the defenses stop being claims:
 the deliberately weakened build for every exploit, with each test asserting one
 named property. CI runs both configurations.
 
+### M7 is reached
+
+Nineteen assertions across seven files in `cheat-client/tests/`, run on both
+platforms by `cargo test --workspace` and printed with `--nocapture` on Linux so
+the exploit-by-exploit account is in the run summary rather than only in a
+failure. `docs/SCOPE.md`'s class table now carries the exploit and the verdict for
+every row, which is the first time that column has been anything but an intention.
+
+Six things the criterion did not say, which the work had to decide.
+
+**The weakened build is a weakened *projection*, and there is no Cargo feature.**
+The criterion asks for "the deliberately weakened build" and named
+`--features no-culling`. That feature is not here, and refusing it is the decision
+rather than an omission: Cargo features are additive and unified, so a
+`no-culling` on `sim` is a switch any crate in the graph can throw *for the server
+binary*, and `docs/ARCHITECTURE.md` already refuses exactly that shape for a
+`Serialize` impl. Putting the switch on the culling instead of on the serialization
+would be putting it on the more dangerous of the two.
+
+What replaced it is stronger and cheaper: **each exploit is run twice inside one
+test**, against a weakened surrogate and against the real thing, and the test is
+red if either half is wrong. "CI runs both configurations" is satisfied by one
+binary rather than two, and the *pairing* is what the two-build scheme could not
+have given — the same attacker, the same world, the same tick, one projection that
+leaks and one that does not.
+
+**The "it would have worked" half is an assertion and not a courtesy.** It is
+`docs/RISKS.md` R15 applied to attacks: an exploit that fails against the real
+defence without ever having worked proves nothing about the defence, because it
+looks exactly like a defence that holds and there is no red to tell them apart.
+Every exploit here therefore has to reach its antecedent — the maphack must place
+hidden enemies against the leaking projection, the wiretap must read the entity
+count off the unpadded stream, the forgery must verify against a registry that
+trusts it — before its failure against the shipping build is allowed to count.
+
+**The mutation pass found a defect in the exploit suite itself, and it is the one
+worth recording.** `tests/maphack.rs` measured the attacker's surplus against
+"what the fog shows", and read that out of `view_for`'s own output. With culling
+removed on purpose the exploit did not go red at the exploit — it went red at its
+own R15 antecedent, because the broken projection had redefined what *hidden*
+meant. The test was asserting that `view_for` agrees with itself, which a
+projection that leaks everything satisfies as long as it leaks consistently. That
+is `docs/ARCHITECTURE.md` invariant 5's trap, one crate over, and the fix is the
+same: `cheat-client/tests/harness/entitlement.rs` re-derives the vision predicate,
+and carries the obligation that a change to the rule changes it in the same
+commit.
+
+**Class 2's attacker writes the container by hand, and that is what makes the
+format checked rather than self-consistent.** `cheat_client::forge` reimplements
+the replay file from the published documents and links no `replay`; the suite
+requires its bytes to be byte-identical to the victim's writer's over the same
+match. A format whose only writer is its own reader is a format nobody has
+independently read.
+
+**The keyless attacker is caught by two layers and not one, which M5 could not
+show.** An edit inside the manifest dies at the signature; an edit to the log —
+truncation, reordering — dies at the manifest's *commitment* to the log, with the
+signature still perfectly valid, because the log rides outside it and the manifest
+carries its digest and its count. `docs/RISKS.md` R4's three failure modes, from
+the outside. The escalation into six distinct errors still needs an attacker with
+a key, which is why `replay/tests/tamper.rs` hands its attacker one, and
+`tests/forgery.rs` reproduces that table at the byte level and then walks past its
+end: a self-consistent forgery under a trusted key verifies, and is right to.
+
+**One exploit lands against the shipping build and stays.** The projectile
+back-track recovers the ray a hidden caster stood on, from a position and a
+velocity the recipient is entitled to. It is recorded rather than defended — see
+`docs/SCOPE.md` — and it is here because a milestone that keeps only the attacks
+that fail is a milestone that has been curated. Class 3's bot is the same shape and
+the same decision: it plays a whole match, nothing catches it, and the green
+documents a limit.
+
+**And class 6 has no exploit, deliberately.** `tests/collusion.rs` is labelled a
+demonstration: it shows that the union of two teams' entitled views is strictly
+larger than either and that every frame that produced it was correctly culled.
+There is nothing for an attacker to send, so building something that looked like
+an attack would have been manufacturing an antecedent to fill a row — the exact
+R15 failure the rest of the crate exists to avoid.
+
 ## M8 — Behavioral detection · 4–6 weeks
 
 Exploit class 3, and the first genuinely measurable anti-cheat result. Write the
@@ -789,13 +924,41 @@ and account progression coherence across matches.
 Calibration honesty is the deliverable here. With a corpus of N ≈ 40 human
 matches and zero observed false positives, the supportable claim is an upper
 bound of about 3/N ≈ 7% at 95% confidence, not "0% FPR". Every detector document
-states the bound.
+states the bound — **both** bounds, since M6 fixed the people count at nine:
+`3/9 ≈ 33%` for anything a person's style drives and `3/40` (or `3/20`) for
+anything a match's circumstances drive.
+
+**Three constraints M6 fixed, which this milestone inherits and may not improve
+on.** They are stated at M6 and in `docs/SCOPE.md` and repeated here because this
+is where they bite:
+
+- **Detectors flag for review. Nothing here sanctions anybody automatically.** Not
+  a ban, not a suspension, not a queue restriction, not a silent match-quality
+  adjustment. A 33% upper bound means one flagged player in three could be
+  innocent and the corpus cannot rule it out. A detector ships as a score and an
+  evidence bundle; a human decides.
+- **No claim about a player this project has never recorded.** Nine people is nine
+  hands, and a null model for human behaviour is a distribution over humans. No
+  page in `docs/detectors/` may say "this detector achieves X on players in
+  general".
+- **A distribution is built over one supervision stratum, or the document says it
+  was not.** `docs/SCHEMA.md` §5a: authenticity comes from an operator having been
+  present, not from anything in a file, so a corpus that mixes supervised and
+  unsupervised sessions carries a provenance covariate. `replay census` prints the
+  three counts.
 
 **Exit:** per detector, a page in `docs/detectors/` giving the null model, the
 threshold and its justification, the score distribution over the human corpus
-and over the bot corpus, the observed FP/FN counts, and the confidence bound.
-The threshold is chosen at zero false positives on the corpus. The matching bot
-variant is detected in CI, and the detector ships only if that CI test exists.
+and over the bot corpus, the observed FP/FN counts, **both confidence bounds**,
+and the supervision strata the distribution was computed over. The threshold is
+chosen at zero false positives on the corpus. The matching bot variant is
+detected in CI, and the detector ships only if that CI test exists. **No detector
+emits an action**, only a finding.
+
+The bot the detectors are measured against exists as of M7:
+`cheat-client::bot::Bot` plays a whole match through the protocol and nothing
+delivered catches it, which is the baseline this milestone has to improve on and
+the reason `tests/botting.rs` is green on purpose.
 
 ## M9 — Release pipeline · 1–2 weeks
 

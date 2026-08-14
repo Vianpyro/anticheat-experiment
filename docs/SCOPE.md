@@ -89,14 +89,41 @@ These are not features, they are properties the codebase must never lose:
 Five exploit classes. Each defense is only considered delivered once the
 matching exploit exists in the repository and fails against it in CI.
 
-| # | Exploit class | Defense in scope |
-| --- | --- | --- |
-| 1 | Maphack: reading information not visible | Strict server-side culling; message-size padding against traffic analysis; culling of *derived* signals (sound, damage events, cast events) |
-| 2 | Result forgery: unplayed match, edited replay | Signed replays; server-issued match records; offline resimulation of the input log |
-| 3 | Synthetic input and botting | Server-arrival-time telemetry; behavioral statistics calibrated on a human corpus; account-progression coherence over time |
-| 4 | Time manipulation: slowdown, clock desync | Divergence between client-claimed and server-observed input timestamps as a first-class signal |
-| 5 | Protocol abuse: replay, concurrency, out-of-sequence | Monotonic input sequence numbers, idempotent session commands, per-player rate limits |
-| 6 | Cross-team collusion: two teams cooperating against the third, including sharing vision outside the game | **None applicable.** See below |
+**As of M7 the last column is no longer an intention.** Every row below carries
+the exploit that attacks it and whether the defense holds against that exploit,
+because M7 is the milestone at which the word *delivered* stopped being a promise
+about future work. The exploits live in `cheat-client/tests/`; each is run twice,
+against a weakened version of the defense that does not stop it and against the
+one this project ships, and the test is red if either half comes out wrong.
+
+| # | Exploit class | Defense in scope | Exploit | Delivered? |
+| --- | --- | --- | --- | --- |
+| 1 | Maphack: reading information not visible | Strict server-side culling; message-size padding against traffic analysis; culling of *derived* signals (sound, damage events, cast events) | `tests/maphack.rs`, `tests/traffic.rs` | **Yes.** The maphack places every living enemy against an omniscient projection and exactly the visible ones against this one; the wiretap reads the entity count off an unpadded stream and sees one packet shape on the real one |
+| 2 | Result forgery: unplayed match, edited replay | Signed replays; server-issued match records; offline resimulation of the input log | `tests/forgery.rs` | **Yes.** A forged replay of a match nobody played verifies against a registry that trusts the forger's key and is refused by the one that does not; every byte-level edit of a genuine replay is caught, inside the signature or by the manifest's commitment to the log |
+| 3 | Synthetic input and botting | Server-arrival-time telemetry; behavioral statistics calibrated on a human corpus; account-progression coherence over time | `tests/botting.rs` | **No, and correctly.** The bot plays a whole match, the server accepts every frame, the replay verifies. The one mechanical defense — a seat with zero device events is refused — catches a headless bot and is blind to one moving a real mouse. The behavioral half is M8's and carries its own bounds |
+| 4 | Time manipulation: slowdown, clock desync | Divergence between client-claimed and server-observed input timestamps as a first-class signal | `tests/clock.rs` | **Yes, for what M7 can deliver.** Four different claimed clocks produce one identical world digest, because no rule reads the field; the divergence is recorded and inert. A *detector* over that divergence is M8's |
+| 5 | Protocol abuse: replay, concurrency, out-of-sequence | Monotonic input sequence numbers, idempotent session commands, per-player rate limits | `tests/abuse.rs` | **Yes.** A replayed intention is applied once, a stale sequence number is refused, a second `Join` is out of order, an unresolvable or friendly handle never becomes an order, and hostile byte strings are refused at the frontier |
+| 6 | Cross-team collusion: two teams cooperating against the third, including sharing vision outside the game | **None applicable.** See below | **None, deliberately** — `tests/collusion.rs` is a demonstration and not an exploit | Not applicable, and that is the finished state |
+
+Two things that column does not say, and a reader is entitled to both.
+
+**"Delivered" is a statement about an exploit, not about safety.** It means this
+repository contains an attack that works against a weakened version of the defense
+and fails against this one, in CI, permanently. It does not mean the class is
+closed: it means the specific attack written here does not get through, and
+`SCOPE.md`'s own note below on self-adversarial testing is the limit — you cannot
+find the exploit you did not think of.
+
+**One exploit in class 1 lands and is not defended.** A projectile is shown with
+its position and its velocity and no owner, and the velocity is constant for its
+life, so an attacker can run it backwards and recover the ray its caster stood on
+— a caster the fog was hiding.
+`tests/maphack.rs::a_projectile_betrays_the_ray_its_caster_stood_on` executes it.
+What it recovers is a line rather than a position, and what would close it is
+removing projectiles from views (not a game) or capping the entity list, which
+`ARCHITECTURE.md` refuses because it trades a length channel for a content
+channel. It is recorded in the same register as the behavioral ceiling: named,
+not defended.
 
 Note on class 5: a QUIC/TLS transport already defeats naive packet replay and
 reordering. The in-scope work is the application-level residue — session
@@ -131,12 +158,96 @@ records, third-party verification of a published replay, and offline reanalysis
 at higher-than-realtime cost. That is where it is scoped, and where the tests
 live.
 
+### The corpus is nine people, and here is what that fixes
+
+**Decided, and not open for revision: nine distinct participants in total** — the
+nine seats of a 3v3v3 match, the same people from one match to the next.
+`MILESTONES.md` M6 carries the calendar arithmetic. What belongs here are the
+three consequences, written before the first session rather than discovered at
+M8, because each of them constrains what M8 is allowed to claim.
+
+**1. The "style" bound is about 33% and more matches do not improve it.**
+`RISKS.md` R8's rule of three: zero false positives observed over `N` independent
+trials supports an upper bound near `3/N` at 95% confidence, and what counts as
+`N` depends on what the detector reads. Anything driven by *a person's style* has
+`N` = the number of distinct **people** — nine, forever, at any number of matches
+— so the supportable claim is `3/9 ≈ 33%`, and recording a hundred more matches
+from the same nine people does not move it by a single point. Only the
+*circumstances* bound improves with matches: `3/40 ≈ 7.5%`, or `3/20 ≈ 15%` at the
+reduced count M6 proposes.
+
+**The two bounds appear together wherever a claim is made.** In every detector
+document at M8, in every published statistic, in `replay census`'s own output. A
+reader shown only the friendlier one has been handled, and the friendlier one is
+always whichever the author is quoting.
+
+**2. M8 can only produce detectors that flag for review. No automatic sanction.**
+This is a decision taken here, not a limitation discovered later. **No threshold
+calibrated on nine people supports an automatic penalty of any kind** — not a ban,
+not a suspension, not a queue restriction, not a silent match-quality adjustment.
+A 33% upper bound on the false-positive rate means one in three flagged players
+could be innocent and the corpus cannot rule it out; acting on that automatically
+would be punishing people on evidence this project itself says is insufficient.
+So M8's detectors emit a score and an evidence bundle, a human reads them, and the
+decision is the human's. That is consistent with the "Automatic bans" exclusion
+below and is the stronger form of it: the exclusion says a false positive is worse
+than a missed cheater, and this says why the arithmetic forbids the alternative at
+this corpus size.
+
+**3. Generalising to a hand this project has never seen is out of reach, and this
+document says so in plain words.** A detector calibrated on nine people has
+learned nine hands. **It says nothing about a tenth player.** Not "less", not
+"with wider bounds" — nothing: a null model for human behaviour is a distribution
+*over humans*, nine draws do not characterise one, and there is no statistical
+treatment that recovers from that. So no claim of the form "this detector achieves
+X on players in general" may be made anywhere in this repository, at any corpus
+size it can reach. What may be claimed is what was measured: how these detectors
+scored on these nine people and on the bots in `cheat-client`, with both bounds
+beside it.
+
+### What M6 established about synthetic play, and where authenticity comes from
+
+The corpus refuses a seat that recorded **zero device events**. That is the one
+mechanical thing a file can say about synthetic play, and it catches a scripted or
+headless client — one that drives the protocol and never touches an input device.
+
+**A bot that moves a real mouse is indistinguishable in a file.** It records
+exactly as many samples as a person, at the same rate, through the same capture
+path. There is no field in `SCHEMA.md` that separates them and there will not be
+one, because the difference is not in the data.
+
+So **what guarantees a match is human is supervision — a fact about a person, not
+a property of the format.** Somebody was in the room. That is a real guarantee and
+it is the only one there is, which is why it is written down rather than
+remembered: every session record carries the conditions it was recorded under —
+in person, remote, or unsupervised — so that M8 can stratify and a reader can tell
+what a claim rests on. `SCHEMA.md` §5a is the schema and
+`cheat-client/tests/botting.rs` is both halves executed: the bot plays a whole
+match nothing catches, and the silent-seat check catches the headless version and
+not the mouse-moving one.
+
 ### Cheat client
 
 A first-class crate, not a test utility. It speaks the protocol directly, never
 links the real client's internals, and each exploit is expressed as a headless
 assertion — "the attacker learns X" or "the server accepts Y" — so the whole
 suite runs in CI without rendering.
+
+**Delivered at M7.** `cheat-client`'s only workspace dependency is `protocol` —
+`sim` appears beneath it, because `protocol`'s own message types are stated in
+`sim`'s and anything that speaks this protocol reaches them — and it links no
+`client`, `server`, `replay` or `anticheat`. The exploit harness links `sim`,
+`server` and `replay` as dev-dependencies, which is the division that makes an
+exploit mean anything: the judge needs the truth, and the attacker must not have
+it. `ci` asserts both directions with `cargo tree`, including that no production
+crate links the attacker.
+
+**Every exploit is run twice and the test is red if either half fails.** Once
+against a weakened defence that does not stop it, and once against the one this
+project ships. The first half is `RISKS.md` R15 applied to attacks: an exploit
+that fails against the real defence *without ever having worked* proves nothing —
+it looks exactly like a defence that holds, and there is no red to tell them
+apart.
 
 ### Deferred sub-projects (in order)
 
@@ -168,7 +279,7 @@ absence is a feature.
 
 | Excluded | Reason |
 | --- | --- |
-| Automatic bans | A false positive is worse than a missed cheater. Detectors emit scores and evidence bundles; acting on them is a human decision, out of scope for automation |
+| Automatic bans, and every other automatic sanction | A false positive is worse than a missed cheater, and at nine participants the arithmetic forbids the alternative outright: no threshold calibrated on nine people supports a penalty, because the supportable bound on the false-positive rate is about 33%. Detectors emit scores and evidence bundles; acting on them is a human decision. See "The corpus is nine people" above |
 | Machine-learned detection classifiers | Cannot be honestly calibrated on the tens of human matches a solo project can collect. Physically-motivated statistics with defensible null models instead |
 | Anti-cheat for other games | Stated in `SECURITY.md`: the cheat client targets this project only, and contributions targeting other games are refused |
 | Rollback/GGPO netcode | Real engineering, unrelated subject, and it would compete with the tick-based authority the anti-cheat depends on |
@@ -205,3 +316,9 @@ absence is a feature.
 - Detection quality with statistical power. With a corpus of tens of matches,
   a claimed false-positive rate below a few percent is not supportable, and the
   documents will report bounds instead of point estimates.
+- **Anything about a player this project has never recorded.** The corpus is nine
+  people. A detector calibrated on it has learned nine hands and says nothing
+  whatever about a tenth — not "less confidently", nothing — because a null model
+  for human behaviour is a distribution over humans and nine draws do not
+  characterise one. No claim of the form "this detector achieves X on players in
+  general" appears anywhere in this repository, at any corpus size it can reach.

@@ -190,7 +190,7 @@ fn the_destruction_procedure_runs_end_to_end_on_a_discarded_recording() {
         )
         .expect("write a session part");
     }
-    let output = run(&["store", &root, &sealed, &staged, "2026-09-01"]);
+    let output = run(&["store", &root, &sealed, &staged, "2026-09-01", "in-person"]);
     assert!(
         output.status.success(),
         "store refused a match the consent regime accounts for"
@@ -334,6 +334,7 @@ fn the_tool_refuses_a_match_with_no_session_parts_collected() {
         &replay_path.display().to_string(),
         &staging.display().to_string(),
         "2026-09-01",
+        "in-person",
     ]);
     assert!(
         !output.status.success(),

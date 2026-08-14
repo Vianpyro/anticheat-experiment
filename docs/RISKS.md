@@ -359,6 +359,32 @@ injector, no hooking library), and is useless against anything else.
 are refused. Keep the exploits expressed as test assertions rather than as a
 usable tool.
 
+### Taken at M7, and the hedge is now enforced rather than described
+
+Every exploit is a `#[test]` assertion — *the attacker learns X*, *the server
+accepts Y* — and there is no binary in the crate, so there is nothing to point at
+anything. The dependency list is the mechanism: `protocol`, plus `ed25519-dalek`
+because `forge` has to sign, and `ci` asserts it with `cargo tree` in both
+directions — the attacker links no `client`, `server`, `replay` or `anticheat`,
+and no production crate links the attacker.
+
+**What is in it that is worth being precise about, since "no generic technique" is
+a claim a reader should check.** A protocol session that constructs frames; a
+reader of `PlayerView`s; an observer of datagram sizes and counts; a writer of
+this project's replay container; a bot that sends one intention per tick. Every
+one of those is a function of *this* wire format and *this* file format, and
+none of them is a technique. The one thing that looks generic is the Ed25519
+dependency, and it signs a container whose layout is this repository's.
+
+**The judgement that stays a judgement.** Two exploits here do not fail — the
+projectile back-track and the bot — and publishing an attack nothing stops is the
+part of R7 that cannot be delegated to a dependency list. They are kept because a
+milestone that publishes only the attacks that fail has been curated, and because
+both are already stated in `docs/SCOPE.md` as limits: neither tells a reader
+anything the documents did not already say the project could not defend. Neither
+is a tool. The bot plays this game and nothing else, and the back-track is
+arithmetic on two numbers in a message this project defines.
+
 ## R8 — Corpus size versus detector claims
 
 **Not irreversible, but unrecoverable within the project's budget.** A corpus of
@@ -1047,6 +1073,65 @@ units against a step of 13107 — a raw unit short, because the displacement
 truncates toward zero — so integer division was reporting `0 tick(s) of movement`
 about a one-tick correction, which sends a reader looking for an arithmetic bug in
 `step`. It rounds.
+
+### And it came back, because the period was not the whole of it — closed at M7
+
+`check (windows-latest)` went red again after M6, on the same criterion, with the
+same `worst correction 13106 raw units`, at the game's own 33 ms period. So the
+compression was **not** the whole cause, and the entry above stopped one step
+short of the diagnosis.
+
+**What it actually is.** The prediction advances one tick of movement per
+outstanding intention, which is exact exactly while the client and the server stay
+in lockstep — one intention per tick, one tick per intention, which is the shape
+`docs/ARCHITECTURE.md`'s one-message-per-player-per-tick produces. When **two of a
+client's frames reach the server between two of its ticks**, the server drains its
+whole queue into one tick and moves the champion once, while the client had drawn
+it twice. The correction is exactly one tick of movement, from a prediction that
+applied the rule perfectly. `client/src/predict.rs` had said so in its own header
+since M4 — "a client that sent four intentions in one tick would … over-predict
+and be corrected … a degradation of prediction quality, not of correctness" — and
+the criterion asserting `worst_correction == 0` over every view did not know it.
+Windows' 15.6 ms scheduling granularity against a 33 ms period is what made the
+bunching frequent enough to see; it is not a Windows bug and no period removes it,
+because it is a property of a real transport.
+
+**So the criterion was the defect, and it is restated rather than relaxed.** What
+it asserts now is the claim it was reaching for, under the condition that makes
+the claim true: **on every view where the client had exactly one intention
+outstanding when it drew and the server applied exactly that one, the prediction
+is bit-exact.** Under that condition the server ran one tick applying one
+intention and the client folded one intention forward by one tick of movement, so
+a difference is the two disagreeing about how a champion moves and nothing else
+can produce one. `client::predict::Reconciled` is the type that carries the two
+counts, because a correction on its own cannot distinguish a wrong rule from a
+bunched transport and those need different answers.
+
+Three things travel with it, so the restatement is not a weakening in disguise:
+
+- **A floor on the antecedent** (`docs/RISKS.md` R15): more than half the views
+  must have been in lockstep, or the exactness above is a claim about a handful of
+  ticks. On a healthy run it is 999 of 1000, so the floor has a factor of two in
+  hand and is not a timing threshold.
+- **Out-of-step corrections are reported and not thresholded**, with the one
+  machine-independent thing there is to say about them asserted: a correction is a
+  whole number of ticks of movement. A fractional one would mean the two ends
+  applied different *rules* rather than a different number of ticks of the same
+  one, which no transport jitter produces.
+- **Both halves were exercised.** A client whose `champion_speed` differs from the
+  server's by **one raw unit** turns the lockstep clause red at `Blue0's prediction
+  was corrected by 1 raw units … the client and the server disagree about how a
+  champion moves`. And the Windows symptom was reproduced deterministically — the
+  harness made to send two intentions between two server ticks on twenty of a
+  thousand views — which produces exactly `worst correction 13106 raw units (1
+  tick(s) of movement)`, is classified as twenty out-of-step views, and passes. The
+  old assertion failed on that run with the CI message verbatim.
+
+**What this does not fix**, because it is the same shape of thing R16 is about: an
+out-of-step view still writes a one-tick prediction error onto a player's screen.
+That is a quality-of-service fact about a real network, it is now counted rather
+than fatal, and if it ever needs reducing the answer is in the client's send
+policy rather than in this criterion.
 
 **Reopened by**, any one of: a renderer that is not a CPU rasteriser over this
 scene; a window materially larger than 1280×800; a recording session whose census

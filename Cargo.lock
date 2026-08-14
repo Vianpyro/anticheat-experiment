@@ -249,6 +249,13 @@ dependencies = [
 [[package]]
 name = "cheat-client"
 version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "protocol",
+ "replay",
+ "server",
+ "sim",
+]
 
 [[package]]
 name = "client"

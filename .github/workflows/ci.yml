@@ -181,6 +181,87 @@ jobs:
           fi
           echo "ok: client links neither anticheat nor server"
 
+      # docs/ARCHITECTURE.md invariant 6, restated at M7 so that it is a claim
+      # something can check. It used to read "no path to `sim`, `client` or
+      # `anticheat`", and the first third of that was never true and never could
+      # be: `protocol`'s own message types are stated in `sim`'s — a `View`
+      # carries a `PlayerView` — so anything that speaks this protocol reaches
+      # `sim` through it. Nothing checked, so nothing noticed.
+      #
+      # What is true, and is what the rule was always about, is that the attacker
+      # has exactly the surface a third party reading the wire format would have.
+      # So: `protocol` is its only *direct* dependency besides the signature
+      # library `forge` needs, `sim` appears only underneath `protocol`, and
+      # there is no path at all to `client`, `server`, `replay` or `anticheat` —
+      # the rules engine, the real client, the authority, the verifier and the
+      # detectors are all on the other side of the line. `sim`, `server` and
+      # `replay` are dev-dependencies for the exploit harness, which is why this
+      # is `--edges normal`.
+      - name: the attacker links the protocol and nothing of the victim
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          tree=$(cargo tree -p cheat-client --edges normal --locked)
+          echo "$tree"
+          if printf '%s\n' "$tree" | grep -qE '(^|[[:space:]])(anticheat|client|server|replay) v[0-9]'; then
+            echo "::error::cheat-client gained a dependency on the victim (docs/ARCHITECTURE.md invariant 6)"
+            exit 1
+          fi
+          # `sim` may appear, but only beneath `protocol`: a direct edge would
+          # mean the attacker took a dependency on the rules engine itself.
+          # `--depth 1` is the crate and its direct dependencies and nothing
+          # else, so this is an exact question rather than a grep over a drawing.
+          direct=$(cargo tree -p cheat-client --edges normal --depth 1 --locked)
+          echo "$direct"
+          if printf '%s\n' "$direct" | grep -qE '(^|[[:space:]])sim v[0-9]'; then
+            echo "::error::cheat-client took a direct dependency on sim (docs/ARCHITECTURE.md invariant 6)"
+            exit 1
+          fi
+          echo "ok: the attacker links protocol, and reaches sim only through it"
+
+      # docs/RISKS.md R7 and SECURITY.md: the cheat client is a first-class crate
+      # and it must not be in anything that ships. A dev-dependency does not ship
+      # and neither does a test; what would ship is a production binary that
+      # linked it, and this is the check that says it does not.
+      #
+      # It is the mirror of the checks above — those keep the victim out of the
+      # attacker, this keeps the attacker out of the victim — and it is asserted
+      # rather than assumed for the same reason invariant 6 needed rewriting: an
+      # exclusion nobody runs is an exclusion nobody has.
+      - name: no production binary links the attacker
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          failed=0
+          for crate in server client sim protocol replay anticheat; do
+            tree=$(cargo tree -p "$crate" --edges normal --locked)
+            if printf '%s\n' "$tree" | grep -qE '(^|[[:space:]])cheat-client v[0-9]'; then
+              echo "::error::$crate links cheat-client (SECURITY.md, docs/RISKS.md R7)"
+              printf '%s\n' "$tree"
+              failed=1
+            fi
+          done
+          [[ "$failed" -eq 0 ]]
+          echo "ok: no crate in the production graph links cheat-client"
+
+      # docs/MILESTONES.md M7's exit criterion, with its report.
+      #
+      # `cargo test --workspace` above already ran these, on both platforms, so
+      # this step buys one thing and it is not coverage: `--nocapture`, so the
+      # exploit-by-exploit account — which attack succeeded against which
+      # weakened defence, and which failed against the real one — is in the run
+      # summary rather than only in a failure. `docs/RISKS.md` R15's hedge is
+      # that the number is printed even when it passes, because the value of the
+      # counter is that a reader sees it and asks the question.
+      #
+      # A step rather than the separate `exploits` job `docs/ENGINEERING.md`
+      # planned: on an already-compiled workspace this costs seconds, and a job
+      # that re-runs tests `check` has run is a second automation returning the
+      # same information, which is exactly what R11 says to refuse.
+      - name: The exploit suite, and what each exploit reached
+        if: runner.os == 'Linux'
+        run: cargo test -p cheat-client --locked -- --nocapture
+
   # docs/CONSENT.md declares its own version and `replay::consent::CURRENT`
   # repeats it; a unit test fails when the two disagree. What that test cannot
   # see is the edit that changes the document and leaves *both* alone, which is

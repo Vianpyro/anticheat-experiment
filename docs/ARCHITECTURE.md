@@ -1271,10 +1271,63 @@ Each is a test or a lint, not a convention:
    against it in CI, which is M7. They are coverage of the state space a
    fixture cannot reach, and they found a leak on their first run — see the
    ordering rule below.
-6. `cargo tree -p cheat-client` shows no path to `sim`, `client`, or `anticheat`.
+6. **The attacker links the protocol and nothing of the victim.** `cargo tree -p
+   cheat-client --edges normal` shows no path at all to `client`, `server`,
+   `replay` or `anticheat`, and `--depth 1` shows no direct edge to `sim`: its
+   only workspace dependency is `protocol`, plus `ed25519-dalek`, because
+   `cheat_client::forge` has to sign. Checked in `ci`, and exercised — a direct
+   `sim` dependency added to the manifest is caught.
+
+   **This used to read "no path to `sim`, `client`, or `anticheat`", and the first
+   third of that was never true and could not be.** `protocol`'s own message types
+   are stated in `sim`'s — a `View` carries a `PlayerView`, an `Input` carries an
+   `Action` — so anything that speaks this protocol reaches `sim` through it.
+   Nothing checked the claim, so nothing noticed for four milestones; M7 is when
+   the crate gained content and the claim had to become true or go. `protocol`
+   re-exports the wire's vocabulary so that the attacker's manifest names one
+   workspace crate, and what the rule was always about survives intact: the
+   attacker gets the surface a third party reading the wire format would have, and
+   no `State`, no `step`, no `view_for`, no `Rules`.
+
+   `sim`, `server` and `replay` are **dev**-dependencies of the exploit harness,
+   which is the division that makes an exploit mean anything: an exploit asserting
+   "the attacker did not learn where Red0 was" is an assertion about where Red0
+   actually was, and only the world holds that. The judge needs the truth; the
+   attacker must not have it, and that is two dependency lists rather than a rule
+   somebody follows.
+
+6a. **No production crate links the attacker.** The mirror of the rule above, and
+   asserted for the same reason it needed rewriting: an exclusion nobody runs is
+   an exclusion nobody has. `ci` checks `server`, `client`, `sim`, `protocol`,
+   `replay` and `anticheat`, and `SECURITY.md` and `docs/RISKS.md` R7 are what it
+   is enforcing.
 7. `cargo tree -p client` shows no path to `anticheat`.
 8. Every detector in `anticheat` has an exploit in `cheat-client` that fails
    against it in CI.
+
+   **And since M7, every exploit is run twice.** Once against a weakened version
+   of the defence that does not stop it, and once against the one this project
+   ships; the test is red if either half comes out wrong. The first half is
+   `docs/RISKS.md` R15 applied to attacks — an exploit that fails against the real
+   defence without ever having worked proves nothing, because it looks exactly
+   like a defence that holds and there is no red to tell them apart.
+
+   The weakened version is **never a Cargo feature**, for the reason invariant 10
+   gives about `Serialize`: features are additive and unified, so a `no-culling`
+   on `sim` would be a switch any crate in the graph could throw for the server
+   binary. It is a surrogate built in the exploit harness — an omniscient
+   projection for the culling, an unpadded transport for the traffic shape, a key
+   registry that trusts the forger for the signature — so that both configurations
+   run in one test binary and the *pairing* is exact: the same attacker, the same
+   world, the same tick.
+
+   Every one of them was exercised by mutation rather than argued, and the pass
+   found its defect in the exploit suite rather than in the defences: the maphack
+   read "what the fog shows" out of `view_for`'s own output, so a projection that
+   leaked everything satisfied it by leaking consistently. That is invariant 5's
+   trap one crate over, and the fix is the same — a re-derived predicate in
+   `cheat-client/tests/harness/entitlement.rs`, carrying the same obligation that
+   a change to the rule changes it in the same commit.
 9. Every `View` message has the same encoded size, travels as the same number
    of equally sized datagrams, and the server emits exactly one per connected
    player per tick.

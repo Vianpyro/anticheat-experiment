@@ -69,6 +69,40 @@ pub use crate::frame::{
 pub use crate::handles::HandleSpace;
 pub use crate::message::{ClientMessage, RejectReason, ServerMessage};
 
+/// The vocabulary of the wire, re-exported so that speaking this protocol needs
+/// this crate and nothing else.
+///
+/// # Why these names live here as well as in `sim`
+///
+/// Every type below already appears in the signature of a message: a
+/// [`ServerMessage::View`] carries a `PlayerView` of `EntityView`s, an
+/// [`ClientMessage::Input`] carries an `Action`, [`ServerMessage::Accepted`]
+/// carries a `Seat` and a `Digest`. So a program that speaks this protocol must
+/// be able to *name* them, and until M7 the only way to do that was to depend on
+/// `sim` — which `docs/ARCHITECTURE.md` forbids the attacker, on the grounds that
+/// an exploit reaching into the victim's internals is a test double rather than
+/// an exploit.
+///
+/// Re-exporting is what makes that rule true rather than aspirational.
+/// `cheat-client`'s manifest names one dependency, and what it gets from it is
+/// exactly the surface a third party reading the wire format would have: the
+/// message types, the framing, and the vocabulary those messages are stated in.
+/// It gets no `State`, no `step`, no `view_for` and no `Rules` — the rules of the
+/// game and the projection that culls are on the other side of this line, which
+/// is where the boundary was always supposed to be.
+///
+/// **What this does not claim.** `cargo tree -p cheat-client` still shows `sim`,
+/// beneath `protocol`, and it always will: these types *are* `sim`'s. The
+/// enforceable statement — and the one `ci` makes — is that the attacker's only
+/// direct dependency is this crate, and that `sim` appears in its graph only
+/// underneath it. `docs/ARCHITECTURE.md` invariant 6 says so in those words since
+/// M7, because the words it used before were checked by nobody and were not true.
+pub use sim::view::{EntityView, OwnView, PlayerView, VisibleEvent};
+pub use sim::{
+    Ability, Action, Cooldowns, Digest, EntityId, Fx, FxVec2, Liveness, Outcome, PLAYER_COUNT,
+    Seat, Team, Tick,
+};
+
 /// The protocol this build speaks.
 ///
 /// Carried in the header of **every** frame rather than exchanged once during a

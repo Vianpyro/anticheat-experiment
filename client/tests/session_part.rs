@@ -170,6 +170,7 @@ fn parts_assemble_into_a_session_record_and_a_collision_is_named() {
         replay::MatchId(*b"m6-session-part!"),
         replay::ConsentVersion::current(),
         "2026-09-03",
+        replay::session::Supervision::InPerson,
         &parts,
     )
     .expect("three parts did not assemble");
@@ -183,6 +184,7 @@ fn parts_assemble_into_a_session_record_and_a_collision_is_named() {
         replay::MatchId(*b"m6-session-part!"),
         replay::ConsentVersion::current(),
         "2026-09-03",
+        replay::session::Supervision::InPerson,
         &collided,
     )
     .expect_err("two parts claimed one seat and the record assembled anyway");
