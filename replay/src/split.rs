@@ -70,7 +70,15 @@ pub const SALT: &[u8] = b"moba/holdout/v1";
 pub const HOLDOUT_IN: u32 = 4;
 
 /// Which half of the corpus a match belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Ordered since M8, for the reason [`crate::session::Supervision`] is: it is a
+/// grouping key. A detector's score distribution is computed per half as well as
+/// per supervision stratum — a threshold chosen on the training half and quoted
+/// against the holdout is the only reading of `docs/RISKS.md` R8's "freeze the
+/// holdout before writing the first detector" that a program can enforce — and a
+/// key that cannot be ordered is a report whose sections come out in a different
+/// order on every run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Split {
     /// A detector may look at it.
     Train,

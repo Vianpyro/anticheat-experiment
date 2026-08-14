@@ -43,6 +43,13 @@ checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 [[package]]
 name = "anticheat"
 version = "0.0.0"
+dependencies = [
+ "cheat-client",
+ "protocol",
+ "replay",
+ "server",
+ "sim",
+]
 
 [[package]]
 name = "as-raw-xcb-connection"

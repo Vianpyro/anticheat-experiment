@@ -1,0 +1,24 @@
+# Clippy configuration for `anticheat` only. Clippy resolves this file from the
+# manifest directory of the crate being linted, so nothing here reaches the
+# other six crates.
+#
+# It is `sim`'s device applied to a different property. `sim` bans floats
+# because a digest has to be bit-identical across three targets; this crate bans
+# them because **a detector's score is a published number**. `docs/SCHEMA.md`
+# §10 and `docs/RISKS.md` R8 commit this project to publishing derived
+# statistics, `docs/MILESTONES.md` M8 puts score distributions in
+# `docs/detectors/`, and a number that comes out differently on
+# `ubuntu-latest` and `windows-latest` is a number nobody can quote. Every
+# statistic here is therefore integer arithmetic in a stated unit — parts per
+# million, ticks, hundredths of a tick — and the unit travels with the score.
+#
+# The collections are banned for the reason `sim` bans them and for one more:
+# an evidence bundle is read by a person, and a bundle whose lines come out in
+# a different order on two runs is a bundle two readers cannot compare.
+
+disallowed-types = [
+    { path = "f32", reason = "a detector's score is published; a float is a number that can differ between two platforms and cannot be quoted. Use an integer in a stated unit" },
+    { path = "f64", reason = "a detector's score is published; a float is a number that can differ between two platforms and cannot be quoted. Use an integer in a stated unit" },
+    { path = "std::collections::HashMap", reason = "the default hasher is seeded per process, so an evidence bundle or a report would come out in a different order on every run" },
+    { path = "std::collections::HashSet", reason = "same randomized hasher as HashMap" },
+]

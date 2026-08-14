@@ -8,4 +8,43 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[[bin]]
+name = "anticheat"
+path = "src/bin/anticheat.rs"
+
 [dependencies]
+# The corpus's own types. A detector reads `replay::TimedInput` — the two clocks
+# and the action — and `replay::SessionRecord` — the hardware, the platform and
+# the supervision the session was recorded under. Both are `docs/SCHEMA.md`'s,
+# and reading them from the crate that defines them is what makes a detector
+# reproducible from a stored match rather than from a live server.
+replay = { path = "../replay" }
+
+# The rules, because a stimulus is a fact about the world. A reaction latency is
+# the interval between the tick a view first showed somebody an enemy and the
+# tick they answered it, and the first half of that is `sim::view::view_for`
+# applied to a resimulation of the log. `docs/ARCHITECTURE.md` puts `sim`
+# beneath this crate for exactly this: the same `step` that resolved the match
+# is what re-derives what each seat was shown.
+sim = { path = "../sim" }
+
+# The attacker, as the thing the detectors are measured against.
+#
+# `docs/ARCHITECTURE.md` invariant 8 requires every detector here to have an
+# exploit in `cheat-client` that runs against it in CI, and this is that edge.
+# It is a **dev**-dependency and the direction is deliberate: the detector never
+# reaches the attacker, not even in a test binary, because `docs/SCOPE.md`'s
+# whole reason for keeping `anticheat` out of `client` is that thresholds must
+# not ship to a machine the project assumes is compromised — and `cheat-client`
+# *is* that machine. So `cargo test -p anticheat` is the detection account and
+# `cargo test -p cheat-client` is the attack account, and only one of them can
+# see both sides.
+#
+# `server` and `protocol` come with it, for the same reason the exploit suite
+# has them: an exploit that must be *played* needs an authority to play against,
+# and `Match` is driven rather than driving. `ci` checks the claim that matters
+# with `cargo tree -p anticheat --edges normal`, which excludes every line here.
+[dev-dependencies]
+cheat-client = { path = "../cheat-client" }
+protocol = { path = "../protocol" }
+server = { path = "../server" }
