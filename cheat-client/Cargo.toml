@@ -9,3 +9,49 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+# The signature, because a forger holds a signature library.
+#
+# `docs/SCOPE.md` class 2 is result forgery and `docs/MILESTONES.md` M7 makes it
+# the exploit that matters most. The attacker it has to be written from is the
+# one who does **not** hold a key this project's registry accepts — and that
+# attacker still signs, with a key of their own, or their file is refused at the
+# signature check before the registry is ever consulted. An exploit refused one
+# step short of the check it is about is `docs/RISKS.md` R15 wearing an attack:
+# its antecedent is never reached, and the green it produces is about nothing.
+#
+# So the forger signs. The same crate `replay` verifies with, because a forger
+# who could only produce signatures this project's verifier mis-handles would be
+# demonstrating a bug in `ed25519-dalek` rather than anything about this format.
+# It is already in the lockfile beneath `replay`; this is a new direct edge and
+# not a new crate.
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std", "fast", "zeroize"] }
+
+# **The only other dependency, and the whole of the attacker's legitimate
+# surface.** `docs/ARCHITECTURE.md`: an exploit that reaches into the real
+# client's internals is not an exploit, it is a test double. So there is no
+# `sim`, no `client`, no `server` and no `replay` here — the rules, the
+# projection that culls, the authority and the verifier are all on the other side
+# of this line. What the attacker knows about the game is what the wire tells it,
+# plus the published format of a replay file, which it writes out by hand in
+# `forge`.
+protocol = { path = "../protocol" }
+
+# The target, and the ground truth the exploits are judged against.
+#
+# `docs/ARCHITECTURE.md` grants `cheat-client` `server` as a dev-dependency for
+# the in-process harness, and M7 adds `sim` and `replay` on the same terms and
+# for the same reason: a dev-dependency does not ship, and the enforced claim is
+# about the *normal* graph, which `ci` checks with `cargo tree -p cheat-client
+# --edges normal`.
+#
+# The division these three are on the other side of is the one that makes an
+# exploit mean something. **The attacker may not use them**: everything under
+# `src/` links `protocol` alone, so no exploit can reach a `State`, call
+# `view_for`, or ask `replay` what it would accept. **The harness must use them**:
+# an exploit asserting "the attacker did not learn where Red0 was" is an assertion
+# about where Red0 actually was, and that is a fact only the world holds. The
+# judge needs the truth; the attacker must not have it.
+[dev-dependencies]
+replay = { path = "../replay" }
+server = { path = "../server" }
+sim = { path = "../sim" }
