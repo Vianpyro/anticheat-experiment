@@ -219,6 +219,31 @@ jobs:
           fi
           echo "ok: the attacker links protocol, and reaches sim only through it"
 
+      # docs/ARCHITECTURE.md: `anticheat` is a pure function from telemetry to
+      # scores and does no I/O. That is what makes a detector reproducible from
+      # a stored match rather than from a server that happened to be running,
+      # and it is what lets `anticheat/tests/` score a bot match without a
+      # filesystem anywhere near it.
+      #
+      # `src/bin/` is excluded because the operator's tool is exactly the place
+      # the directory walking is supposed to live — the rule is about the
+      # library, which is what other crates link. A grep rather than a lint
+      # because there is no lint for "this crate opens no files", and it is the
+      # same shape of check as the `Serialize` grep in `sim`: textual, cheap,
+      # and pointed at the one thing it is about.
+      - name: anticheat does no I/O
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          found=$(git grep -nE '\b(std::fs|std::net|std::process|std::env|File::open|read_to_string)\b' -- \
+            anticheat/src ':(exclude)anticheat/src/bin' || true)
+          if [[ -n "$found" ]]; then
+            echo "::error::anticheat's library reached for I/O (docs/ARCHITECTURE.md)"
+            echo "$found"
+            exit 1
+          fi
+          echo "ok: anticheat's library opens nothing"
+
       # docs/RISKS.md R7 and SECURITY.md: the cheat client is a first-class crate
       # and it must not be in anything that ships. A dev-dependency does not ship
       # and neither does a test; what would ship is a production binary that
@@ -275,10 +300,11 @@ jobs:
       # so this is about thirty-five seconds a platform on an already-compiled
       # workspace, against `ci`'s five-minute budget. That is the price of the
       # number, and R16 has already been re-diagnosed twice for want of it.
-      - name: The exploit suite, the M4 lockstep count, and what each reached
+      - name: The exploit suite, the detectors, the M4 lockstep count
         shell: bash
         run: |
           cargo test -p cheat-client --locked -- --nocapture
+          cargo test -p anticheat --locked -- --nocapture
           cargo test -p client --locked --test m4_exit -- --nocapture
 
   # docs/CONSENT.md declares its own version and `replay::consent::CURRENT`
