@@ -385,6 +385,59 @@ anything the documents did not already say the project could not defend. Neither
 is a tool. The bot plays this game and nothing else, and the back-track is
 arithmetic on two numbers in a message this project defines.
 
+### The coupling test, applied to both of them at M8
+
+The sentence above — "neither is a tool" — is a conclusion, and M8 is the
+milestone at which the bot grows variants, so it was worth asking the question in
+the form that can be answered rather than asserted. **Can this exploit be pointed
+at something other than this server without being rewritten?** An exploit that
+can is a technique wearing a demonstration; an exploit that cannot is a defect of
+this project, which is what belongs in this repository.
+
+**The projectile back-track fails that test in the right direction, and it is the
+easy case.** It reads a position and a velocity out of a `PlayerView` this project
+defines, divides by a per-tick displacement this project's rules fix, and recovers
+a ray on a map whose geometry is in `sim::rules`. Every constant in it is a
+constant of this game. There is nothing to point.
+
+**The bot needed the examination, and it passes for a reason worth stating rather
+than for the same one.** What would make a bot a tool is not that it plays well —
+it is a **layer that synthesises device input**: something that moves a real mouse
+or presses real keys through the operating system, because that layer is
+game-independent by construction. It drives the OS, not the protocol, so pointing
+it at another title is a matter of changing what it aims at rather than of
+rewriting it. That layer is exactly what `docs/SCOPE.md` names as the ceiling of
+behavioural detection and what `docs/SCHEMA.md` §6 says no file can see: *a bot
+that moves a real mouse records exactly as many samples as a person.*
+
+**There is no such layer here, and the dependency list is not the evidence — the
+call sites are.** Everything under `cheat-client/src/` imports `protocol`,
+`std::collections` and `ed25519_dalek`, and nothing else. There is no window, no
+event loop, no `uinput`, no `SendInput`, no `XTest`, no pointer of any kind. What
+`bot::Bot` holds is a sequence number and a standing `Action`, and its one piece
+of hidden knowledge is `follow` — the rule that `Idle` stops a champion, a `Move`
+replaces the standing order and a cast leaves it alone, which is a rule of
+`sim::step` and of nothing else. `Bot::walk_to` takes an `FxVec2` in this
+project's Q15.16. Pointed at another game, there is no wire to speak, no `Action`
+to compose and no rule to mirror: it would have to be written again from nothing.
+
+**So the verdict is the same as the back-track's and the bot stays published as
+it is.** No recoupling is needed, because there is no free reusability to remove:
+the reusable half was never built.
+
+**What the examination actually bought is a constraint on M8**, and it is the
+half worth having written down before the work rather than after. The honest way
+to test a behavioural detector against `docs/SCOPE.md`'s ceiling would be to
+build the mouse-moving bot and see whether the statistics separate it — and that
+is precisely the thing this entry refuses, because it is the one component of a
+cheat that generalises. **So M8's bot variants stay on the protocol side of the
+line: they compose intentions, and the "human-plausible noise" M8 asks for is
+noise added to a decision, never to a device.** The consequence is stated in
+`docs/detectors/README.md` rather than discovered: this project can measure its
+detectors against a bot that plays through the wire, and it cannot measure them
+against the ceiling at all. Naming what cannot be tested is the same obligation
+as naming what cannot be defended.
+
 ## R8 — Corpus size versus detector claims
 
 **Not irreversible, but unrecoverable within the project's budget.** A corpus of
