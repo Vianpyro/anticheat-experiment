@@ -30,7 +30,7 @@
 
 #![deny(unsafe_code)]
 
-use cheat_client::forge::{Commit, Edit, ForgedInput, ForgedManifest, Forger, edit};
+use cheat_client::forge::{Commit, Commitment, Edit, ForgedInput, ForgedManifest, Forger, edit};
 use protocol::{Outcome, Team, Tick};
 use replay::manifest::Build;
 use replay::{Replay, VerifyError};
@@ -120,6 +120,7 @@ fn a_forged_replay(forger: &Forger) -> Vec<u8> {
         rules_hash: *rules_hash().as_bytes(),
         sim_version: sim::VERSION,
         sim_commit: Commit::Unknown,
+        telemetry: Commitment::None,
         started_at_unix_ms: 1_786_000_000_000,
         participants: [const { None }; 9],
         ticks,
@@ -212,6 +213,7 @@ fn the_forgers_container_is_the_real_format() {
             started_at_unix_ms: 1_786_000_000_000,
             participants: [const { None }; 9],
             sim_commit: replay::SimCommit::Unknown,
+            telemetry: replay::Commitment::Absent,
         },
         &victim_key,
     )
@@ -224,6 +226,7 @@ fn the_forgers_container_is_the_real_format() {
         rules_hash: *rules_hash().as_bytes(),
         sim_version: sim::VERSION,
         sim_commit: Commit::Unknown,
+        telemetry: Commitment::None,
         started_at_unix_ms: 1_786_000_000_000,
         participants: [const { None }; 9],
         ticks,
@@ -522,6 +525,7 @@ fn a_forged_replay_for(forger: &Forger) -> Vec<u8> {
         rules_hash: *rules_hash().as_bytes(),
         sim_version: sim::VERSION,
         sim_commit: Commit::Unknown,
+        telemetry: Commitment::None,
         started_at_unix_ms: 1_786_000_000_000,
         participants: [const { None }; 9],
         ticks,
@@ -570,6 +574,7 @@ fn a_forgery_can_carry_a_log_and_stay_consistent() {
         rules_hash: *rules_hash().as_bytes(),
         sim_version: sim::VERSION,
         sim_commit: Commit::Sha([0x11; 20]),
+        telemetry: Commitment::None,
         started_at_unix_ms: 1_786_000_000_000,
         participants: [const { None }; 9],
         ticks: 30,

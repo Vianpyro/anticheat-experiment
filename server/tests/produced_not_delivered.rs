@@ -323,6 +323,7 @@ fn what_a_client_was_told_does_not_reach_the_recording() {
                 // Pinned, so that the comparison is about the two matches rather
                 // than about which commit this was built from.
                 sim_commit: replay::SimCommit::Unknown,
+                telemetry: replay::Commitment::Absent,
             },
             &replay::SigningKey::from_seed(*b"moba produced-not-delivered key\0"),
         )

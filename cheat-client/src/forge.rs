@@ -55,7 +55,14 @@ use protocol::{Action, Outcome, Seat, Team};
 const MAGIC: [u8; 8] = *b"MOBARPLY";
 
 /// The container format this attacker writes.
-const FORMAT: u16 = 1;
+///
+/// 2 since the manifest gained a telemetry commitment. The attacker reads that
+/// out of the published documents like everything else here, and the fact that
+/// the number had to move is itself the check working: a forger still writing 1
+/// produces a file the victim's reader refuses by its format field, which is a
+/// weaker attack and would have made the byte-equality assertion in
+/// `tests/forgery.rs` red rather than silently passing.
+const FORMAT: u16 = 2;
 
 /// The longest a pseudonym may be, which is the width of every participant slot.
 const MAX_PSEUDONYM_BYTES: usize = 32;
@@ -76,7 +83,8 @@ const MANIFEST_BYTES: usize = 16      // match_id
     + 8                               // inputs
     + 32                              // input_log_digest
     + 6                               // outcome: tag, team, tick
-    + 32; // final_state_digest
+    + 32                              // final_state_digest
+    + 33; // telemetry commitment: tag and thirty-two bytes
 
 /// Where the manifest starts in a file: after the magic and the format.
 const MANIFEST_AT: usize = MAGIC.len() + 2;
@@ -90,7 +98,7 @@ const MANIFEST_AT: usize = MAGIC.len() + 2;
 /// victim's writer.
 const SEED_AT: usize = MANIFEST_AT + 16 + 32;
 const MATCH_ID_AT: usize = MANIFEST_AT;
-const OUTCOME_AT: usize = MANIFEST_AT + MANIFEST_BYTES - 6 - 32;
+const OUTCOME_AT: usize = MANIFEST_AT + MANIFEST_BYTES - 33 - 32 - 6;
 const SIGNATURE_AT: usize = MANIFEST_AT + MANIFEST_BYTES;
 const LOG_COUNT_AT: usize = SIGNATURE_AT + 64;
 const LOG_AT: usize = LOG_COUNT_AT + 8;
@@ -108,6 +116,22 @@ pub enum Commit {
     Sha([u8; 20]),
     /// A tree that differed from this commit.
     Dirty([u8; 20]),
+}
+
+/// What a forged manifest claims about a telemetry companion.
+///
+/// The attacker reads this field out of `docs/SCHEMA.md` §11 and
+/// `replay/src/manifest.rs` like every other one. It matters to a forger for a
+/// reason worth stating: a forged replay of a match nobody played has no device
+/// stream to point at, so it claims [`Commitment::None`] — and the fact that the
+/// absence is a *signed* field is what stops the forger attaching somebody
+/// else's genuine companion to it afterwards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Commitment {
+    /// This file claims the match recorded no device telemetry.
+    None,
+    /// This file claims the companion whose bytes hash to these thirty-two.
+    Sealed([u8; 32]),
 }
 
 /// One entry of a forged input log.
@@ -159,6 +183,8 @@ pub struct ForgedManifest {
     pub outcome: Outcome,
     /// The state it claims the log reaches.
     pub final_state_digest: [u8; 32],
+    /// The telemetry companion it claims, or the absence it claims.
+    pub telemetry: Commitment,
 }
 
 /// An attacker with a key nobody accepts and a copy of the file format.
@@ -272,6 +298,7 @@ fn signed_bytes(identity: [u8; 32], manifest: &ForgedManifest, inputs: u64) -> V
         input_log_digest,
         outcome,
         final_state_digest,
+        telemetry,
     } = manifest;
 
     let mut out = Vec::with_capacity(MANIFEST_AT + MANIFEST_BYTES);
@@ -326,6 +353,16 @@ fn signed_bytes(identity: [u8; 32], manifest: &ForgedManifest, inputs: u64) -> V
         }
     }
     out.extend_from_slice(final_state_digest);
+    match telemetry {
+        Commitment::None => {
+            out.push(0);
+            out.extend_from_slice(&[0u8; 32]);
+        }
+        Commitment::Sealed(digest) => {
+            out.push(1);
+            out.extend_from_slice(digest);
+        }
+    }
     out
 }
 

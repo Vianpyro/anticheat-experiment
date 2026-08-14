@@ -32,10 +32,10 @@
 //!
 //! ```text
 //! replay keygen <name>                  # <name>.signing-key and <name>.public-key
-//! replay verify <replay> <keys>         # resimulate, check the seal, report
+//! replay verify <replay> <keys> [<telemetry>]   # resimulate, check the seal, report
 //! replay inspect <replay>               # print the manifest, check nothing
 //! replay enrol <corpus> <pseudonym> <identity> <consented-on> <retention-until> <publication>
-//! replay store <corpus> <replay> <parts-dir> <recorded-on> <supervision>
+//! replay store <corpus> <replay> <parts-dir> <recorded-on> <supervision> [<telemetry>]
 //! replay census <corpus>                # what the corpus is, and what it supports
 //! replay withdraw <corpus> <pseudonym> <date>
 //! replay audit <corpus> <pseudonym>     # non-zero if anything is left
@@ -72,8 +72,10 @@ use std::process::ExitCode;
 
 use replay::consent::ConsentVersion;
 use replay::corpus::{ConsentRecord, Corpus};
+use replay::manifest::Commitment;
 use replay::session::{SeatRecord, SessionRecord, Supervision};
 use replay::split::{HOLDOUT_IN, Split, split_of};
+use replay::telemetry::{Telemetry, TelemetryError};
 use replay::{Build, KeyRegistry, KeyStatus, Replay, SigningKey, VerifyError};
 
 fn main() -> ExitCode {
@@ -83,7 +85,12 @@ fn main() -> ExitCode {
     };
     match (command.as_str(), arguments.len()) {
         ("keygen", 2) => keygen(Path::new(&arguments[1])),
-        ("verify", 3) => verify(Path::new(&arguments[1]), Path::new(&arguments[2])),
+        ("verify", 3) => verify(Path::new(&arguments[1]), Path::new(&arguments[2]), None),
+        ("verify", 4) => verify(
+            Path::new(&arguments[1]),
+            Path::new(&arguments[2]),
+            Some(Path::new(&arguments[3])),
+        ),
         ("inspect", 2) => inspect(Path::new(&arguments[1])),
         ("enrol", 7) => enrol(
             &arguments[1],
@@ -99,6 +106,15 @@ fn main() -> ExitCode {
             Path::new(&arguments[3]),
             &arguments[4],
             &arguments[5],
+            None,
+        ),
+        ("store", 7) => store(
+            &arguments[1],
+            Path::new(&arguments[2]),
+            Path::new(&arguments[3]),
+            &arguments[4],
+            &arguments[5],
+            Some(Path::new(&arguments[6])),
         ),
         ("census", 2) => census(&arguments[1]),
         ("withdraw", 4) => withdraw(&arguments[1], &arguments[2], &arguments[3]),
@@ -109,7 +125,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!("usage: replay keygen <name>");
-    eprintln!("       replay verify <replay> <keys>");
+    eprintln!("       replay verify <replay> <keys> [<telemetry>]");
     eprintln!("       replay inspect <replay>");
     eprintln!(
         "       replay enrol <corpus> <pseudonym> <identity> <consented-on> \
@@ -117,7 +133,7 @@ fn usage() -> ExitCode {
     );
     eprintln!(
         "       replay store <corpus> <replay> <parts-dir> <recorded-on> \
-         <in-person|remote|unsupervised>"
+         <in-person|remote|unsupervised> [<telemetry>]"
     );
     eprintln!("       replay census <corpus>");
     eprintln!("       replay withdraw <corpus> <pseudonym> <date>");
@@ -183,6 +199,7 @@ fn store(
     parts: &Path,
     recorded_on: &str,
     supervision: &str,
+    telemetry_path: Option<&Path>,
 ) -> ExitCode {
     let Some(supervision) = Supervision::parse(supervision) else {
         eprintln!(
@@ -242,7 +259,15 @@ fn store(
         }
     };
 
-    match Corpus::open(root).store(&replay, &session) {
+    let telemetry = match telemetry_path {
+        None => None,
+        Some(path) => match read_telemetry(path) {
+            Some(companion) => Some(companion),
+            None => return ExitCode::from(2),
+        },
+    };
+
+    match Corpus::open(root).store(&replay, &session, telemetry.as_ref()) {
         Ok(()) => {
             println!(
                 "replay: stored {} — {} seat(s) occupied, {}, supervision {}, {}",
@@ -256,6 +281,27 @@ fn store(
                     "every client kept the tick"
                 }
             );
+            match &telemetry {
+                None => println!(
+                    "replay: no telemetry companion — this match recorded no device \
+                     stream, which is a state rather than a gap (docs/SCHEMA.md §11)"
+                ),
+                Some(companion) => {
+                    let (samples, motions) =
+                        companion.manifest.seats.iter().flatten().fold(
+                            (0u64, 0u64),
+                            |(samples, motions), seat| {
+                                (samples + seat.samples, motions + seat.motions)
+                            },
+                        );
+                    println!(
+                        "replay: telemetry {} — {samples} device event(s), {motions} \
+                         motion(s), {} seat(s)",
+                        companion.digest(),
+                        companion.manifest.occupied().len()
+                    );
+                }
+            }
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -293,6 +339,10 @@ fn census(root: &str) -> ExitCode {
     let mut ticks = 0u64;
     let mut worst_overrun_ns = 0u64;
     let mut supervision: BTreeMap<Supervision, u32> = BTreeMap::new();
+    let mut with_telemetry = 0u32;
+    let mut device_events = 0u64;
+    let mut telemetry_bytes = 0u64;
+    let mut polling: BTreeMap<u32, u32> = BTreeMap::new();
 
     for match_id in &matches {
         let (Ok(replay), Ok(session)) = (corpus.replay_of(match_id), corpus.session_of(match_id))
@@ -300,6 +350,22 @@ fn census(root: &str) -> ExitCode {
             unaccountable.push(match_id.clone());
             continue;
         };
+        if !corpus.accountable(match_id) {
+            unaccountable.push(match_id.clone());
+            continue;
+        }
+        if let Ok(Some(companion)) = corpus.telemetry_of(match_id) {
+            with_telemetry = with_telemetry.saturating_add(1);
+            telemetry_bytes = telemetry_bytes.saturating_add(companion.encode().len() as u64);
+            for seat in companion.manifest.seats.iter().flatten() {
+                device_events = device_events.saturating_add(seat.samples);
+            }
+        }
+        for seat in &session.seats {
+            if let SeatRecord::Human { declared, .. } = seat {
+                *polling.entry(declared.device_polling_hz).or_insert(0) += 1;
+            }
+        }
         for pseudonym in replay.manifest.participants() {
             let name = pseudonym.to_string();
             if !people.contains(&name) {
@@ -373,6 +439,31 @@ fn census(root: &str) -> ExitCode {
         "corpus: {} tick(s) recorded, {:.1} minute(s) of play",
         ticks,
         (ticks as f64) / f64::from(sim::TICKS_PER_SECOND) / 60.0
+    );
+    println!(
+        "corpus: {with_telemetry} of {recorded} match(es) carry a telemetry \
+         companion — {device_events} device event(s), {:.1} MiB on disk \
+         (docs/SCHEMA.md §11)",
+        (telemetry_bytes as f64) / (1024.0 * 1024.0)
+    );
+    // The polling rates, printed for the reason the supervision strata are: a
+    // corpus that mixes them has a covariate in it that nobody can remove
+    // afterwards, and it is the covariate an inter-arrival detector reads
+    // directly. `docs/RISKS.md` R14 carries the arithmetic — at 1 kHz the gap
+    // between two device events is 1 ms, which is the scale of the residual the
+    // capture path itself adds, and at 125 Hz it is eight times that.
+    println!(
+        "corpus: declared polling rates — {}; a distribution over more than one of \
+         these has the device's own report rate in it (docs/RISKS.md R14)",
+        if polling.is_empty() {
+            "-".to_owned()
+        } else {
+            polling
+                .iter()
+                .map(|(hz, seats)| format!("{hz} Hz x{seats}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
     );
 
     if !unaccountable.is_empty() {
@@ -477,7 +568,16 @@ fn keygen(name: &Path) -> ExitCode {
 }
 
 /// Resimulates a replay, checks its seal, and reports what that establishes.
-fn verify(path: &Path, keys: &Path) -> ExitCode {
+///
+/// The companion is an argument rather than a file this goes looking for, and
+/// that is the decision rather than an omission. **A replay is verifiable
+/// without one**, so a verifier that searched a directory would turn a
+/// legitimate absence into a question about where somebody put a file; and a
+/// verifier that accepted a companion it found beside a replay would be
+/// accepting a binding the replay never made. Handed one, this checks it against
+/// the digest the manifest committed to; handed none, it says which of the two
+/// legitimate states the replay is in and checks nothing else.
+fn verify(path: &Path, keys: &Path, telemetry_path: Option<&Path>) -> ExitCode {
     let Some(replay) = read(path) else {
         return ExitCode::from(2);
     };
@@ -515,7 +615,7 @@ fn verify(path: &Path, keys: &Path) -> ExitCode {
                  about how anybody played.",
                 verified.signer
             );
-            ExitCode::SUCCESS
+            telemetry(&replay, verified.telemetry, telemetry_path, &registry)
         }
         Err(error) => {
             eprintln!("replay: {error}");
@@ -576,6 +676,98 @@ fn inspect(path: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The companion half of `verify`, and the three states it distinguishes.
+///
+/// Absence is the first of them and it is not a failure: `docs/SCHEMA.md` §11 and
+/// `replay::manifest::Commitment` both say a replay with no companion is a
+/// complete replay, and a verifier that reported it as an error would teach its
+/// reader to ignore the error. So this prints what the replay says and returns
+/// success — the only thing it will not do is stay silent about it, because a
+/// reader who is told nothing about the telemetry concludes there was some.
+fn telemetry(
+    replay: &Replay,
+    commitment: Commitment,
+    path: Option<&Path>,
+    registry: &KeyRegistry,
+) -> ExitCode {
+    match (commitment, path) {
+        (Commitment::Absent, None) => {
+            println!(
+                "replay: telemetry none — this match recorded no device stream. That \
+                 is a state and not a gap: the replay above is complete \
+                 (docs/SCHEMA.md §11)."
+            );
+            ExitCode::SUCCESS
+        }
+        (Commitment::Absent, Some(given)) => {
+            eprintln!(
+                "replay: {} was given, and this replay commits to no telemetry \
+                 companion. {}",
+                given.display(),
+                TelemetryError::NotCommitted
+            );
+            ExitCode::FAILURE
+        }
+        (Commitment::Sealed(digest), None) => {
+            println!(
+                "replay: telemetry {digest} — committed to and NOT checked. Pass the \
+                 companion as a third argument to check it."
+            );
+            ExitCode::SUCCESS
+        }
+        (Commitment::Sealed(_), Some(given)) => {
+            let Some(companion) = read_telemetry(given) else {
+                return ExitCode::from(2);
+            };
+            match replay::telemetry::verify(replay, &companion, registry) {
+                Ok(verified) => {
+                    println!(
+                        "replay: telemetry ok — {} device event(s) across {} seat(s), \
+                         {} of them motions, sealed by {} and named by this replay and \
+                         no other.",
+                        verified.samples,
+                        companion.manifest.occupied().len(),
+                        verified.motions,
+                        verified.signer
+                    );
+                    if verified.retired {
+                        println!(
+                            "replay: the companion was sealed by a retired key, which \
+                             still verifies (docs/RISKS.md R4)"
+                        );
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("replay: telemetry refused: {error}");
+                    if let TelemetryError::Substituted { claimed, computed } = error {
+                        eprintln!("replay: the replay names {claimed}");
+                        eprintln!("replay: this companion is {computed}");
+                    }
+                    ExitCode::FAILURE
+                }
+            }
+        }
+    }
+}
+
+fn read_telemetry(path: &Path) -> Option<Telemetry> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("replay: {}: {error}", path.display());
+            return None;
+        }
+    };
+    match Telemetry::decode(&bytes) {
+        Ok(companion) => Some(companion),
+        Err(error) => {
+            eprintln!("replay: {}: {error}", path.display());
+            None
+        }
+    }
+}
+
 fn read(path: &Path) -> Option<Replay> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -623,6 +815,13 @@ fn describe(replay: &Replay) {
         }
     );
     println!("replay: claims outcome {:?}", manifest.outcome);
+    println!(
+        "replay: telemetry {}",
+        match manifest.telemetry {
+            Commitment::Absent => "none — this match recorded no device stream".to_owned(),
+            Commitment::Sealed(digest) => format!("{digest}"),
+        }
+    );
 }
 
 /// Destroys everything a participant's withdrawal reaches, and then checks.

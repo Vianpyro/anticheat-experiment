@@ -137,6 +137,7 @@ fn session() -> SessionFacts {
         // Pinned rather than `of_this_build`, so the fixture is a function of
         // the match and not of which commit somebody happens to be on.
         sim_commit: SimCommit::Sha([0x5A; 20]),
+        telemetry: replay::Commitment::Absent,
     }
 }
 

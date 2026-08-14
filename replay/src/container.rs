@@ -100,7 +100,7 @@
 use sim::{Digest, Outcome, State, input_log_digest, new_state, step};
 
 use crate::keys::{KeyRegistry, KeyStatus, Signature, SigningKey, VerifyingKey};
-use crate::manifest::{Build, Manifest, SessionFacts};
+use crate::manifest::{Build, Commitment, Manifest, SessionFacts};
 use crate::{ByteReader, INPUT_BYTES, Recording, TimedInput, read_input, write_input};
 
 /// What every replay starts with, so that a file that is not one is refused by
@@ -115,9 +115,15 @@ const MAGIC: [u8; 8] = *b"MOBARPLY";
 ///
 /// Not the protocol version, not the container the M3 recording used, and not
 /// `sim`'s: one is how two processes talk, one is how a file is laid out, one is
-/// what the rules do, and they change for different reasons. It starts at 1
-/// because this is the first format anybody keeps.
-pub const FORMAT: u16 = 1;
+/// what the rules do, and they change for different reasons.
+///
+/// **2 since the manifest gained its telemetry commitment.** Format 1 is not
+/// read, and there is no reader for it: no corpus holds one — the first
+/// recording session has not happened — and a build that read both would be the
+/// two-formats mistake this module's header refuses, arriving through a version
+/// number instead of through a second magic. `ReadError::UnsupportedFormat` is
+/// the answer to a file from before this change.
+pub const FORMAT: u16 = 2;
 
 /// A match, sealed.
 ///
@@ -160,6 +166,10 @@ pub fn seal(recording: &Recording, session: &SessionFacts, key: &SigningKey) -> 
         input_log_digest: input_log_digest(&log),
         outcome: recording.outcome,
         final_state_digest: recording.final_state_digest,
+        // Resolved before this call and handed in, never computed here: the
+        // companion is sealed first and the replay commits to it, which is the
+        // only order in which a digest can exist to commit to.
+        telemetry: session.telemetry,
     };
     let signature = key.sign(&signed_bytes(&manifest));
     Replay {
@@ -206,6 +216,16 @@ pub struct Verified {
     /// key still verifies, or rotation would destroy evidence
     /// (`docs/RISKS.md` R4).
     pub retired: bool,
+    /// What this replay says about its device-telemetry companion.
+    ///
+    /// **Reported, never required.** A replay is verifiable without the
+    /// companion beside it, so this function does not go looking for a file and
+    /// does not fail when there is none; what it does is state which of the two
+    /// legitimate cases a caller is in.
+    /// [`crate::telemetry::verify`] is the second half, and it takes the
+    /// companion as an argument because a caller who has one is a different
+    /// caller from one who does not.
+    pub telemetry: Commitment,
 }
 
 /// Why a replay is not what it says it is.
@@ -392,6 +412,7 @@ pub fn verify(replay: &Replay, keys: &KeyRegistry, build: &Build) -> Result<Veri
         ticks: replay.manifest.ticks,
         signer: identity,
         retired: entry.status == KeyStatus::Retired,
+        telemetry: replay.manifest.telemetry,
     })
 }
 
