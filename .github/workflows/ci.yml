@@ -56,11 +56,19 @@ jobs:
       # case, and 4096 costs about twenty seconds against this job's five-minute
       # budget. Raising it further buys sampling in a space the scripted
       # scenarios beside those properties already cover deliberately.
+      #
+      # `anticheat`'s joined at M8 and costs a fraction of a second: its draws
+      # are lists of latencies rather than whole matches, and what it asserts is
+      # the *meaning* of a score — the spread is zero exactly when every answer
+      # took the same number of ticks — which the mutation pass showed is the
+      # load-bearing choice in that statistic.
       - name: Property suites at CI's budget
         if: runner.os == 'Linux'
         env:
           PROPTEST_CASES: 4096
-        run: cargo test -p protocol -p server --locked --test wire --test traffic
+        run: |
+          cargo test -p protocol -p server -p anticheat --locked \
+            --test wire --test traffic --test statistics
 
       # docs/RISKS.md R5: `State` must not be serializable, anywhere, ever.
       # Today the enforcement is stronger than this grep — `sim` has no
@@ -219,6 +227,31 @@ jobs:
           fi
           echo "ok: the attacker links protocol, and reaches sim only through it"
 
+      # docs/ARCHITECTURE.md: `anticheat` is a pure function from telemetry to
+      # scores and does no I/O. That is what makes a detector reproducible from
+      # a stored match rather than from a server that happened to be running,
+      # and it is what lets `anticheat/tests/` score a bot match without a
+      # filesystem anywhere near it.
+      #
+      # `src/bin/` is excluded because the operator's tool is exactly the place
+      # the directory walking is supposed to live — the rule is about the
+      # library, which is what other crates link. A grep rather than a lint
+      # because there is no lint for "this crate opens no files", and it is the
+      # same shape of check as the `Serialize` grep in `sim`: textual, cheap,
+      # and pointed at the one thing it is about.
+      - name: anticheat does no I/O
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          found=$(git grep -nE '\b(std::fs|std::net|std::process|std::env|File::open|read_to_string)\b' -- \
+            anticheat/src ':(exclude)anticheat/src/bin' || true)
+          if [[ -n "$found" ]]; then
+            echo "::error::anticheat's library reached for I/O (docs/ARCHITECTURE.md)"
+            echo "$found"
+            exit 1
+          fi
+          echo "ok: anticheat's library opens nothing"
+
       # docs/RISKS.md R7 and SECURITY.md: the cheat client is a first-class crate
       # and it must not be in anything that ships. A dev-dependency does not ship
       # and neither does a test; what would ship is a production binary that
@@ -244,23 +277,43 @@ jobs:
           [[ "$failed" -eq 0 ]]
           echo "ok: no crate in the production graph links cheat-client"
 
-      # docs/MILESTONES.md M7's exit criterion, with its report.
+      # docs/MILESTONES.md M7's exit criterion, with its report, and M4's
+      # lockstep count beside it.
       #
-      # `cargo test --workspace` above already ran these, on both platforms, so
-      # this step buys one thing and it is not coverage: `--nocapture`, so the
-      # exploit-by-exploit account — which attack succeeded against which
-      # weakened defence, and which failed against the real one — is in the run
-      # summary rather than only in a failure. `docs/RISKS.md` R15's hedge is
-      # that the number is printed even when it passes, because the value of the
-      # counter is that a reader sees it and asks the question.
+      # `cargo test --workspace` above already ran both of these, on both
+      # platforms, so this step buys one thing and it is not coverage:
+      # `--nocapture`, so the exploit-by-exploit account — which attack
+      # succeeded against which weakened defence, and which failed against the
+      # real one — is in the run summary rather than only in a failure.
+      # `docs/RISKS.md` R15's hedge is that the number is printed even when it
+      # passes, because the value of the counter is that a reader sees it and
+      # asks the question.
       #
       # A step rather than the separate `exploits` job `docs/ENGINEERING.md`
-      # planned: on an already-compiled workspace this costs seconds, and a job
-      # that re-runs tests `check` has run is a second automation returning the
-      # same information, which is exactly what R11 says to refuse.
-      - name: The exploit suite, and what each exploit reached
-        if: runner.os == 'Linux'
-        run: cargo test -p cheat-client --locked -- --nocapture
+      # planned: a job that re-runs tests `check` has run is a second automation
+      # returning the same information, which is exactly what R11 says to
+      # refuse.
+      #
+      # **It ran on Linux alone until M8, and that was R15's failure with the
+      # assertion still green.** A counter whose whole value is that a reader
+      # sees it was printed on one of the two platforms this project supports —
+      # so `docs/RISKS.md` R16's live question, whether `windows-latest` bunches
+      # a client's frames more often than `ubuntu-latest` does at the same tick
+      # period, was a question nobody could answer from a run log. The M4
+      # criterion *asserts* correctly on both; only its numbers were unreadable
+      # on one. So the step runs on both, and `m4_exit` is in it because that is
+      # where the bunching count lives.
+      #
+      # What it costs: `m4_exit` plays a thousand ticks at the game's own 33 ms,
+      # so this is about thirty-five seconds a platform on an already-compiled
+      # workspace, against `ci`'s five-minute budget. That is the price of the
+      # number, and R16 has already been re-diagnosed twice for want of it.
+      - name: The exploit suite, the detectors, the M4 lockstep count
+        shell: bash
+        run: |
+          cargo test -p cheat-client --locked -- --nocapture
+          cargo test -p anticheat --locked -- --nocapture
+          cargo test -p client --locked --test m4_exit -- --nocapture
 
   # docs/CONSENT.md declares its own version and `replay::consent::CURRENT`
   # repeats it; a unit test fails when the two disagree. What that test cannot

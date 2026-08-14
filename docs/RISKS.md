@@ -385,6 +385,59 @@ anything the documents did not already say the project could not defend. Neither
 is a tool. The bot plays this game and nothing else, and the back-track is
 arithmetic on two numbers in a message this project defines.
 
+### The coupling test, applied to both of them at M8
+
+The sentence above — "neither is a tool" — is a conclusion, and M8 is the
+milestone at which the bot grows variants, so it was worth asking the question in
+the form that can be answered rather than asserted. **Can this exploit be pointed
+at something other than this server without being rewritten?** An exploit that
+can is a technique wearing a demonstration; an exploit that cannot is a defect of
+this project, which is what belongs in this repository.
+
+**The projectile back-track fails that test in the right direction, and it is the
+easy case.** It reads a position and a velocity out of a `PlayerView` this project
+defines, divides by a per-tick displacement this project's rules fix, and recovers
+a ray on a map whose geometry is in `sim::rules`. Every constant in it is a
+constant of this game. There is nothing to point.
+
+**The bot needed the examination, and it passes for a reason worth stating rather
+than for the same one.** What would make a bot a tool is not that it plays well —
+it is a **layer that synthesises device input**: something that moves a real mouse
+or presses real keys through the operating system, because that layer is
+game-independent by construction. It drives the OS, not the protocol, so pointing
+it at another title is a matter of changing what it aims at rather than of
+rewriting it. That layer is exactly what `docs/SCOPE.md` names as the ceiling of
+behavioural detection and what `docs/SCHEMA.md` §6 says no file can see: *a bot
+that moves a real mouse records exactly as many samples as a person.*
+
+**There is no such layer here, and the dependency list is not the evidence — the
+call sites are.** Everything under `cheat-client/src/` imports `protocol`,
+`std::collections` and `ed25519_dalek`, and nothing else. There is no window, no
+event loop, no `uinput`, no `SendInput`, no `XTest`, no pointer of any kind. What
+`bot::Bot` holds is a sequence number and a standing `Action`, and its one piece
+of hidden knowledge is `follow` — the rule that `Idle` stops a champion, a `Move`
+replaces the standing order and a cast leaves it alone, which is a rule of
+`sim::step` and of nothing else. `Bot::walk_to` takes an `FxVec2` in this
+project's Q15.16. Pointed at another game, there is no wire to speak, no `Action`
+to compose and no rule to mirror: it would have to be written again from nothing.
+
+**So the verdict is the same as the back-track's and the bot stays published as
+it is.** No recoupling is needed, because there is no free reusability to remove:
+the reusable half was never built.
+
+**What the examination actually bought is a constraint on M8**, and it is the
+half worth having written down before the work rather than after. The honest way
+to test a behavioural detector against `docs/SCOPE.md`'s ceiling would be to
+build the mouse-moving bot and see whether the statistics separate it — and that
+is precisely the thing this entry refuses, because it is the one component of a
+cheat that generalises. **So M8's bot variants stay on the protocol side of the
+line: they compose intentions, and the "human-plausible noise" M8 asks for is
+noise added to a decision, never to a device.** The consequence is stated in
+`docs/detectors/README.md` rather than discovered: this project can measure its
+detectors against a bot that plays through the wire, and it cannot measure them
+against the ceiling at all. Naming what cannot be tested is the same obligation
+as naming what cannot be defended.
+
 ## R8 — Corpus size versus detector claims
 
 **Not irreversible, but unrecoverable within the project's budget.** A corpus of
@@ -401,6 +454,28 @@ stated physical null model over fitted classifiers. Freeze the holdout split
 before writing the first detector. Never auto-ban: detectors emit scores and
 evidence, humans decide, and this is a design position rather than an unfinished
 feature.
+
+### Taken at M8, and the hedge stopped being a habit
+
+Every clause above is now a thing a program does rather than a thing an author
+remembers. `anticheat::Bounds` computes both bounds together and its `Display`
+prints them together with the sentence refusing a rate of zero, so quoting one
+without the other means deleting a line of output. `Detector::null_model` is a
+method, so a detector without a stated null model does not compile. The holdout
+split was frozen at M6 and is a grouping key here, so a distribution is per half
+as well as per stratum. And "never auto-ban" is `Finding::for_review` answering
+`None`: a detector with no calibrated threshold cannot report that it decided in
+anybody's favour, in either direction.
+
+The clause that needed the most machinery is the one this entry does not
+literally contain, and it is the one that mattered at M8: **a threshold may not
+be fixed on data that is not a corpus of people.** `Evaluation::basis` is the
+only constructor of the value a threshold needs, and it refuses synthetic play by
+name, refuses an empty corpus, and refuses fewer than the nine distinct
+participants `MILESTONES.md` M6 holds fixed. The refusal exists because the
+temptation is real and immediate: the exploit suite's bots are in the repository,
+they run in CI, and their scores separate from their controls cleanly enough to
+look like a calibration.
 
 ## R9 — Nondeterminism smuggled in by a dependency
 
@@ -774,6 +849,34 @@ reader stops asking:
   a decision about that detector, taken before M6 or not at all, for the covariate
   reason the paragraph above this one used to give.
 
+### The reopening clause, answered at M8 with a number rather than a shrug
+
+The clause above asks a question and M8 is where it had to be answered rather
+than assumed. **No detector M8 built depends on a quantity at the scale of a
+millisecond, and the reason is that the record cannot express one.**
+
+| Quantity | Its resolution in the corpus |
+| --- | --- |
+| a reaction latency | **one tick — 33.3 ms**, because both ends of it are tick numbers the log carries |
+| a clock rate error | one millisecond over the match span, so ≈ 37 ppm on a 53-second match |
+| this client's own capture residual | **16 µs** (the table above) |
+
+The residual sits sixty times below the *field* it is written into and three
+orders below the *tick* every reaction detector counts in. **The binding
+resolution is the record's, not the capture path's**, so an input stack that
+improved the third row would buy nothing any detector in scope could spend.
+
+And the honest half, which this entry's own third clause demands be named rather
+than presumed absent: **the thing that would depend on a sub-millisecond scale is
+a detector over the device stream itself** — the inter-arrival distribution M8's
+candidate list opens with, or an aim trajectory. Neither can be written, because
+that stream is deliberately outside the artefact the corpus holds
+(`replay/src/manifest.rs`, `docs/SCHEMA.md` §3) and reaches it as four summary
+numbers per seat. So the reopening condition is not *unmet*; it is
+**unreachable** from what a corpus contains, and the decision that would change
+that is a new collection with its own consent version rather than a change of
+input stack. `docs/detectors/README.md` carries the full account.
+
 **One more thing this found, and it is the reason to measure rather than
 argue.** The first run of the new client reported a median inter-arrival of
 0.38 ms for a stream emitted at 8 ms. An X11 pointer grab — `Confined`, the
@@ -1133,8 +1236,40 @@ That is a quality-of-service fact about a real network, it is now counted rather
 than fatal, and if it ever needs reducing the answer is in the client's send
 policy rather than in this criterion.
 
+### And the bunching was finally measured on both platforms, at M8
+
+The two sections above diagnosed the same symptom twice and neither of them
+compared the two platforms, because **the number was only readable on one**. The
+M4 criterion asserts correctly on Windows and on Linux; its per-client counters
+went through `cargo test` without `--nocapture`, and the report step that adds
+`--nocapture` was Linux-only. So "does `windows-latest` bunch more than
+`ubuntu-latest`" was a question about a run log that did not contain the answer —
+`docs/RISKS.md` R15's failure committed on a report rather than on a fixture,
+with the assertion still green.
+
+That is fixed: the report step runs on both platforms, `client/tests/m4_exit.rs`
+is in it, and the criterion prints one aggregate line naming the platform that
+produced it. The first paired reading, on the pull request that made the change:
+
+| | `ubuntu-latest` | `windows-latest` |
+| --- | --- | --- |
+| Views applied, three clients | 3000 | 3000 |
+| In lockstep | 2997 | 2997 |
+| **Out of step** | **0** | **0** |
+| Worst out-of-step correction | 0 raw units | 0 raw units |
+
+**No gap, and one run is not evidence of absence.** The failure this entry exists
+for was described as *intermittent*, and an intermittent event that did not occur
+in one run of one thousand ticks on one runner has not been shown not to occur.
+What has changed is that the instrument exists on both platforms: every pull
+request from here on produces a paired reading for free, and the entry can be
+closed or reopened on a sample rather than on a diagnosis. The outcome to be
+least smug about is a green pair on the first attempt, which is the same thing
+`MILESTONES.md` says about the determinism matrix agreeing on its first run.
+
 **Reopened by**, any one of: a renderer that is not a CPU rasteriser over this
 scene; a window materially larger than 1280×800; a recording session whose census
 reports degraded matches; any change that puts work on the thread between
-`new_events` and `about_to_wait`; or any harness that compresses a period below
-the granularity of the clock the host can schedule.
+`new_events` and `about_to_wait`; any harness that compresses a period below
+the granularity of the clock the host can schedule; or a paired reading in which
+the two platforms disagree.

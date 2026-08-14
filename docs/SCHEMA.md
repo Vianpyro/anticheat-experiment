@@ -350,7 +350,27 @@ whichever the author is quoting.
 
 **No number in this repository may be written as "0% false positives"**, at any
 corpus size this project can reach. `replay census` prints the sentence that says
-so, beside the numbers, on every run.
+so, beside the numbers, on every run, and `anticheat report` prints it again
+beside its own.
+
+**And since M8 the two bounds are computed by one value.** `anticheat::Bounds`
+holds the two counts and its rendering emits both lines and the sentence above,
+so quoting the friendlier one means deleting a line of output rather than
+choosing not to write one. `docs/detectors/` carries a page per detector, each
+with both bounds on it and each currently reporting "nothing at all (no
+observations)" for both, because there is no corpus.
+
+**One thing this section governs that M8 discovered it also constrains.** Two of
+`docs/MILESTONES.md` M8's five candidate signals are not buildable at all, and
+§3 above is why: the kilohertz device stream stays outside the artefact
+resimulation is a function of, so it reaches a detector as the four summary
+numbers in §4b rather than as a distribution — and the aim reaches the wire only
+when a player clicks, so there is no trajectory in a replay for a curvature
+statistic to run over. That is a consequence of a frozen format rather than a gap
+in it, and `docs/detectors/README.md` states both verdicts, including why neither
+reopens the `evdev` question `docs/RISKS.md` R14 left open: the binding
+resolution is this schema's millisecond and the game's 33 ms tick, not the
+client's 16 µs.
 
 ## 9. The destruction procedure
 

@@ -75,6 +75,16 @@ this order:
   rather than an inspection.
 - `docs/ENGINEERING.md` — toolchain, workflows, supply chain, release, and what
   stays manual on purpose.
+- `docs/detectors/` — one page per behavioural detector: its null model, the
+  exploit it responds to, the control it stays quiet against, and what a corpus
+  would have to be before its threshold could be a number. **None of them is
+  calibrated**, and the index says which of M8's candidate signals cannot be
+  built at all and why.
+- `docs/detectors/` — one page per behavioural detector: its null model, the
+  exploit it responds to, the control it stays quiet against, and what the corpus
+  would have to be before its threshold could be a number. **None of them is
+  calibrated**, and the index says which of M8's candidate signals cannot be built
+  at all and why.
 
 ## Contributing and security
 

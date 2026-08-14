@@ -214,9 +214,20 @@ for the server binary, which is the shape `docs/ARCHITECTURE.md` already refuses
 and that the mutation pass found the defect in the exploit suite rather than in
 the defences, which is recorded there.
 
-What is left is M4's remaining clause and M6's recordings, both of which are
-waiting on people rather than on hours, and then M8. M8's own baseline exists
-now: `cheat-client::bot::Bot` plays a whole match that nothing delivered catches.
+**M8's machinery is built and M8 is not reached**, which makes three milestones
+in that state and all three for the same reason: a calendar. Its exit criterion
+asks for a threshold and its justification, a score distribution over the human
+corpus, and observed false-positive counts — and every one of those is a function
+of a corpus that does not exist. What exists is the rest of it: `anticheat` with
+three detectors, an exploit and a control for each in `cheat-client::bot`, an
+evaluation pipeline that keeps the strata apart, `anticheat report`, and four
+pages under `docs/detectors/`. **Every threshold in it is `Uncalibrated` and a
+type refuses to let one be written down without a corpus**; the account is under
+M8 below.
+
+So what is left is a calendar, three times over: M4's three humans on two
+operating systems, M6's nine people twenty times, and M8's thresholds, which are
+downstream of M6's.
 
 ---
 
@@ -959,6 +970,98 @@ The bot the detectors are measured against exists as of M7:
 `cheat-client::bot::Bot` plays a whole match through the protocol and nothing
 delivered catches it, which is the baseline this milestone has to improve on and
 the reason `tests/botting.rs` is green on purpose.
+
+### M8 is built, and it is not reached
+
+Everything the criterion asks for **except the numbers a corpus produces** is in
+the repository and runs. The split is the same one M4 and M6 record, and it is
+stated here rather than in a commit message:
+
+| Clause | Who can satisfy it |
+| --- | --- |
+| a page in `docs/detectors/` per detector | this repository — four of them |
+| the null model | this repository — one sentence each, in a method a test requires to exist |
+| the score distribution over the **bot** corpus | this repository — `anticheat/tests/detectors.rs`, printed on both platforms |
+| the matching bot variant detected in CI | this repository — `cheat_client::bot::Reflexes`, `ClaimedClock` |
+| no detector emits an action | this repository — `Finding::for_review` answers `None`, and there is no verb in `anticheat` that does anything to anybody |
+| the threshold and its justification | **nobody, until nine people have played** |
+| the score distribution over the **human** corpus | nobody, likewise |
+| the observed FP/FN counts | nobody, likewise |
+| both confidence bounds | printed, and both of them are "nothing at all (no observations)" |
+| the supervision strata the distribution was computed over | none, because there is no distribution |
+
+**The last four are not work and no test stands in for them.** `anticheat report`
+computes and prints the page the criterion asks for, and on an empty corpus it
+correctly prints that nothing here has a threshold. That is a working instrument,
+not a satisfied criterion, and the milestone stays open — exactly as `replay
+census` leaves M6 open.
+
+### Six things the criterion did not say, which the work had to decide
+
+**A threshold had to become something a program can refuse, not a number
+somebody chooses to leave out.** M6's decision was that no threshold calibrated
+on nine people supports a sanction; M8's problem is one step earlier — there is
+no corpus at all, and a threshold chosen on synthetic play or on two evenings of
+test sessions is *worse than no detector*, because it has the shape of a
+calibration and none of the basis, and whoever inherits it will defend it. So
+`Calibration::Uncalibrated` is a variant every detector returns,
+`Finding::for_review` answers `None` rather than `false`, and a `Fixed` threshold
+cannot be constructed without a `CorpusBasis` — which cannot be obtained except
+from an evaluation that refuses synthetic play, refuses an empty corpus, and
+refuses fewer than the nine distinct people this document holds fixed.
+`Detector` therefore has **no** `fn threshold(&self) -> Score`, which is what
+`docs/ARCHITECTURE.md` sketched: a signature that always returns one cannot say
+that there is none.
+
+**Two of the five candidate signals are not buildable, and it is not about
+calibration.** `docs/detectors/README.md` is the account and the short version is
+that the quantity is not in the corpus. The kilohertz device stream is
+deliberately outside the artefact resimulation is a function of and arrives as
+four summary numbers, so *input inter-arrival distribution and quantisation* has
+no distribution; and `client::play` sends the aim only at the instant of a click,
+so *aim-correction trajectory curvature* has no trajectory. `docs/RISKS.md` R14
+closed the resolution half of the second one and was right about what it said —
+the blocker is the rate and the send policy, which is a different fact.
+
+**Neither of those reopens `evdev`, and the reason is a number rather than an
+argument.** R14 left exactly one reopening condition: a detector depending on a
+quantity at the scale of a millisecond. The corpus's timestamps are whole
+milliseconds and the finest quantity any detector here reads is a **tick**, which
+is 33.3 ms; the capture path's residual is 16 µs, sixty times below the field and
+three orders below the tick. The binding resolution is the record's, not the
+client's. What *would* reopen it is a detector over the device stream — and that
+detector cannot exist, because the stream is not in the corpus.
+
+**A detector reads what the server showed a player, and that is `view_for`.** A
+reaction needs a stimulus, a replay records no views, so the stimulus is
+re-derived by resimulation. That looks like `docs/ARCHITECTURE.md` invariant 5's
+trap and is not it: invariant 5 forbids a *test* of the projection from calling
+the projection's own predicate, and nothing here tests the projection. The claim
+is *this player could not have known before the server told them*, and what the
+server told them **is** `view_for`'s output — a second, re-derived visibility rule
+would be modelling a game nobody played. What resimulation genuinely cannot
+recover is datagram loss, which makes every latency an **under**estimate, which
+is the direction that produces false positives; the pages say so.
+
+**The detector suite lives beside the detectors and not beside the exploits, and
+the edge points the safe way.** `anticheat` takes `cheat-client` as a
+dev-dependency; `cheat-client` takes nothing of `anticheat`, not even in a test
+binary. `docs/SCOPE.md`'s reason for keeping detectors out of `client` is that
+thresholds must not reach a machine the project assumes is compromised, and
+`cheat-client` is that machine. So `cargo test -p cheat-client` is the attack
+account and `cargo test -p anticheat` is the detection account, and only one of
+them can see both sides. `ci` asserts both directions.
+
+**And the exploit suite gained a third arm that is neither attack nor control.**
+Every M7 exploit runs twice, against a weakened defence and the real one. A
+detector needs the same discipline pointed the other way — it must be shown to
+respond to a behaviour *and* to be quiet against the same match without it — so
+each detector has an exploit and a control. The third arm is
+`Reflexes::Jittered`: plausible reflexes with plausible variability, which
+defeats both reaction detectors. That green is `docs/SCOPE.md`'s ceiling arriving
+as a test, and it is a **lower bound** on the ceiling rather than a measurement
+of it, because `docs/RISKS.md` R7 refuses to build the device-injection layer
+that would reach the real thing.
 
 ## M9 — Release pipeline · 1–2 weeks
 

@@ -1,0 +1,13 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# This one was produced by a deliberate mutation rather than by a failure of
+# shipped code: replacing the mean absolute deviation with the median one, which
+# reports "no variation at all" about a player who varied. `[0, 1]` is the
+# minimal case that tells the two apart, and the unit test beside the statistic
+# needed five values to reach it.
+cc b67d98a2a001f2b2e7797da102367e4f0c3056ff534216151ff4519db6508518 # shrinks to latencies = [0, 1]
