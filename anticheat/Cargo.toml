@@ -44,7 +44,13 @@ sim = { path = "../sim" }
 # has them: an exploit that must be *played* needs an authority to play against,
 # and `Match` is driven rather than driving. `ci` checks the claim that matters
 # with `cargo tree -p anticheat --edges normal`, which excludes every line here.
+# The harness that draws the latency lists. Same reasoning as `sim`'s and
+# `protocol`'s: its draws choose which lists to try, never what a rule reads —
+# and `tests/statistics.rs` is where the *meaning* of a score is asserted over a
+# domain rather than over two hand-written examples, which is the gap the
+# mutation pass on the spread statistic exposed.
 [dev-dependencies]
 cheat-client = { path = "../cheat-client" }
+proptest = "1.11.0"
 protocol = { path = "../protocol" }
 server = { path = "../server" }

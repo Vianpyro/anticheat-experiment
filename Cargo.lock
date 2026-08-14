@@ -45,6 +45,7 @@ name = "anticheat"
 version = "0.0.0"
 dependencies = [
  "cheat-client",
+ "proptest",
  "protocol",
  "replay",
  "server",
