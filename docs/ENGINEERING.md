@@ -269,6 +269,15 @@ in a security project.
 ## Definition of done
 
 A change is done when it is on `main`, CI is green, and — where the change is a
-detector — the exploit it defeats exists in `cheat-client` and fails against it
-in CI. That last clause is the project's actual quality gate; the rest is
-hygiene.
+detector — the exploit it responds to exists in `cheat-client`, **and so does the
+control it must stay quiet against**, and both run against it in CI. That last
+clause is the project's actual quality gate; the rest is hygiene.
+
+It said "the exploit it defeats … and fails against it" until M8, and the wording
+had to change rather than the gate. Nothing *fails* against a detector: a
+detector emits a score and an evidence bundle and refuses nobody, and while no
+corpus has fixed a threshold it cannot even say whether a reading is worth a
+look. The control is what carries the weight the word "fails" used to — a
+detector that fires on an exploit without ever having been quiet proves exactly
+as little as an exploit that fails against a defence without ever having worked
+(`RISKS.md` R15).

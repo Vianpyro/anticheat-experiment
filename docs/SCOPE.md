@@ -100,8 +100,8 @@ one this project ships, and the test is red if either half comes out wrong.
 | --- | --- | --- | --- | --- |
 | 1 | Maphack: reading information not visible | Strict server-side culling; message-size padding against traffic analysis; culling of *derived* signals (sound, damage events, cast events) | `tests/maphack.rs`, `tests/traffic.rs` | **Yes.** The maphack places every living enemy against an omniscient projection and exactly the visible ones against this one; the wiretap reads the entity count off an unpadded stream and sees one packet shape on the real one |
 | 2 | Result forgery: unplayed match, edited replay | Signed replays; server-issued match records; offline resimulation of the input log | `tests/forgery.rs` | **Yes.** A forged replay of a match nobody played verifies against a registry that trusts the forger's key and is refused by the one that does not; every byte-level edit of a genuine replay is caught, inside the signature or by the manifest's commitment to the log |
-| 3 | Synthetic input and botting | Server-arrival-time telemetry; behavioral statistics calibrated on a human corpus; account-progression coherence over time | `tests/botting.rs` | **No, and correctly.** The bot plays a whole match, the server accepts every frame, the replay verifies. The one mechanical defense — a seat with zero device events is refused — catches a headless bot and is blind to one moving a real mouse. The behavioral half is M8's and carries its own bounds |
-| 4 | Time manipulation: slowdown, clock desync | Divergence between client-claimed and server-observed input timestamps as a first-class signal | `tests/clock.rs` | **Yes, for what M7 can deliver.** Four different claimed clocks produce one identical world digest, because no rule reads the field; the divergence is recorded and inert. A *detector* over that divergence is M8's |
+| 3 | Synthetic input and botting | Server-arrival-time telemetry; behavioral statistics calibrated on a human corpus; account-progression coherence over time | `tests/botting.rs`, `cheat_client::bot::Reflexes`, `anticheat/tests/detectors.rs` | **No, and correctly — and M8 narrowed it without closing it.** The bot plays a whole match, the server accepts every frame, the replay verifies. Two behavioural detectors now respond to it, a reaction floor and a reaction dispersion, and **neither has a calibrated threshold** because there is no human corpus; a third variant with plausible reflexes defeats both and is the ceiling executed. `docs/detectors/` |
+| 4 | Time manipulation: slowdown, clock desync | Divergence between client-claimed and server-observed input timestamps as a first-class signal | `tests/clock.rs`, `anticheat/tests/detectors.rs` | **Yes for the inertness, and uncalibrated for the detection.** Four different claimed clocks produce one identical world digest, because no rule reads the field. M8's `clock-divergence` reads the divergence as a *rate* and separates a half-speed clock from an honest one whose epoch is a trillion milliseconds away — with no threshold, for the same reason as class 3 |
 | 5 | Protocol abuse: replay, concurrency, out-of-sequence | Monotonic input sequence numbers, idempotent session commands, per-player rate limits | `tests/abuse.rs` | **Yes.** A replayed intention is applied once, a stale sequence number is refused, a second `Join` is out of order, an unresolvable or friendly handle never becomes an order, and hostile byte strings are refused at the frontier |
 | 6 | Cross-team collusion: two teams cooperating against the third, including sharing vision outside the game | **None applicable.** See below | **None, deliberately** — `tests/collusion.rs` is a demonstration and not an exploit | Not applicable, and that is the finished state |
 
@@ -157,6 +157,38 @@ cheating client. Resimulation earns its place at the surfaces where a
 records, third-party verification of a published replay, and offline reanalysis
 at higher-than-realtime cost. That is where it is scoped, and where the tests
 live.
+
+### What M8 added to that table, and the word it is not allowed to use
+
+**M8's detectors exist and none of them is a delivered defence.** `SCOPE.md`
+reserves that word for a class with a matching exploit *failing* against it in
+CI, and nothing fails against an uncalibrated threshold — a detector with no
+threshold cannot refuse anybody, which is why classes 3 and 4 still read "no" in
+the column above.
+
+What the milestone did deliver is in `docs/detectors/`: three statistics with
+stated null models, an exploit and a control for each, an evidence bundle, and
+the arithmetic that says what a corpus would have to be before any of it becomes
+a threshold. The exploit suite gained `cheat_client::bot::Reflexes` and
+`ClaimedClock`, and `anticheat/tests/detectors.rs` asserts that each detector
+responds to its own exploit and is quiet against the same match played without
+the behaviour.
+
+**Two of M8's five candidate signals cannot be built at all, and it is not a
+question of calibration.** The kilohertz device stream is deliberately outside
+the artefact resimulation is a function of and reaches the corpus as four summary
+numbers per seat (`docs/SCHEMA.md` §3, §4b), so "input inter-arrival distribution
+and quantisation" has no distribution to read; and the aim reaches the wire only
+at the instant of a click, so an aim-curvature detector has no trajectory to
+compute over. `docs/detectors/README.md` carries both verdicts at length,
+including why neither reopens `evdev`: the binding resolution is the record's
+millisecond and the tick, not the capture path's 16 µs.
+
+**And a bot with human-plausible reflexes defeats both reaction detectors.** That
+is the ceiling this document already names — hardware input injection producing
+statistically human timing — arriving as a green test rather than as a paragraph,
+and it is approached from below rather than measured, because `docs/RISKS.md` R7
+refuses to publish the device-injection layer that would measure it.
 
 ### The corpus is nine people, and here is what that fixes
 

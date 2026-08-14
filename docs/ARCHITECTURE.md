@@ -29,7 +29,7 @@ client   server --+---------+         |
 | `replay` | The replay container: format, signing, verification, resimulation. From M4, the corpus on disk and the commands that withdraw a participant from it and audit the result. From M6, the corpus's schema — the session record, the consent version, and the frozen train/holdout split | `sim`; externally, an audited signature crate and a source of entropy for `keygen` | `server`, `client`, `anticheat`, any runtime |
 | `server` | Authority. Tick loop, the clock, sockets, sessions, fog application, telemetry capture, replay recording | `sim`, `protocol`, `replay`, `anticheat`, a runtime | `client`, `cheat-client` |
 | `client` | Presentation. Rendering, **input capture**, prediction, reconciliation | `sim`, `protocol`, a runtime, a window library and a framebuffer; plus `server` and `replay` as dev-dependencies for the M3 and M4 exit harnesses | `server`, **`anticheat`**, `replay`'s signing keys |
-| `anticheat` | Detection. Feature extraction from telemetry, detectors, thresholds, evidence bundles | `sim`, `replay` | `server` (it is called by the server, not the reverse), `client`, any network or filesystem I/O |
+| `anticheat` | Detection. Feature extraction from telemetry, detectors, thresholds, evidence bundles | `sim`, `replay`; plus `cheat-client`, `server` and `protocol` as dev-dependencies for the detector suite | `server` (it is called by the server, not the reverse), `client`, any network or filesystem I/O outside `src/bin` |
 | `cheat-client` | The attacker, and the exploit suite | `protocol` only, plus `server` as a dev-dependency for the in-process harness | `sim` internals, `client`, `anticheat` |
 
 Three of these deserve their reason stated:
@@ -39,6 +39,21 @@ machine you assume is compromised hands the attacker your thresholds. All
 detection runs server-side or offline over recorded telemetry. This is why
 `anticheat` does no I/O — it is a pure function from telemetry to scores, which
 also makes it replayable and testable without a server.
+
+**And `cheat-client` must not depend on `anticheat` either, which is the same
+rule read one crate over.** `cheat-client` *is* the machine this project assumes
+is compromised, so the edge M8 needed had to point the other way: `anticheat`
+takes `cheat-client` as a dev-dependency, plays its bots, and scores the log the
+server wrote. That is the allowance `client` and `cheat-client` already hold for
+`server`, with the same justification — a dev-dependency does not ship, and the
+enforced claim is about the *normal* graph. The consequence is that
+`cargo test -p cheat-client` is the attack account and `cargo test -p anticheat`
+is the detection account, and only one of them can see both sides. `ci` asserts
+both directions.
+
+`anticheat`'s "no I/O" is enforced by a grep over `anticheat/src` excluding
+`src/bin`, because the operator's tool is exactly where a directory walk belongs
+and the rule is about the library other crates link.
 
 **`cheat-client` must not depend on `sim` or `client`.** An exploit that reaches
 into the real client's internals is not an exploit, it is a test double. The
@@ -1166,23 +1181,52 @@ tri-platform digests are what covers the rules.
 ### `anticheat`
 
 ```rust
-/// Everything a detector may look at. Constructed by the server from live
-/// telemetry, or by the offline tooling from a replay — identical either way,
-/// so every detector is reproducible from a stored match.
-pub struct MatchTelemetry { pub inputs: Vec<TimedInput>, pub views: Vec<ViewDigest>, .. }
-pub struct AccountHistory { .. }      // progression coherence, exploit class 3
+/// Everything a detector may look at: a sealed replay's log, the session record
+/// beside it, and what each seat was **shown**, re-derived by resimulation.
+pub struct MatchTelemetry { pub inputs: Vec<TimedInput>, pub seats: [Option<SeatFacts>; 9], .. }
 
 pub trait Detector {                   // more than one implementation, so a trait is earned
     fn name(&self) -> &'static str;
-    fn score(&self, t: &MatchTelemetry, h: &AccountHistory) -> Score;
-    fn threshold(&self) -> Score;      // justified in docs/detectors/<name>.md
+    fn null_model(&self) -> &'static str;      // one sentence, or nobody will check it
+    fn tail(&self) -> Tail;                    // which side a reviewer looks at
+    fn calibration(&self) -> Calibration;      // Uncalibrated, or Fixed with its basis
+    fn read(&self, t: &MatchTelemetry, seat: Seat) -> Reading;
 }
 
-pub struct Finding { pub detector: &'static str, pub score: Score, pub evidence: Evidence }
+pub struct Reading { pub score: Option<Score>, pub abstained: Option<String>, .. }
+pub struct Finding { pub reading: Reading, pub calibration: Calibration, pub tail: Tail }
+
+impl Finding {
+    /// Whether a **person should look at this**. `None` while no corpus has
+    /// fixed a threshold, which is every detector in this repository.
+    pub fn for_review(&self) -> Option<bool>;
+}
 ```
 
 Detectors return findings. Nothing in this crate bans, disconnects, or notifies —
 acting on a finding is a human decision, per `SCOPE.md`.
+
+**Three things about that signature are decisions M8 had to take, and the first
+is a correction to what this document used to sketch.**
+
+*There is no `fn threshold(&self) -> Score`.* A signature that returns a
+threshold unconditionally is a signature in which "there is no threshold" cannot
+be expressed, and that is the only thing M8 has to be able to say: M6 is built
+and not reached, so no threshold in this repository has been calibrated. A
+`Fixed` threshold cannot be constructed without a `CorpusBasis`, and a
+`CorpusBasis` cannot be obtained except from `Evaluation::basis`, which refuses
+synthetic play, an empty corpus, and fewer than nine distinct participants.
+
+*The score is an `Option` and abstention is a first-class answer.* Both reaction
+detectors are on the **low** tail, so a seat that produced nothing would score
+zero — the same number a bot answering instantly produces — if an absence were
+scored rather than declined. A detector that scores silence flags the quietest
+person in the corpus.
+
+*`AccountHistory` is gone from this sketch.* Progression coherence is the one M8
+candidate signal that needs a corpus spanning months of the same people, and a
+parameter for a detector nobody has written is an abstraction with no
+implementation. It comes back with the detector or not at all.
 
 ## Enforced invariants
 
@@ -1302,8 +1346,25 @@ Each is a test or a lint, not a convention:
    `replay` and `anticheat`, and `SECURITY.md` and `docs/RISKS.md` R7 are what it
    is enforcing.
 7. `cargo tree -p client` shows no path to `anticheat`.
-8. Every detector in `anticheat` has an exploit in `cheat-client` that fails
+8. Every detector in `anticheat` has an exploit in `cheat-client` that runs
    against it in CI.
+
+   **It said "fails against it" until M8, and the word had to change rather than
+   the invariant.** Nothing *fails* against a detector: a detector emits a score
+   and an evidence bundle and refuses nobody, and at M8 it cannot even say
+   whether a reading is worth a look, because no corpus has fixed a threshold.
+   What the pairing asserts instead is the same discipline pointed the other way
+   — **each detector responds to its own exploit and is quiet against the same
+   match played without the behaviour.** A detector that fired on an exploit
+   without ever having been quiet proves exactly as little as an exploit that
+   failed against a defence without ever having worked, and both are
+   `docs/RISKS.md` R15.
+
+   The controls are therefore part of the invariant and not decoration, and so
+   is the third arm: `cheat_client::bot::Reflexes::Jittered` is caught by
+   neither reaction detector, and `anticheat/tests/detectors.rs` asserts that
+   green because `docs/SCOPE.md`'s ceiling is a limit this project states rather
+   than defends.
 
    **And since M7, every exploit is run twice.** Once against a weakened version
    of the defence that does not stop it, and once against the one this project
