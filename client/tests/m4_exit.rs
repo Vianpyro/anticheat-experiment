@@ -70,6 +70,19 @@ struct Report {
     exact: u32,
     /// Views applied in total.
     views: u32,
+    /// Views on which the client and the server were in step: exactly one
+    /// intention outstanding when the client drew, and exactly that one applied
+    /// by the tick the view describes. The condition under which the prediction
+    /// must be bit-exact — see `client::predict::Reconciled`.
+    in_lockstep: u32,
+    /// The worst correction on a view that *was* in lockstep. Must be zero: a
+    /// non-zero value is the client and the server disagreeing about how a
+    /// champion moves.
+    worst_in_lockstep: i32,
+    /// Views on which the transport was out of step, and the worst correction
+    /// among them. Reported, never thresholded.
+    out_of_step: u32,
+    worst_out_of_step: i32,
     /// How many ticks the client rendered a position ahead of the last view.
     predicted_ahead: u32,
     frames_lost: u32,
@@ -124,6 +137,10 @@ async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, Strin
     let mut predicted_ahead = 0u32;
     let mut exact = 0u32;
     let mut views = 0u32;
+    let mut in_lockstep = 0u32;
+    let mut worst_in_lockstep = 0i32;
+    let mut out_of_step = 0u32;
+    let mut worst_out_of_step = 0i32;
     let mut reach = harness::Reach::default();
 
     loop {
@@ -143,6 +160,19 @@ async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, Strin
         reach.observe(&headless);
         if seen.corrections().0 == 0 {
             exact = exact.saturating_add(1);
+        }
+        // Split the corrections by whether the client and the server were in
+        // step, which is the distinction the flat assertion this criterion used
+        // to make could not draw. See the assertions below and `docs/RISKS.md`
+        // R16.
+        if let Some(reconciled) = seen.reconciliation() {
+            if reconciled.in_lockstep() {
+                in_lockstep = in_lockstep.saturating_add(1);
+                worst_in_lockstep = worst_in_lockstep.max(reconciled.correction);
+            } else {
+                out_of_step = out_of_step.saturating_add(1);
+                worst_out_of_step = worst_out_of_step.max(reconciled.correction);
+            }
         }
 
         let Tick(tick) = view.tick;
@@ -191,6 +221,10 @@ async fn play(address: SocketAddr, certificate: Vec<u8>) -> Result<Report, Strin
         worst_correction: prediction.map_or(0, |seen| seen.corrections().1),
         exact,
         views,
+        in_lockstep,
+        worst_in_lockstep,
+        out_of_step,
+        worst_out_of_step,
         predicted_ahead,
         frames_lost,
         reach,
@@ -316,38 +350,103 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
             report.predicted_ahead,
             report.frames_lost
         );
+        println!(
+            "{:?}: in step on {} of {} views (worst correction there {} raw units); \
+             out of step on {} (worst {} raw units, {} tick(s) of movement)",
+            report.seat,
+            report.in_lockstep,
+            report.views,
+            report.worst_in_lockstep,
+            report.out_of_step,
+            report.worst_out_of_step,
+            ticks_of(report.worst_out_of_step)
+        );
         println!("{:?}: reach — {}", report.seat, report.reach.summary());
 
         // `docs/RISKS.md` R15, before anything that is conditional on the match
         // having contained something.
         report.reach.assert_a_match_happened(report.seat);
 
-        // Exact, on every view, over the real transport. `prediction.rs` makes
-        // the same claim on a match driven one tick at a time, which is the test
-        // of the *rule*; this one has QUIC, three sessions and a scheduler in
-        // between, which is the test of the rule as a person meets it.
+        // **The criterion, restated so that it is about the prediction rather
+        // than about the runner's scheduler.**
         //
-        // The unit is deliberately named in the failure message. Every way this
-        // can go wrong produces a multiple of one tick of movement — a client
-        // that fell behind, an order folded in twice, a step applied that the
-        // server did not — so a correction reported in raw fixed-point units and
-        // in ticks tells a reader which of those it is looking at without
-        // reaching for a calculator.
+        // It used to be `worst_correction == 0` over every view, and that was
+        // wrong in a way that took a year of green to show: it is only true while
+        // the client and the server stay in lockstep, and lockstep is a property
+        // of the transport. `client/src/predict.rs`'s own header already said so
+        // — "a client that sent four intentions in one tick would … over-predict
+        // and be corrected … a degradation of prediction quality, not of
+        // correctness" — and the assertion did not know it. On `windows-latest`,
+        // whose default timer resolution is about 15.6 ms against this harness's
+        // 33 ms period, two of a client's frames occasionally reach the server
+        // between two of its ticks; the server folds both into one tick and moves
+        // the champion once, the client had drawn it twice, and the correction is
+        // exactly one tick of movement — `13106 raw units`, which is what CI
+        // reported, intermittently, and which R16 says a reader learns to re-run.
+        //
+        // So the claim is made where it is a claim about this repository: **on
+        // every view where the client had exactly one intention outstanding when
+        // it drew and the server applied exactly that one, the prediction is
+        // bit-exact.** Under that condition the server ran one tick applying one
+        // intention and the client folded one intention forward by one tick of
+        // movement; a difference is the two disagreeing about how a champion
+        // moves, and nothing else can produce one. It is machine-independent, and
+        // it is *stronger* than the old assertion where it applies, because it
+        // says why the number must be zero.
         assert_eq!(
-            report.worst_correction,
+            report.worst_in_lockstep,
             0,
             "{:?}'s prediction was corrected by {} raw units, {} tick(s) of \
-             movement: the client and the server disagree about how a champion \
-             moves, or the client fell behind the tick period",
+             movement, on a view where it had exactly one intention outstanding \
+             and the server applied exactly that one: the client and the server \
+             disagree about how a champion moves",
             report.seat,
-            report.worst_correction,
-            ticks_of(report.worst_correction)
+            report.worst_in_lockstep,
+            ticks_of(report.worst_in_lockstep)
         );
-        assert_eq!(
-            report.exact, report.views,
-            "{:?}'s prediction was exact on only {} of {} views",
-            report.seat, report.exact, report.views
+
+        // And the antecedent, which is what keeps the clause above from being
+        // satisfied by a run that was never in step at all (`docs/RISKS.md` R15).
+        // A factor of two in hand: on a healthy run this is essentially every
+        // view, and it is a floor rather than a timing threshold — a transport so
+        // out of step that fewer than half the views were in lockstep is a
+        // transport the criterion above would be stating something about a
+        // handful of ticks over.
+        assert!(
+            report.in_lockstep * 2 > report.views,
+            "{:?} was in step with the server on only {} of {} views, so the \
+             exactness asserted above is a claim about a minority of the match \
+             (docs/RISKS.md R15)",
+            report.seat,
+            report.in_lockstep,
+            report.views
         );
+
+        // Out-of-step views are reported and not thresholded, and what is
+        // asserted about them is the only machine-independent thing there is: a
+        // correction is a whole number of ticks of movement. A fractional one
+        // would mean the client and the server had applied *different rules*
+        // rather than a different number of ticks of the same one, and no amount
+        // of transport jitter produces that.
+        //
+        // One raw unit of slack per tick, because `step_toward` truncates toward
+        // zero: a one-tick correction arrives as 13106 against a step of 13107,
+        // and the shortfall accumulates with the number of ticks.
+        let whole_ticks = ticks_of(report.worst_out_of_step);
+        let slack = whole_ticks.max(1);
+        assert!(
+            (report.worst_out_of_step - whole_ticks.saturating_mul(step)).abs() <= slack,
+            "{:?}'s worst out-of-step correction, {} raw units, is not a whole \
+             number of ticks of movement ({} raw units each, {} tick(s) nearest, \
+             {} of slack): the disagreement is about the rule and not about how \
+             many ticks it was applied for",
+            report.seat,
+            report.worst_out_of_step,
+            step,
+            whole_ticks,
+            slack
+        );
+
         assert!(
             report.predicted_ahead * 2 > TICKS,
             "{:?} rendered a predicted position on only {} of {TICKS} ticks, so \
