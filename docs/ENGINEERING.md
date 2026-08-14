@@ -69,9 +69,8 @@ serialization derive in `sim` (`RISKS.md` R5); `cargo tree -p sim --edges normal
 which must print `sim` and nothing else; `cargo tree -p client --edges normal`,
 which must show no path to `anticheat` or `server`; the two graph checks M7 added
 around the attacker (`ARCHITECTURE.md` invariants 6 and 6a) — it links nothing of
-the victim, and no production crate links it; the checks that no recording,
-consent record or signing key is tracked in git; and the exploit suite's own
-report.
+the victim, and no production crate links it; and the checks that no recording,
+consent record or signing key is tracked in git.
 
 **The `exploits` job planned for M7 is a step in `check` instead, and that is a
 deliberate demotion.** `cargo test --workspace` already runs the exploit suite, on
@@ -81,7 +80,18 @@ exactly the second automation R11 says to refuse. What the step buys is
 `--nocapture`, so the exploit-by-exploit account is in the run summary rather than
 only in a failure: `RISKS.md` R15's hedge is that the number is printed even when
 it passes, because the value of a counter is that a reader sees it and asks the
-question. It costs seconds on an already-compiled workspace.
+question.
+
+**And it is the one report step that is not Linux-only, since M8.** It was, and
+that was R15's own failure committed on a report rather than on a fixture: a
+counter whose whole value is that a reader sees it was printed on one of the two
+platforms this project supports. `RISKS.md` R16's live question — whether
+`windows-latest` bunches a client's frames more often than `ubuntu-latest` at the
+same tick period — was therefore a question no run log could answer, while the
+criterion that measures it stayed green on both. So the step runs on both and
+carries `client/tests/m4_exit.rs` with it, because that is where the bunching
+count lives. It costs about thirty-five seconds a platform, which is the price of
+a number R16 has been re-diagnosed twice for want of.
 
 The determinism job compares against committed digests rather than shipping each
 job's result to a fourth job that compares them. That is strictly stronger and

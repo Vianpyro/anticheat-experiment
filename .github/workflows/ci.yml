@@ -244,23 +244,42 @@ jobs:
           [[ "$failed" -eq 0 ]]
           echo "ok: no crate in the production graph links cheat-client"
 
-      # docs/MILESTONES.md M7's exit criterion, with its report.
+      # docs/MILESTONES.md M7's exit criterion, with its report, and M4's
+      # lockstep count beside it.
       #
-      # `cargo test --workspace` above already ran these, on both platforms, so
-      # this step buys one thing and it is not coverage: `--nocapture`, so the
-      # exploit-by-exploit account — which attack succeeded against which
-      # weakened defence, and which failed against the real one — is in the run
-      # summary rather than only in a failure. `docs/RISKS.md` R15's hedge is
-      # that the number is printed even when it passes, because the value of the
-      # counter is that a reader sees it and asks the question.
+      # `cargo test --workspace` above already ran both of these, on both
+      # platforms, so this step buys one thing and it is not coverage:
+      # `--nocapture`, so the exploit-by-exploit account — which attack
+      # succeeded against which weakened defence, and which failed against the
+      # real one — is in the run summary rather than only in a failure.
+      # `docs/RISKS.md` R15's hedge is that the number is printed even when it
+      # passes, because the value of the counter is that a reader sees it and
+      # asks the question.
       #
       # A step rather than the separate `exploits` job `docs/ENGINEERING.md`
-      # planned: on an already-compiled workspace this costs seconds, and a job
-      # that re-runs tests `check` has run is a second automation returning the
-      # same information, which is exactly what R11 says to refuse.
-      - name: The exploit suite, and what each exploit reached
-        if: runner.os == 'Linux'
-        run: cargo test -p cheat-client --locked -- --nocapture
+      # planned: a job that re-runs tests `check` has run is a second automation
+      # returning the same information, which is exactly what R11 says to
+      # refuse.
+      #
+      # **It ran on Linux alone until M8, and that was R15's failure with the
+      # assertion still green.** A counter whose whole value is that a reader
+      # sees it was printed on one of the two platforms this project supports —
+      # so `docs/RISKS.md` R16's live question, whether `windows-latest` bunches
+      # a client's frames more often than `ubuntu-latest` does at the same tick
+      # period, was a question nobody could answer from a run log. The M4
+      # criterion *asserts* correctly on both; only its numbers were unreadable
+      # on one. So the step runs on both, and `m4_exit` is in it because that is
+      # where the bunching count lives.
+      #
+      # What it costs: `m4_exit` plays a thousand ticks at the game's own 33 ms,
+      # so this is about thirty-five seconds a platform on an already-compiled
+      # workspace, against `ci`'s five-minute budget. That is the price of the
+      # number, and R16 has already been re-diagnosed twice for want of it.
+      - name: The exploit suite, the M4 lockstep count, and what each reached
+        shell: bash
+        run: |
+          cargo test -p cheat-client --locked -- --nocapture
+          cargo test -p client --locked --test m4_exit -- --nocapture
 
   # docs/CONSENT.md declares its own version and `replay::consent::CURRENT`
   # repeats it; a unit test fails when the two disagree. What that test cannot

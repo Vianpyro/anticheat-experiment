@@ -456,6 +456,37 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
         );
     }
 
+    // One line for the three of them, named by the platform that produced it.
+    //
+    // The per-client lines above are what a reader needs when something is
+    // wrong; this is the one number that has to be **comparable between two
+    // operating systems**, and it exists because comparing it meant reading
+    // three lines out of two run logs and subtracting. `docs/RISKS.md` R16 is
+    // the question it answers: Windows' default timer resolution is about
+    // 15.6 ms against this harness's 33 ms period, so two of a client's frames
+    // can reach the server between two of its ticks — the server folds both
+    // into one tick, the client had drawn two, and the view is *out of step*.
+    // Whether that happens more there than here is a fact about a scheduler
+    // that this project has asserted around twice and never measured, and a
+    // number nobody can read is `docs/RISKS.md` R15's failure with the
+    // assertion still green.
+    let views: u32 = reports.iter().map(|report| report.views).sum();
+    let lockstep: u32 = reports.iter().map(|report| report.in_lockstep).sum();
+    let bunched: u32 = reports.iter().map(|report| report.out_of_step).sum();
+    let worst_bunched = reports
+        .iter()
+        .map(|report| report.worst_out_of_step)
+        .max()
+        .unwrap_or(0);
+    println!(
+        "m4 lockstep on {}: {views} views, {lockstep} in step, {bunched} out of step \
+         ({:.2}%), worst out-of-step correction {worst_bunched} raw units ({} tick(s) \
+         of movement) — docs/RISKS.md R16",
+        std::env::consts::OS,
+        f64::from(bunched) * 100.0 / f64::from(views.max(1)),
+        ticks_of(worst_bunched)
+    );
+
     // …and they were on different hit points while they agreed, which is what
     // makes the agreement below evidence rather than a coincidence. A tower
     // shoots the lowest-numbered seat it can see, so this is one of the three
