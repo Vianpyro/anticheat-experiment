@@ -21,7 +21,7 @@
 //! # What the match is, and why it is shaped like that
 //!
 //! Nine bots walk to the middle of the map and then oscillate: in to the
-//! centroid, back a quarter of the way to their own base, in again. The
+//! centroid, back eighteen units toward their own base, in again. The
 //! oscillation is not decoration — a reaction is measured from the moment an
 //! enemy **enters** vision, and a match in which everybody converges once
 //! produces one appearance per pair of champions and therefore about one
