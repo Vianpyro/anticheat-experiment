@@ -614,6 +614,26 @@ fn the_consent_text_exists_and_states_the_four_required_points() {
         "the consent text does not say that withdrawal destroys other \
          participants' contributions"
     );
+    // 5. The device stream, which is the largest thing the corpus holds and the
+    //    one a participant is least likely to guess at. `docs/SCHEMA.md` §11 is
+    //    the schema; this is the obligation that it be named in the text a person
+    //    signs, at its rate, with what can be worked out from it — because a
+    //    participant who learns afterwards that the movement of their hand was
+    //    recorded hundreds of times a second was not informed.
+    assert!(
+        lower.contains("125") && lower.contains("1000 times a second"),
+        "the consent text does not say how often the device stream is sampled"
+    );
+    assert!(
+        lower.contains("every movement your mouse reports"),
+        "the consent text does not say that every device motion is kept"
+    );
+    assert!(
+        lower.contains("handwriting"),
+        "the consent text does not say what can be worked out from the device \
+         stream, which is the half a participant cannot infer from a field list"
+    );
+
     // …and the field-by-field account of what is collected, which
     // `docs/MILESTONES.md` M4 requires before the first recording session.
     for field in [

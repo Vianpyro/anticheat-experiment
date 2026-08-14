@@ -26,7 +26,7 @@ client   server --+---------+         |
 | --- | --- | --- | --- |
 | `sim` | The rules of the game. `State`, `Input`, `step`, `view_for`, fixed-point math, seeded RNG | Nothing in the workspace. Externally: a fixed-point crate; `serde` only for view types | Anything with a clock, an allocator strategy, I/O, async, threads, or floats |
 | `protocol` | The wire. Message types, framing, versioning, sequence numbers | `sim` (for `PlayerView`, `Input`, ids) | `server`, `client`, `anticheat`, any runtime |
-| `replay` | The replay container: format, signing, verification, resimulation. From M4, the corpus on disk and the commands that withdraw a participant from it and audit the result. From M6, the corpus's schema — the session record, the consent version, and the frozen train/holdout split | `sim`; externally, an audited signature crate and a source of entropy for `keygen` | `server`, `client`, `anticheat`, any runtime |
+| `replay` | The replay container: format, signing, verification, resimulation. From M4, the corpus on disk and the commands that withdraw a participant from it and audit the result. From M6, the corpus's schema — the session record, the consent version, and the frozen train/holdout split. From M8, the telemetry companion: the device-event stream, sealed, and the commitment that binds it to a replay | `sim`; externally, an audited signature crate and a source of entropy for `keygen` | `server`, `client`, `anticheat`, any runtime |
 | `server` | Authority. Tick loop, the clock, sockets, sessions, fog application, telemetry capture, replay recording | `sim`, `protocol`, `replay`, `anticheat`, a runtime | `client`, `cheat-client` |
 | `client` | Presentation. Rendering, **input capture**, prediction, reconciliation | `sim`, `protocol`, a runtime, a window library and a framebuffer; plus `server` and `replay` as dev-dependencies for the M3 and M4 exit harnesses | `server`, **`anticheat`**, `replay`'s signing keys |
 | `anticheat` | Detection. Feature extraction from telemetry, detectors, thresholds, evidence bundles | `sim`, `replay`; plus `cheat-client`, `server` and `protocol` as dev-dependencies for the detector suite | `server` (it is called by the server, not the reverse), `client`, any network or filesystem I/O outside `src/bin` |
@@ -1020,10 +1020,16 @@ that accepts a signed and an unsigned container accepts the weaker one, and a
 corpus holding both holds files nobody can tell apart at a glance. The unsigned
 one is precisely the artefact somebody would later hand you as evidence.
 
-The `replay` binary is the tool: `replay verify <replay> <keys>` is M3's separate
-process and M4's exit criterion, `replay keygen` and `replay inspect` are the
-operator's, and `replay withdraw` / `replay audit` are the consent regime's
-teeth. M6 adds the three that operate a recording session — `replay enrol`,
+The `replay` binary is the tool: `replay verify <replay> <keys> [<telemetry>]` is
+M3's separate process and M4's exit criterion, `replay keygen` and `replay inspect`
+are the operator's, and `replay withdraw` / `replay audit` are the consent
+regime's teeth. The companion is a **third argument rather than a file `verify`
+goes looking for**, and both halves of that are decisions: a replay is verifiable
+without one, so searching a directory would turn a legitimate absence into a
+question about where somebody put a file; and accepting a companion found beside a
+replay would be accepting a binding the replay never made. Handed none, `verify`
+prints which of the two legitimate states the replay is in and checks nothing
+else. M6 adds the three that operate a recording session — `replay enrol`,
 `replay store` and `replay census`. They share a binary because
 `docs/ENGINEERING.md` prefers five automations understood to fifteen endured and
 this document refuses a crate for a handful of commands; they operate on
@@ -1106,6 +1112,69 @@ player identity beyond the pseudonym. No score or derived summary, because a
 field restating a derivable fact is a field that can disagree with it. And no
 client version, because the client is assumed compromised and the build that
 matters is the one that resolved the match.
+
+**The one field the freeze had to gain, and the shape it was given.** M8 keeps
+the device stream after all, and the manifest carries its **digest** rather than
+its contents: `telemetry: Commitment`, one tag byte and thirty-two, at a constant
+width present or absent. Every absence above survives — the stream is still not
+in the replay, and a resimulation is still a function of the seed and the log
+alone — and what the commitment adds is that a companion cannot be substituted
+and a replay stays verifiable without one. The container format is 2 and there is
+no reader for 1: no corpus holds one, and a build that read both would be the
+two-formats mistake this document already refuses, arriving through a version
+number instead of a second magic.
+
+### The telemetry companion
+
+```rust
+pub struct TelemetryManifest {         // signed, exactly as the replay's is
+    pub match_id: MatchId,
+    pub server_identity: VerifyingKey, // must be the key that sealed the replay
+    pub started_at_unix_ms: u64,
+    pub seats: [Option<SeatTrace>; PLAYER_COUNT],
+    pub stream_digest: Digest,         // the body: every seat's records, in seat order
+}
+
+pub struct Telemetry { pub manifest: TelemetryManifest, pub signature: Signature, pub log: TelemetryLog }
+
+pub enum Event {                       // one record, 25 bytes whatever it holds
+    Moved { dx: f64, dy: f64 },        // the device's own units, by their bits
+    Pressed { control: Control, down: bool },
+    Viewed { tick: Tick, seq: u32 },   // the only record that is not the hand
+}
+
+/// The companion is sealed first; the replay then commits to its digest.
+pub fn seal(log: &TelemetryLog, session: &SessionFacts, key: &SigningKey) -> Telemetry;
+pub fn verify(replay: &Replay, telemetry: &Telemetry, keys: &KeyRegistry)
+    -> Result<TelemetryVerified, TelemetryError>;
+```
+
+`docs/SCHEMA.md` §11 is the schema, the field list and the size budget. Three
+things belong here because they are about the code rather than about the corpus.
+
+**`TelemetryLog` has no encoding and `seal` is the only path to a disk**, which is
+`Recording`'s arrangement one file over and for the same reason: a second,
+unsealed container is precisely the artefact somebody hands you as evidence. The
+one exception is a client's `*.telemetry-part`, and it is forced rather than
+chosen — `client` may not link `replay`, which owns the signing key, so a client
+cannot sign anything at all. A part names one seat, is consumed at sealing, and is
+**not a corpus artefact**: `Corpus::audit` reports a match directory holding a
+file `docs/SCHEMA.md` §1 does not name, which is the only check that can reach an
+artefact carrying no pseudonym.
+
+**`TelemetryError` has one variant per check and the checks run in order**, which
+is `VerifyError`'s arrangement and buys the same property: nine tamper cases are
+nine answers rather than one repeated. The first and the last are the two a replay
+has no analogue for — `NotCommitted`, because absence is *signed* and therefore
+cannot be quietly upgraded, and `Substituted`, because an attacker holding an
+accepted key can seal a second internally perfect companion for the same match and
+the only thing that refuses it is that the replay named other bytes first.
+
+**The order of sealing is fixed by the direction of the commitment.** The
+companion is sealed, then the replay commits to its digest. That is why the
+assembly lives in `moba-server` — the process holding both the key and the
+recording — and why a companion whose parts have not all arrived produces
+`Commitment::Absent` rather than a file covering some of the seats.
 
 **Sealing happens outside `Match`.** The authority has no clock, no socket and no
 identity — that is what makes it a function of its inputs and what every
@@ -1491,13 +1560,22 @@ Each is a test or a lint, not a convention:
    the rules.
 
 14. **A replay sealed on one target is byte-identical on the other two, and
-   verifies there.** The layer M5 adds above `State::digest`: a manifest's
-   encoding, a log's encoding and a signature over them are three new places a
-   platform can differ, and a log recorded on one machine and verified on another
-   is what a replay is for. `replay/tests/sealed.rs` carries bytes sealed on
-   Linux and committed, and the `determinism` workflow requires byte equality
-   with them on all three targets. Encoding the seed little-endian turns it red
-   with both hex strings printed.
+   verifies there — and so is its telemetry companion.** The layer M5 adds above
+   `State::digest`: a manifest's encoding, a log's encoding and a signature over
+   them are three new places a platform can differ, and a log recorded on one
+   machine and verified on another is what a replay is for.
+   `replay/tests/sealed.rs` carries bytes sealed on Linux and committed, and the
+   `determinism` workflow requires byte equality with them on all three targets.
+   Encoding the seed little-endian turns it red with both hex strings printed.
+
+   **The companion is a file and the three places are the same three**, so it is
+   in the same fixture and the same job. What is new in the middle one is an
+   `f64` pair per record written by `to_bits`: exactly specified by IEEE-754 and
+   therefore precisely the shape of claim `RISKS.md` R1's negative control exists
+   to distrust rather than assume, which is why the fixture's deltas are at the
+   ends of the domain rather than whole numbers. The same test also executes the
+   substitution: a second companion for the same match, honestly sealed by the
+   fixture's own key, refused because the committed replay named other bytes.
 
 15. **A match the consent regime cannot account for does not enter the corpus,
    and the refusal is at the door.** `Corpus::store` refuses eight ways —
@@ -1537,6 +1615,35 @@ Each is a test or a lint, not a convention:
    front of it describes somebody's session and nobody can say whose.
    `replay/tests/withdrawal.rs` breaks the withdrawal on both files and plants an
    index besides.
+
+17. **The device stream is a sealed file the replay commits to by digest, and a
+   withdrawal reaches it.** `RISKS.md` R3 and `docs/SCHEMA.md` §11. It is the
+   richest personal information in this corpus and it names **no pseudonym**,
+   which is deliberate — the signed manifest stays the one naming of a person —
+   and is exactly what makes it unreachable by the audit's byte search. Two
+   clauses close that:
+
+   - `Corpus::accountable` requires the telemetry state to be **coherent**: the
+     replay commits to a companion and the companion is there and is that one, or
+     it commits to none and there is none. A stream with no manifest in front of
+     it is the same orphan the session record was, in a richer form.
+   - …and requires the match directory to hold **nothing else**, which is
+     `docs/SCHEMA.md` §1's rule enforced for the first time. The case it is
+     really about is a client's `*.telemetry-part` left behind by an interrupted
+     collection: one seat's hand movements, naming nobody, that no search for a
+     pseudonym in any corpus would ever report.
+
+   Both were exercised by breaking the destruction on purpose —
+   `an_audit_catches_a_withdrawal_that_left_the_telemetry_companion_behind` removes
+   the two files a search *could* find and leaves the stream, and the audit
+   reports the directory for every pseudonym including one the corpus has never
+   held.
+
+   And the two files that describe one seat cannot drift: `Corpus::store` refuses
+   a session record and a companion that disagree about a seat's device-event
+   count, its motions, its clock, its platform or its sensitivity. Neither is
+   derived from the other — the summary is what survives when there is no
+   companion — so nothing but that refusal would notice.
 
 ## Deliberate non-abstractions
 

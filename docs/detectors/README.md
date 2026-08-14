@@ -5,7 +5,12 @@ signals that have none.
 
 **Read this first, and it is the whole of the milestone in one line: not one
 threshold in this repository has been calibrated, and none can be until nine
-people have played twenty matches.** The detectors exist, they respond to the
+people have played twenty matches.** Two of the five candidate signals below were
+recorded here as *not buildable* and are now *buildable and not built*: the
+quantity they need reaches the corpus since `docs/SCHEMA.md` §11 added the
+telemetry companion. Nothing about the sentence above changes — a signal that
+exists and a threshold that has been chosen are different things, and the second
+still waits on nine people. The detectors exist, they respond to the
 exploits they were born with, they are quiet against the controls, and they emit
 a score and an evidence bundle. What they do not emit is a decision, and
 `Finding::for_review` answers `None` rather than `false` so that they cannot.
@@ -62,57 +67,66 @@ not in the corpus, at any resolution.
 
 | Candidate | Verdict |
 | --- | --- |
-| input inter-arrival distribution and quantisation | **Not buildable.** See below |
+| input inter-arrival distribution and quantisation | **Buildable, not built.** The quantity is in the corpus since `docs/SCHEMA.md` §11; nothing here reads it yet. See below |
 | reaction latency floor | Built — [`reaction-floor`](reaction-floor.md) |
-| aim-correction trajectory curvature | **Not buildable.** See below |
+| aim-correction trajectory curvature | **Buildable, not built**, for the same reason and with one caveat of its own. See below |
 | claimed-versus-observed timestamp drift | Built — [`clock-divergence`](clock-divergence.md) |
-| account progression coherence across matches | Not built. Needs a corpus spanning months of the same people, which is the calendar M6 is bound by; and its null model — "a person's skill moves slowly" — cannot be stated from nine people |
+| account progression coherence across matches | **Not buildable, and no format fixes it.** Needs a corpus spanning months of the same people, which is the calendar M6 is bound by; and its null model — "a person's skill moves slowly" — cannot be stated from nine people |
 
 And one M8 did not name, which fell out of the reaction extraction and is worth
 a page of its own: [`reaction-dispersion`](reaction-dispersion.md).
 
-### Why "input inter-arrival distribution and quantisation" has no distribution to read
+**"Buildable" is a much weaker word than "built", and the two sections below are
+kept rather than deleted** because what they were right about is the part worth
+having. They said these two detectors were blocked by a *format* rather than by a
+threshold nobody had chosen, and they were right; the format changed. What has not
+changed is that no corpus has been recorded, so a detector written against this
+would have a threshold chosen on nothing — which is the reason M6 gives for
+building none, and it applies here exactly as it applies everywhere else on this
+page.
+
+### Why "input inter-arrival distribution" had no distribution to read, and what changed
 
 The client records **every device event**, unconditionally, at the device's own
 125 Hz to 1 kHz, with a per-event timestamp — `docs/RISKS.md` R14 is the entry
 that rebuilt the capture path to make that true, and it measured the residual the
 client itself adds at 16 µs of standard deviation.
 
-**That stream does not reach the corpus.** `replay/src/manifest.rs` keeps it out
-of the artefact resimulation is a function of, deliberately and permanently: `sim`
-consumes one intention per tick at 30 Hz, and folding a kilohertz stream into the
-file a resimulation is a function of would have made the resimulation a function
-of something no rule reads. `docs/SCHEMA.md` §3 says the same thing from the
-schema's side, and §4b is what does reach the corpus — four summary numbers per
-seat per match: `samples`, `motions`, `coincident`, `median_gap_ns`.
+**That stream did not reach the corpus, and now it does.**
+`replay/src/manifest.rs` kept it out of the artefact resimulation is a function of
+— `sim` consumes one intention per tick at 30 Hz, and folding a kilohertz stream
+into that file would have made the resimulation a function of something no rule
+reads. That argument was and is correct, and it was never an argument for keeping
+the stream out of the *corpus*: `docs/SCHEMA.md` §11 puts it in a second sealed
+file the replay's manifest commits to by digest, which leaves the resimulation
+exactly where it was.
 
-So what exists is a *summary*, not a distribution. `median_gap_ns` read against
-the declared `device_polling_hz` is a one-number consistency check on a
-declaration, which `docs/SCHEMA.md` §4b already describes and which is not a
-behavioural detector.
+What is in the corpus now, per seat per match, is every device event with its own
+timestamp: the distribution rather than §4b's four summary numbers. What is left
+at the *intention* rate still is not the hand — a client sends exactly one
+intention per tick whatever the player is doing, which
+`docs/ARCHITECTURE.md`'s traffic-shape invariant makes a property of the protocol
+— so a detector on this signal reads the companion and not the replay's log.
 
-What is left at the *intention* rate is not the hand. A client sends exactly one
-intention per tick whatever the player is doing — `docs/ARCHITECTURE.md`'s
-traffic-shape invariant makes that a property of the protocol rather than of the
-player — so the inter-arrival time of the inputs in a replay is the tick period
-plus the network, for a bot and for a person alike.
+**What this does to `evdev`, and the answer is "not yet, and the device decides".**
+The paragraph that used to sit here reasoned that the corpus's own timestamps are
+whole milliseconds and the finest quantity any detector reads is a 33.3 ms tick,
+so a 16 µs residual is three orders below anything in scope. That arithmetic was
+right and it was arithmetic about a *format*: it concluded such a detector "cannot
+exist, because the stream is not in the corpus", which was a statement about a
+recording policy wearing the clothes of a statement about the system.
+`docs/RISKS.md` R14 now says so in its own words.
 
-**This does not reopen `evdev`.** R14 left one condition for reopening it: a
-detector at M8 turning out to depend on a quantity at the scale of a millisecond.
-Nothing here does, and the reason is worth stating precisely rather than
-asserting. The corpus's own timestamps are **whole milliseconds**, and the finest
-quantity any detector here reads is a tick, which is 33.3 ms. The capture path's
-16 µs residual sits sixty times below the field it is written into and three
-orders below the tick. **The binding resolution is the record's, not the
-client's**, so a per-platform input stack would buy nothing any detector in scope
-could spend.
+The live version of the question is the polling rate. At 125 Hz the gap between
+two device events is 8 ms and the client's residual is a fraction of a per cent of
+it; at 1 kHz the gap is 1 ms, a worst pass of the capture loop is five reports
+stamped microseconds apart, and the recorded distribution acquires a
+burst-and-stall structure belonging to the client's scheduler. So: **a detector
+here stratifies by declared polling rate or its page says it did not**
+(`docs/SCHEMA.md` §11f), and R14 reopens on a detector that needs a 1 kHz seat's
+distribution and cannot be stated over a stratum instead.
 
-The thing that *would* reopen it is a detector over the device stream itself —
-and that detector cannot exist, because the stream is not in the corpus. Naming
-it rather than assuming it absent is the obligation R14's own third clause
-imposes.
-
-### Why an aim-curvature detector has no trajectory to read
+### Why an aim-curvature detector had no trajectory to read, and what changed
 
 `docs/RISKS.md` R14 closed the *resolution* half of this: a device count is 0.05
 world units where a character cell was 1.158 across and 4.111 down, so aim is no
@@ -121,29 +135,38 @@ longer quantised to a grid the renderer chose. R14 recorded that as a permission
 corpus" — and it was right about what it said. It was a statement about
 resolution.
 
-**The blocker is the rate and the send policy, not the resolution.** Two facts,
+**The blocker was the rate and the send policy, not the resolution.** Two facts,
 neither of which is a defect:
 
 1. The aim path lives in `client::input::InputTrace`, which is the kilohertz
-   stream above, and it is not in the corpus.
+   stream above.
 2. The aim reaches the wire **only at the moment of a click**.
    `client::play::Play::intention` returns the *standing* order repeated, and the
    standing order changes when a control is pressed. So a replay holds the aim
    point at the instants a player committed to something — a few per second at
    most — and nothing in between.
 
-A curvature statistic over those points is the curvature of a click sequence, not
-of a hand. `docs/SCHEMA.md` §4d.3 is right that shape statistics are the
-strongest position available, being scale-invariant and therefore immune to the
-per-participant CPI declaration — and there is no shape in the corpus to compute
-one over.
+The second is unchanged and will stay unchanged: `docs/SCHEMA.md` §11 does not
+touch the send policy, because touching it would change what `sim` consumes and
+therefore the digests, the format and every replay recorded under it, and it is
+unnecessary since the companion carries the quantity. A curvature statistic over
+the *log's* points is still the curvature of a click sequence.
 
-**What would change that is a second artefact beside the replay**, carrying the
-device trace, which is a new collection of personal information and therefore a
-new purpose, a new consent version and a new retention decision
-(`docs/CONSENT.md` §2 already promises the finer stream "will be a separate thing
-to be asked for separately"). That is a decision for a milestone with people in
-it, not a gap this one can close.
+The first is what changed. The companion holds the raw deltas the aim is
+integrated from, in the device's own units, at the device's own rate, with
+`world_units_per_count_e6` beside them — so the trajectory is reconstructible and
+it is reconstructible at 0.05 world units per count rather than at a click.
+`docs/SCHEMA.md` §4d.3 is right that shape statistics are the strongest position
+available, being scale-invariant and therefore immune to the per-participant CPI
+declaration, and there is now a shape to compute one over.
+
+**What the companion deliberately does not give it**, since a page that only
+reported the good news would be this project handling its reader: the deltas are
+quantised by nothing here, but they are quantised *upstream* by whatever the
+platform's unaccelerated path does — Wayland reports in 1/256 of a count, X11 in
+FP16.16, Windows in whole counts for raw mouse input — and `platform` is recorded
+per seat precisely because that differs. A curvature detector pooling two
+platforms has a covariate in it, in the same register as the polling rate above.
 
 ## What the exploit suite establishes, and the half no arrangement of bots pays
 

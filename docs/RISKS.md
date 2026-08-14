@@ -143,6 +143,37 @@ as a release asset or a separate repository, never committed to git history,
 because deleting a committed file does not delete it. Default to publishing
 derived statistics only.
 
+### What M8 added, and it is the largest collection this project makes
+
+The hedge and the M6 machinery below are unchanged and all of it still applies.
+What changed is the **volume and the kind** of what is held: `docs/SCHEMA.md` §11
+adds a sealed companion carrying every device event at the mouse's own 125 Hz to
+1 kHz, per seat, per match. That is one to two orders of magnitude more data than
+a replay and it is a different thing — it describes the movement of a hand rather
+than the decisions of a player, and it is distinctive in the way this entry's own
+first paragraph says input telemetry is: *behavioural biometrics*.
+
+Three consequences, and none of them is new machinery:
+
+- **The consent text names it, before it is collected.** `docs/CONSENT.md` §2b,
+  in a participant's words: what is recorded, at what rate, and what can be
+  worked out from it. The document's version moved, so the tooling refuses any
+  match whose participants signed the older text — which is this risk's existing
+  mechanism doing exactly the job it was built for, on the first occasion that
+  actually needed it.
+- **It is destroyed by the same withdrawal**, because it lives inside the match
+  directory a withdrawal removes whole. It names **no pseudonym**, so a search
+  for a name cannot find one left behind; `Corpus::accountable` is what reaches
+  it instead, and `replay/tests/withdrawal.rs` breaks the destruction on purpose
+  to prove that it does.
+- **The distinction that keeps this outside the biometric-database regime is
+  unchanged and is worth re-reading against the new data.** This corpus is
+  collected to calibrate detectors and never to verify or confirm anyone's
+  identity. A stream of hand movements would make an identity check *easier* than
+  the old summary did, which is precisely why the sentence below matters more
+  now than it did: if this project ever uses input biometrics to authenticate a
+  player, arts. 44–45 attach and this risk is reopened.
+
 ### What M6 added, and the one thing it made mechanical
 
 The hedge above is a page of text, a mapping held outside the repository, and a
@@ -207,6 +238,17 @@ that took the match's length from the log would be taking it from the part an
 attacker shortens. The signed bytes are the magic, the format and the manifest,
 so a file cannot be re-labelled as another format's and re-parsed under different
 rules while keeping a signature that verifies.
+
+**And the companion the manifest commits to, which is this entry's shape one
+level down.** `docs/SCHEMA.md` §11 puts the device stream in a second sealed
+file, and the manifest carries its **digest**. That answers the same three
+failure modes for the same reasons: a companion cannot be resubmitted under
+another match, no unregistered party can mint one that a replay will accept, and
+a companion is distinguishable from a second companion of the same match — which
+is the one that matters, because an attacker holding an accepted key can seal a
+smoother stream and everything in that file is internally true. The absence of a
+companion is a **signed** state rather than a missing file, so it cannot be
+upgraded afterwards either.
 
 **Key rotation is implemented as this entry demands and the demand is the
 unobvious half.** A retired key still verifies what it sealed; the registry
@@ -730,7 +772,12 @@ below it is what closed it.
 - **The aim-resolution half is closed.** A curvature detector at M8 is now a
   detector that may be written against this corpus. That is a permission and not
   a promise: `SCOPE.md` still reserves "delivered" for a class with an exploit
-  failing against it in CI, and nothing here says the detector will work.
+  failing against it in CI, and nothing here says the detector will work. **And
+  a permission was not sufficient**, which took until M8 to notice: the
+  resolution was there and the *trajectory* was not, because the aim reaches the
+  wire only at the instant of a click and the stream it is integrated from was
+  not kept. `docs/SCHEMA.md` §11 is what keeps it, and the section above is what
+  that did to this entry's own reopening condition.
 - **The timestamp half is quantified and closed as a live risk.** See the
   section below, which is the measurement it was closed on. The substitution
   itself stands and is unchanged: no platform in `ENGINEERING.md`'s matrix hands
@@ -843,11 +890,10 @@ reader stops asking:
   of a `/dev/input` permission each participant has to be granted and a corpus
   whose timestamps mean different things on the two platforms it is recorded on.
   That was a defensible trade against an unmeasured residual. Against 16
-  microseconds it is not a trade at all. **This reopens only if a detector at M8
-  turns out to depend on a quantity at the scale of a millisecond**, which none
-  of the candidates in `MILESTONES.md` M8 does — and the reopening would then be
-  a decision about that detector, taken before M6 or not at all, for the covariate
-  reason the paragraph above this one used to give.
+  microseconds it is not a trade at all. **This reopens only if a detector turns
+  out to depend on a quantity at the scale of a millisecond** — see the section
+  below, which is that clause restated after it turned out to be a decision
+  rather than a fact.
 
 ### The reopening clause, answered at M8 with a number rather than a shrug
 
@@ -876,6 +922,65 @@ numbers per seat. So the reopening condition is not *unmet*; it is
 **unreachable** from what a corpus contains, and the decision that would change
 that is a new collection with its own consent version rather than a change of
 input stack. `docs/detectors/README.md` carries the full account.
+
+### The reopening condition was a decision, not a property — restated at M8
+
+The clause above said `evdev` reopens only if a detector depends on a quantity at
+the scale of a millisecond, and added that none of `MILESTONES.md` M8's
+candidates does. **The second half of that was true only given a recording policy
+that is no longer the policy**, and this entry has to say so in its own words
+rather than leave a reader to find the contradiction.
+
+**What was actually being claimed.** `docs/detectors/README.md` reasoned it out
+at M8 and got the arithmetic right: the corpus's own timestamps were whole
+milliseconds, the finest quantity any detector could read was a tick at 33.3 ms,
+and a 16 µs residual sits three orders below that. It then named the thing that
+would change it — "a detector over the device stream itself" — and concluded such
+a detector could not exist **because the stream was not in the corpus**.
+
+That was a fact about the *format*, not about the system. Nothing in the platform,
+the client or the rules prevented recording the stream; a decision taken at M5 and
+kept at M6 excluded it, and `docs/SCHEMA.md` §11 reverses that decision now, while
+the corpus is still empty. So the honest form of R14's condition is:
+
+> The condition is closed by a **choice of recording format**, revisable for
+> exactly as long as the corpus is empty, and it reopens the moment a detector
+> depends on a quantity at the scale of the residual.
+
+**Does the companion reopen it? At 125 Hz to 500 Hz, no. At 1 kHz, the device
+does.** The arithmetic, which is the part worth having rather than the verdict:
+
+| Polling rate | Gap between two device events | The residual against it |
+| --- | --- | --- |
+| 125 Hz | 8 ms | 16 µs standard deviation is 0.2%; the 0.26 ms worst case is 3% of one gap |
+| 500 Hz | 2 ms | 0.8%; the worst case is 13% of one gap |
+| 1000 Hz | 1 ms | 1.6%; **the worst case is 26% of one gap, and a 5 ms pass of the capture loop is five reports stamped microseconds apart** |
+
+The last row is the live one and it is not about the timestamp's *source*. Five
+device reports that arrive while one pass of the capture loop is running are
+dequeued back to back and stamped back to back, so the recorded inter-arrival
+distribution acquires a burst-and-stall structure that belongs to the client's
+scheduler. A device timestamp would fix exactly that, on Linux, and buy nothing
+on Windows — which is the trade this entry has refused twice, and it is a *closer*
+trade at 1 kHz than it was at 8 ms.
+
+**What is taken instead, and why it is enough for now.** The rate is a covariate
+the corpus already carries: `device_polling_hz` is declared per seat and
+`median_gap_ns` is measured beside it, `replay census` prints the declared rates
+with the sentence saying what pooling them costs, and `docs/SCHEMA.md` §11f
+states the rule — a detector reading an inter-arrival distribution stratifies by
+polling rate or says it did not. That is a covariate honestly recorded rather than
+a residual removed, and it is the weaker answer; it is taken because the stronger
+one is a second input stack, a permission every participant must be granted, and
+a corpus whose timestamps mean two things on the two platforms it is recorded on.
+
+**Reopened by**, and this is now the whole list: a detector at M8 whose null model
+reads the inter-arrival distribution of a 1 kHz seat and cannot be stated over a
+stratum instead; or `winit` gaining a device timestamp, which would make the
+question moot on three of four backends at no cost at all. Either is a decision
+about a specific detector, taken **before the first recording session** or not at
+all, because the covariate this is about cannot be removed from a corpus
+afterwards.
 
 **One more thing this found, and it is the reason to measure rather than
 argue.** The first run of the new client reported a median inter-arrival of

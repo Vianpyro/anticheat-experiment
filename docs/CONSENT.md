@@ -1,6 +1,6 @@
 # CONSENT
 
-consent-version: 2026-08-14
+consent-version: 2026-08-15
 
 The text every participant reads and agrees to **in writing, before the first
 recording**, and the rules this project holds itself to afterwards.
@@ -30,6 +30,35 @@ of its own files.
 the two disagree, and `ci` refuses a pull request that edits this document
 without raising it. The paper is still paper. What has changed is that its
 **absence is now a mechanical error**.
+
+The date is the day this text takes effect rather than the day it was written,
+and the two differ by one here because the version before it was written on the
+day it was superseded and a version has to move strictly forward. No session has
+been recorded under either, so nothing turns on the difference; it is recorded
+because a reader who notices a document dated after its own commit is entitled
+to an explanation.
+
+### What changed in this version, and why it needed one
+
+**§2b is new: the corpus now keeps the whole device stream**, at the mouse's own
+report rate, and not only the one instruction per tick the previous version
+described. That is a materially larger collection — `docs/SCHEMA.md` §11 has the
+field list and the arithmetic — and the previous text's own promise was that if
+the finer stream were ever needed it would be asked for separately and this text
+would say so *before* it was collected. Raising the version is what makes that
+promise mechanical rather than remembered: `Corpus::store` refuses a match whose
+participants consented under `2026-08-14`, so agreement to the older text cannot
+be carried forward by the silence of a file.
+
+**It is not a second opt-in, and that is a decision rather than an omission.**
+The publication box exists because it is genuinely refusable: a participant can
+refuse it and everything else about their participation is unchanged. A box for
+the device stream would not be, in either direction. Refusing it leaves a
+recording the declared purpose cannot use, so the choice is between taking part
+and not — and offering a tick box for a choice that is really "participate or
+do not" is the kind of handling this project criticises elsewhere. So §2b says
+in the participant's own words what refusing means, and there is one signature
+rather than two.
 
 This document is engineering, not legal advice. Whether Quebec's *Act respecting
 the protection of personal information in the private sector* (Law 25) formally
@@ -95,13 +124,54 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 > The two timestamps are collected separately and deliberately: the difference
 > between them is one of the signals the project is studying.
 >
-> **One input per thirtieth of a second, and no more.** Your mouse and keyboard
-> report far more often than that — several hundred times a second — and while
-> you are playing, the game on your own machine reads all of it. None of that
-> reaches a replay file: what is recorded is the one instruction the game acted
-> on in each thirtieth of a second, and the two timestamps above. If a future
-> part of this project ever needs the finer stream, it will be a separate thing
-> to be asked for separately, and this text will say so before it is collected.
+> **2b. Every movement of your hand, hundreds of times a second.**
+>
+> This is the part to read slowly, because it is the largest thing on this page
+> and it was not collected before this version of the text.
+>
+> Above, the replay records the one instruction the game acted on in each
+> thirtieth of a second. Your mouse reports far more often than that — between
+> **125 and 1000 times a second**, depending on the mouse — and the game on your
+> machine reads all of it. **All of it is now kept**, in a second file beside the
+> replay, one section per seat:
+>
+> | Recorded | What it is |
+> | --- | --- |
+> | Every movement your mouse reports | How far it moved right and how far it moved down, in the mouse's own units, exactly as your computer reported it — not rounded, not smoothed, not converted |
+> | The moment of each one | Measured by a stopwatch inside the game, started when the game started. Not the time of day, and not comparable to anybody else's |
+> | Every press and release | Of the five controls the game uses — left click, right click, `Q`, `W`, `S` — including presses that did nothing |
+> | Every frame that arrived | Which thirtieth of a second it was for, and which instruction you sent back. Thirty a second. This is the only line in the file that is not your hand: it is what lets the project tell *when you were shown something* from *when you answered*, and without it nothing about your reaction time can be measured at all |
+>
+> **What can be worked out from this.** The shape and speed of the way you move
+> a mouse: how you accelerate, where you overshoot and correct, how steady your
+> rhythm is, how long you take to react to something appearing on screen. Taken
+> together, that is **distinctive** — closer to handwriting than to a
+> preference. Somebody holding this file and a second recording of you could
+> plausibly tell that the two are the same person. That is precisely why the
+> project wants it: telling a person from a program is the whole subject, and
+> this is the data that difference lives in.
+>
+> **What is not in it.** No key you pressed outside those five. No text, ever.
+> No screen capture, no image, no sound. Nothing about where the mouse pointer
+> is on your desktop, nothing about the size of your window or your monitor,
+> nothing from any other program, nothing from before the match or after it. The
+> file records the movement, and only during the match.
+>
+> **If you would rather this were not recorded, the honest answer is not to take
+> part.** This is not offered as a separate box you can untick, and pretending
+> otherwise would be dishonest: the project's declared purpose is calibrating
+> detectors that read exactly this, and a recording without it would not be
+> usable for the thing you are being asked to help with. It is one refusal and
+> it refuses everything, which is your right and costs you nothing. (The
+> publication box at the end is different, and genuinely optional.)
+>
+> **Why this is a new version of this document.** An earlier version of this text
+> said that only one instruction per thirtieth of a second was kept, and promised
+> that if the finer stream were ever needed it would be asked for separately and
+> this text would say so before it was collected. This is that. Nobody's earlier
+> agreement carries over: the project's own tooling refuses to store any match
+> whose participants signed a different version of this page, so consent to the
+> old text is not consent to this one and cannot be mistaken for it.
 >
 > **3. What is recorded about the equipment you played on.**
 >
@@ -155,8 +225,8 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 >
 > **What is not collected:** no audio, no video, no screen capture, no chat, no
 > IP address in the corpus, no hardware identifiers, no device models or serial
-> numbers, no operating-system versions, no files from your machine, and nothing
-> at all outside the match.
+> numbers, no operating-system versions, no files from your machine, no keys
+> outside the five the game uses, and nothing at all outside the match.
 >
 > **This is still information about you.** Replacing your name with an opaque
 > identifier is a security measure, not a change of category: input timing is
@@ -165,9 +235,10 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 >
 > **5. How long it is kept, and what triggers deletion.**
 >
-> Raw telemetry, the recordings containing it, and the pseudonym mapping are
-> destroyed **24 months after the recording**, or when you withdraw, whichever
-> comes first. The date is written into your consent record when you sign it.
+> Raw telemetry — including the movement file in 2b, which is the largest part
+> of it — the recordings containing it, and the pseudonym mapping are destroyed
+> **24 months after the recording**, or when you withdraw, whichever comes first.
+> The date is written into your consent record when you sign it.
 >
 > Statistics that identify nobody — distributions, counts, thresholds and the
 > numbers in the project's documents — are kept without a time limit. This is
@@ -190,8 +261,9 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 > person's inputs leaves a log that no longer replays, so removing only your part
 > is not something this project can offer.
 >
-> Withdrawing therefore destroys **every match you played in, in full**, together
-> with your pseudonym mapping and your consent record. That includes the other
+> Withdrawing therefore destroys **every match you played in, in full** — the
+> replay, the equipment record, and the movement file in 2b — together with your
+> pseudonym mapping and your consent record. That includes the other
 > eight players' contributions to those matches. They are not asked and are not
 > notified.
 >
