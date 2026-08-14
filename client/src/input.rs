@@ -51,7 +51,7 @@
 //!
 //! # 3. One sample per device event, never one sample per change
 //!
-//! [`InputTrace::motion`] appends unconditionally. It does not ask whether the
+//! [`InputTrace::moved`] appends unconditionally. It does not ask whether the
 //! aim moved, whether the drawn position changed, or whether a frame was due.
 //!
 //! This is the property the terminal could not have and the one R14 did not
@@ -164,7 +164,12 @@ impl Control {
     /// The byte this control is recorded as. Written out rather than derived
     /// from the discriminant, so that reordering the enum cannot silently
     /// reinterpret a recorded trace.
-    const fn tag(self) -> u8 {
+    ///
+    /// Public because it is part of the corpus's format now:
+    /// `crate::health::telemetry_part` writes it and
+    /// `replay::telemetry::Control::from_tag` reads it.
+    #[must_use]
+    pub const fn tag(self) -> u8 {
         match self {
             Self::Move => 0,
             Self::Attack => 1,
@@ -177,7 +182,7 @@ impl Control {
 
 /// What one device event was.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Motion {
+pub enum Event {
     /// A relative movement, in the device's own units, exactly as reported.
     ///
     /// Not pixels: on every backend this client uses, these are the
@@ -200,16 +205,50 @@ pub enum Motion {
         /// Down, or up.
         down: bool,
     },
+    /// **The one thing in this trace that is not the hand.**
+    ///
+    /// A server view for `tick` reached this client and the client answered it
+    /// with the intention numbered `seq`. Thirty a second, against the device's
+    /// hundreds; `docs/SCHEMA.md` §11 carries what that costs.
+    ///
+    /// It is here because a device stream without it is a hand in a vacuum. An
+    /// inter-arrival distribution and a curvature statistic can be computed from
+    /// motions alone; a **reaction** cannot, because a reaction is measured from
+    /// the moment the player was shown something, and the only clock on which
+    /// that moment and the click that answered it are both readable is this one.
+    /// `tick` is the replay's clock and `seq` is the replay log's per-player
+    /// counter, so this record is where the two namespaces meet.
+    ///
+    /// **It is not a device event**, and [`InputTrace::stats`] counts it apart
+    /// from them. That distinction is load bearing rather than tidy:
+    /// `docs/SCHEMA.md` §6 refuses a seat that recorded zero device events, which
+    /// is the corpus's one mechanical defence against a headless client — and a
+    /// headless client receives views. Counting these among `samples` would hand
+    /// that defence to the exact attacker it exists to catch.
+    Viewed {
+        /// The tick of the view that arrived.
+        tick: u32,
+        /// The sequence number of the intention sent in answer.
+        seq: u32,
+    },
 }
 
-/// One device event, as it arrived.
+impl Event {
+    /// Whether a device produced this.
+    #[must_use]
+    pub const fn is_device(&self) -> bool {
+        matches!(self, Self::Moved { .. } | Self::Pressed { .. })
+    }
+}
+
+/// One recorded event, as it arrived.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
     /// Nanoseconds on this client's monotonic clock, from the source [`CLOCK`]
     /// names.
     pub at_ns: u64,
     /// What happened.
-    pub motion: Motion,
+    pub event: Event,
 }
 
 /// Every device event of a session, in arrival order.
@@ -247,7 +286,7 @@ impl InputTrace {
     pub fn moved(&mut self, at_ns: u64, dx: f64, dy: f64) {
         self.push(Sample {
             at_ns,
-            motion: Motion::Moved { dx, dy },
+            event: Event::Moved { dx, dy },
         });
     }
 
@@ -255,7 +294,21 @@ impl InputTrace {
     pub fn pressed(&mut self, at_ns: u64, control: Control, down: bool) {
         self.push(Sample {
             at_ns,
-            motion: Motion::Pressed { control, down },
+            event: Event::Pressed { control, down },
+        });
+    }
+
+    /// Records the arrival of a view and the intention that answered it.
+    ///
+    /// Appended into the same sequence as the device events rather than into a
+    /// list beside it, so that the **order** of a click against the frame that
+    /// prompted it is a property of the record rather than of whoever merges two
+    /// lists afterwards. See [`Event::Viewed`] for why it exists and why it is
+    /// not counted as a device event.
+    pub fn viewed(&mut self, at_ns: u64, tick: u32, seq: u32) {
+        self.push(Sample {
+            at_ns,
+            event: Event::Viewed { tick, seq },
         });
     }
 
@@ -308,18 +361,23 @@ impl InputTrace {
         out.extend_from_slice(&dropped.to_be_bytes());
         out.extend_from_slice(&(samples.len() as u64).to_be_bytes());
         for sample in samples {
-            let Sample { at_ns, motion } = sample;
+            let Sample { at_ns, event } = sample;
             out.extend_from_slice(&at_ns.to_be_bytes());
-            match *motion {
-                Motion::Moved { dx, dy } => {
+            match *event {
+                Event::Moved { dx, dy } => {
                     out.push(0);
                     out.extend_from_slice(&dx.to_bits().to_be_bytes());
                     out.extend_from_slice(&dy.to_bits().to_be_bytes());
                 }
-                Motion::Pressed { control, down } => {
+                Event::Pressed { control, down } => {
                     out.push(1);
                     out.push(control.tag());
                     out.push(u8::from(down));
+                }
+                Event::Viewed { tick, seq } => {
+                    out.push(2);
+                    out.extend_from_slice(&tick.to_be_bytes());
+                    out.extend_from_slice(&seq.to_be_bytes());
                 }
             }
         }
@@ -331,18 +389,30 @@ impl InputTrace {
     pub fn stats(&self) -> TraceStats {
         let mut gaps: Vec<u64> = Vec::with_capacity(self.samples.len());
         let mut previous: Option<u64> = None;
+        let mut samples = 0usize;
         let mut moves = 0usize;
+        let mut views = 0usize;
         let mut smallest: Option<f64> = None;
         let mut travelled = 0.0f64;
         let mut coincident = 0usize;
         let mut last_move: Option<(u64, f64, f64)> = None;
 
         for sample in &self.samples {
+            // Over **device events only**. `median_gap_ns` is the number
+            // `docs/SCHEMA.md` §4b requires to be read against the declared
+            // `device_polling_hz`, and a view anchor thirty times a second in the
+            // middle of that distribution would be the client's tick rate showing
+            // up as if it were the mouse's report rate.
+            if !sample.event.is_device() {
+                views = views.saturating_add(1);
+                continue;
+            }
+            samples = samples.saturating_add(1);
             if let Some(last) = previous {
                 gaps.push(sample.at_ns.saturating_sub(last));
             }
             previous = Some(sample.at_ns);
-            if let Motion::Moved { dx, dy } = sample.motion {
+            if let Event::Moved { dx, dy } = sample.event {
                 if let Some((was, x, y)) = last_move
                     && sample.at_ns.saturating_sub(was) < COINCIDENT_NS
                     && x.to_bits() == dx.to_bits()
@@ -389,8 +459,9 @@ impl InputTrace {
         };
 
         TraceStats {
-            samples: self.samples.len(),
+            samples,
             moves,
+            views,
             span_ns: match (self.samples.first(), self.samples.last()) {
                 (Some(first), Some(last)) => last.at_ns.saturating_sub(first.at_ns),
                 _ => 0,
@@ -471,10 +542,13 @@ impl Percentiles {
 /// What a captured trace measures, reported rather than asserted.
 #[derive(Clone, Copy, Debug)]
 pub struct TraceStats {
-    /// Device events recorded, of every kind.
+    /// Device events recorded, of every kind. **Anchors are not among them**;
+    /// see [`Event::Viewed`] for why the distinction has teeth.
     pub samples: usize,
     /// Motion events among them.
     pub moves: usize,
+    /// [`Event::Viewed`] anchors, counted apart from the device events.
+    pub views: usize,
     /// Nanoseconds between the first sample and the last.
     pub span_ns: u64,
     /// Inter-arrival times, in nanoseconds.

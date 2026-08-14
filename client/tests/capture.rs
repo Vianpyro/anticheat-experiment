@@ -17,7 +17,7 @@
 #![deny(unsafe_code)]
 
 use client::draw::Viewport;
-use client::input::{Aim, Control, InputTrace, Motion, WORLD_UNITS_PER_COUNT};
+use client::input::{Aim, Control, Event, InputTrace, WORLD_UNITS_PER_COUNT};
 use client::play::{Aiming, Play};
 use sim::view::{OwnView, PlayerView};
 use sim::{Cooldowns, Fx, Liveness, Outcome, RULES, Seat, Tick, base_position, champion_entity_id};
@@ -219,7 +219,7 @@ fn every_device_event_is_recorded_even_when_nothing_visibly_moves() {
         play.trace()
             .samples()
             .iter()
-            .all(|sample| matches!(sample.motion, Motion::Moved { .. })),
+            .all(|sample| matches!(sample.event, Event::Moved { .. })),
         "something other than motion reached the trace"
     );
 }
@@ -339,9 +339,9 @@ fn the_record_is_in_the_devices_units_and_the_aim_is_not() {
         .trace()
         .samples()
         .iter()
-        .filter_map(|sample| match sample.motion {
-            Motion::Moved { dx, .. } => Some(dx),
-            Motion::Pressed { .. } => None,
+        .filter_map(|sample| match sample.event {
+            Event::Moved { dx, .. } => Some(dx),
+            Event::Pressed { .. } | Event::Viewed { .. } => None,
         })
         .sum();
     assert!(
@@ -459,15 +459,15 @@ fn a_release_is_a_device_event_too() {
     let samples = play.trace().samples();
     assert_eq!(samples.len(), 2);
     assert_eq!(
-        samples[0].motion,
-        Motion::Pressed {
+        samples[0].event,
+        Event::Pressed {
             control: Control::Move,
             down: true
         }
     );
     assert_eq!(
-        samples[1].motion,
-        Motion::Pressed {
+        samples[1].event,
+        Event::Pressed {
             control: Control::Move,
             down: false
         }

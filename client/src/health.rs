@@ -331,6 +331,113 @@ impl SessionPart {
     }
 }
 
+/// The magic a telemetry part starts with. `replay::telemetry`'s reader is the
+/// other half.
+pub const TELEMETRY_PART_MAGIC: [u8; 8] = *b"MOBATPRT";
+
+/// The telemetry part format this build writes.
+pub const TELEMETRY_PART_FORMAT: u16 = 1;
+
+/// One record's width, which is the same for all three kinds.
+pub const TELEMETRY_SAMPLE_BYTES: usize = 1 + 8 + 16;
+
+/// The file name one seat's telemetry part is written under.
+///
+/// **No pseudonym**, for the reason [`SessionPart::file_name`] gives, and a
+/// different extension from the session part's because the two go to different
+/// places at different times: the telemetry part is read by whoever *seals*,
+/// before the replay exists, and the session part by `replay store`, after it
+/// does.
+#[must_use]
+pub fn telemetry_part_name(seat: sim::Seat) -> String {
+    format!("seat-{}.telemetry-part", seat.index())
+}
+
+/// One seat's device stream, as the bytes `replay::telemetry::TelemetryPart`
+/// reads.
+///
+/// # Why this is written here and by hand
+///
+/// The same reason [`SessionPart::encode`] is: `docs/ARCHITECTURE.md` forbids
+/// `client` a normal dependency on `replay`, because `replay` owns the signing
+/// key and a client that can link it is a client that can seal a replay. So the
+/// two crates cannot share a type and the record crosses the boundary as bytes,
+/// hand-written on both sides. `client/tests/telemetry_part.rs` is what closes
+/// the coupling: it links both through a dev-dependency and requires this writer
+/// and that reader to agree sample for sample, including on a trace holding all
+/// three kinds of record.
+///
+/// # What is in it, and what is not
+///
+/// Every recorded event, verbatim and in arrival order — the platform's `f64`
+/// pair by its **bits**, unscaled and unrounded, because rounding device counts
+/// to integers is `docs/RISKS.md` R14's grid arriving through a saving. Beside
+/// them: which clock the timestamps came from, which platform, the build's
+/// sensitivity, and how many events the buffer refused.
+///
+/// **Not in it:** no pseudonym, no window size, no drawn position, no aim, no
+/// wall clock. The aim is an integral of these deltas under a constant this file
+/// carries, so storing it would be storing something that can disagree with its
+/// own inputs; the rest is either a rendering quantity R14 exists to keep out or
+/// a clock `docs/SCOPE.md` assumes is the attacker's.
+#[must_use]
+pub fn telemetry_part(seat: sim::Seat, trace: &crate::input::InputTrace) -> Vec<u8> {
+    let samples = trace.samples();
+    let mut out = Vec::with_capacity(
+        28usize.saturating_add(samples.len().saturating_mul(TELEMETRY_SAMPLE_BYTES)),
+    );
+    out.extend_from_slice(&TELEMETRY_PART_MAGIC);
+    out.extend_from_slice(&TELEMETRY_PART_FORMAT.to_be_bytes());
+    out.push(seat.index() as u8);
+    out.push(match crate::input::CLOCK {
+        crate::input::Clock::Device => 0,
+        crate::input::Clock::Dequeue => 1,
+    });
+    out.push(match platform() {
+        "linux" => 0,
+        "windows" => 1,
+        "macos" => 2,
+        _ => 3,
+    });
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a build constant of 0.05, written to a record"
+    )]
+    let sensitivity_e6 = (crate::input::WORLD_UNITS_PER_COUNT * 1e6) as u64;
+    out.extend_from_slice(&sensitivity_e6.to_be_bytes());
+    out.extend_from_slice(&trace.dropped().to_be_bytes());
+    out.extend_from_slice(&(samples.len() as u64).to_be_bytes());
+    for sample in samples {
+        let before = out.len();
+        let crate::input::Sample { at_ns, event } = sample;
+        match *event {
+            crate::input::Event::Moved { dx, dy } => {
+                out.push(0);
+                out.extend_from_slice(&at_ns.to_be_bytes());
+                out.extend_from_slice(&dx.to_bits().to_be_bytes());
+                out.extend_from_slice(&dy.to_bits().to_be_bytes());
+            }
+            crate::input::Event::Pressed { control, down } => {
+                out.push(1);
+                out.extend_from_slice(&at_ns.to_be_bytes());
+                out.push(control.tag());
+                out.push(u8::from(down));
+            }
+            crate::input::Event::Viewed { tick, seq } => {
+                out.push(2);
+                out.extend_from_slice(&at_ns.to_be_bytes());
+                out.extend_from_slice(&tick.to_be_bytes());
+                out.extend_from_slice(&seq.to_be_bytes());
+            }
+        }
+        // Fixed width, zero padded. The reader refuses a non-zero pad, so one
+        // sample has exactly one encoding.
+        out.resize(before.saturating_add(TELEMETRY_SAMPLE_BYTES), 0);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{BUDGET_NS, Cadence};

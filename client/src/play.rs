@@ -124,6 +124,16 @@ impl Play {
         self.aim.apply(dx, dy);
     }
 
+    /// A view arrived and this client answered it with intention `seq`.
+    ///
+    /// Recorded into the same trace as the device events, and it is the only
+    /// entry in it that is not the hand: see [`InputTrace::viewed`]. It takes the
+    /// timestamp rather than reading one, in the same way [`Play::moved`] does
+    /// and for the same reason — nothing in this module reads a clock.
+    pub fn viewed(&mut self, at_ns: u64, tick: u32, seq: u32) {
+        self.trace.viewed(at_ns, tick, seq);
+    }
+
     /// One control transition.
     ///
     /// Recorded first and always, including releases and including presses that
