@@ -1326,6 +1326,21 @@ Three things travel with it, so the restatement is not a weakening in disguise:
   whole number of ticks of movement. A fractional one would mean the two ends
   applied different *rules* rather than a different number of ticks of the same
   one, which no transport jitter produces.
+
+  **The slack that assertion spends was itself an observation, and Windows found
+  the direction it had no room for.** It was one raw unit per tick, generalised
+  from a single correction of 13106 against a step of 13107 — which is an
+  axis-aligned step whose magnitude lost one unit to the *correction's* own
+  `isqrt`, not a step that lost anything. `FxVec2::step_toward` normalises and
+  then scales, both truncating toward zero per component, so a direction off the
+  axes loses up to one unit on each and its magnitude loses up to two: a correction
+  of **13105**, which `check (windows-latest)` produced and the bound refused. The
+  slack is `2 × ticks + 1` now, and the 2 is a constant with a sweep behind it
+  (`the_tick_shortfall_is_what_the_arithmetic_produces`) rather than a number in a
+  comment, so a change to the speed, the fixed-point resolution or the rounding
+  rule moves it there instead of in a Windows job six weeks later. This is the
+  same defect this entry is otherwise about, one level down: a number taken from
+  the case that happened to run.
 - **Both halves were exercised.** A client whose `champion_speed` differs from the
   server's by **one raw unit** turns the lockstep clause red at `Blue0's prediction
   was corrected by 1 raw units … the client and the server disagree about how a
