@@ -135,7 +135,8 @@ jobs:
         shell: bash
         run: |
           found=$(git ls-files -- '*.replay' '*.consent' '*.identity' '*.withdrawn' \
-            '*.session' '*.session-part' 'corpus/**' || true)
+            '*.session' '*.session-part' '*.telemetry' '*.telemetry-part' \
+            'corpus/**' || true)
           if [[ -n "$found" ]]; then
             echo "::error::a recording or a consent record is tracked in git (docs/RISKS.md R3)"
             echo "$found"
