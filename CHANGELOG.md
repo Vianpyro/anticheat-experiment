@@ -1,0 +1,22 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.0](https://github.com/Vianpyro/moba/releases/tag/v0.1.0) - 2026-08-15
+
+### Added
+
+- *(release)* implement release workflow with versioning and changelog updates
+- *(replay)* [**breaking**] keep the device stream in a sealed companion the replay commits to ([#14](https://github.com/Vianpyro/moba/pull/14))
+- *(replay)* [**breaking**] sign a manifest, and give a replay one format that verifies ([#8](https://github.com/Vianpyro/moba/pull/8))
+- *(client)* [**breaking**] a playable client, prediction, and the consent regime ([#6](https://github.com/Vianpyro/moba/pull/6))
+- *(server)* [**breaking**] play three teams of three over datagrams under the MTU ([#5](https://github.com/Vianpyro/moba/pull/5))
+
+### Other
+
+- implement M0, the toolchain floor and repository hygiene ([#1](https://github.com/Vianpyro/moba/pull/1))
