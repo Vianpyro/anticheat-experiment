@@ -771,4 +771,57 @@ fn the_consent_text_exists_and_states_the_four_required_points() {
         lower.contains("outside the git repository") || lower.contains("outside the repository"),
         "the consent text does not say where the data lives"
     );
+
+    // 6. The granular regime. `replay::consent` already asserts that every
+    //    `Purpose` the build records has a section here; what those tests cannot
+    //    see is the *shape* of the page, which is what makes it readable in the
+    //    thirty seconds it claims. Three properties, each of which a well-meaning
+    //    edit could remove without breaking anything else.
+    //
+    //    The summary is first and it is complete. A progressive disclosure whose
+    //    top level omits a consequence is not a summary, it is a filter, and the
+    //    difference is the whole of whether the layering is honest.
+    let summary = text
+        .find("### L0 — In thirty seconds")
+        .expect("the consent text has no summary level");
+    let categories = text
+        .find("### L1 — The five categories")
+        .expect("the consent text has no category level");
+    for consequence in [
+        "handwriting",
+        "125 to 1000 times a second",
+        "every match you played in, in full",
+        "eight players'",
+        "24 months",
+        "7 days",
+        "18 or over",
+        "outside the git repository",
+        "not taking part",
+    ] {
+        assert!(
+            text[summary..categories].contains(consequence),
+            "{consequence:?} is below the summary rather than in it, and it is a \
+             thing that could reasonably change somebody's answer. A progressive \
+             disclosure whose top level omits a consequence is not a summary, it \
+             is a filter"
+        );
+    }
+
+    //    The necessity is stated as necessity rather than offered as a choice.
+    //    This is the sentence that keeps the four boxes from being four boxes
+    //    beside a fake fifth.
+    assert!(
+        lower.contains("necessary to this experiment")
+            && lower.contains("refusing it means not taking part"),
+        "the consent text does not say plainly that the necessary data is \
+         necessary, which is what stops it dressing `participate or do not` up as \
+         a choice"
+    );
+
+    //    And the demonstration, which is the one part of the disclosure that is
+    //    not a paragraph.
+    assert!(
+        text.contains("replay disclose"),
+        "the consent text does not show the participant their own data"
+    );
 }

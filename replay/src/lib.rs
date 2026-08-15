@@ -104,14 +104,16 @@ pub mod calibration;
 pub mod consent;
 pub mod container;
 pub mod corpus;
+pub mod disclosure;
 pub mod keys;
 pub mod manifest;
+pub mod permit;
 pub mod session;
 pub mod split;
 pub mod telemetry;
 
 pub use crate::calibration::{CalibrationState, DeviceProfileId, Profile};
-pub use crate::consent::ConsentVersion;
+pub use crate::consent::{ConsentVersion, Permissions, Purpose};
 pub use crate::container::{
     FORMAT, ReadError, Replay, Verified, VerifyError, resimulate, seal, signed_bytes, verify,
 };
@@ -121,6 +123,7 @@ pub use crate::keys::{
 pub use crate::manifest::{
     Build, Commitment, Manifest, MatchId, Pseudonym, SessionFacts, SimCommit,
 };
+pub use crate::permit::{PermitError, Publishable, TrainingSet};
 pub use crate::session::SessionRecord;
 pub use crate::split::{Split, split_of};
 pub use crate::telemetry::{Telemetry, TelemetryError, TelemetryLog, TelemetryPart};

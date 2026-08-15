@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 
 use replay::calibration::{CalibrationState, DeviceProfileId, Observations, SeatCalibration};
-use replay::consent::ConsentVersion;
+use replay::consent::{ConsentVersion, Permissions, Purpose};
 use replay::corpus::{ConsentRecord, Corpus};
 use replay::keys::SigningKey;
 use replay::manifest::{MatchId, Pseudonym, SessionFacts, SimCommit};
@@ -62,7 +62,8 @@ fn consent(pseudonym: &str) -> ConsentRecord {
         pseudonym: pseudonym.to_owned(),
         consented_on: "2026-08-13".to_owned(),
         retention_until: "2028-08-13".to_owned(),
-        publication: false,
+        permissions: Permissions::none(),
+        adult: true,
         consent_version: ConsentVersion::current(),
     }
 }
@@ -746,7 +747,8 @@ fn a_consent_record_reads_back_as_what_was_written() {
         pseudonym: "celadon".to_owned(),
         consented_on: "2026-08-13".to_owned(),
         retention_until: "2028-08-13".to_owned(),
-        publication: true,
+        permissions: Permissions::granting(&Purpose::ALL),
+        adult: true,
         consent_version: ConsentVersion::current(),
     };
     assert_eq!(ConsentRecord::decode(&record.encode()), Some(record));

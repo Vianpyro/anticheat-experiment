@@ -28,6 +28,28 @@
 //! withdrawal destroys every match that participant played in, in full,
 //! including the other participants' contributions to those matches.
 //!
+//! # Withdrawal is not one thing any more, and the second kind destroys nothing
+//!
+//! `docs/CONSENT.md` offers four permissions a participant may refuse without
+//! refusing to take part, so it has to offer four they may take back the same
+//! way. [`Corpus::withdraw_purpose`] revokes one and leaves everything else
+//! standing: no match is destroyed, the participation continues, and what
+//! changes is that the next publication or training set — computed by
+//! [`crate::permit`] against the consent records **as they are at that moment** —
+//! no longer reaches them.
+//!
+//! The two are deliberately different operations rather than one parameterised
+//! one. A total withdrawal takes back the *holding* of data and therefore
+//! deletes; a partial one takes back a *use* and therefore must not. Conflating
+//! them would mean a participant who no longer wants their recordings published
+//! loses their participation as the price of saying so, which is the choice this
+//! regime exists to stop making on their behalf.
+//!
+//! Each has its own audit, and neither audit is the command reading back what it
+//! just wrote. [`Corpus::audit`] reads every byte under the root for a name;
+//! [`Corpus::audit_purpose`] runs the *use's own gate* over the matches the
+//! participant is in, and an empty answer is the only acceptable outcome.
+//!
 //! # The tombstone, and why one thing survives
 //!
 //! Withdrawal leaves a `withdrawals/<pseudonym>.withdrawn` file holding the
@@ -111,6 +133,8 @@
 //! | --- | --- |
 //! | a participant with no consent record | a match nobody consented to is a match this project may not hold |
 //! | a consent record from another version of the consent document | what they signed is not what this session was recorded under |
+//! | a consent record silent about any purpose this build knows | it does not decode, so it is not a consent record: a purpose nobody was asked about is a purpose nobody granted |
+//! | a participant whose record says they are under 18 | a minor's own consent is not sufficient and this project has no parental-consent procedure |
 //! | a session record naming another match | a record filed beside the wrong replay describes the wrong hardware |
 //! | a session record under another consent version | the operator ran a session against a document that is no longer current |
 //! | a seat the manifest fills and the session leaves empty, or the reverse | the two files disagree about who was playing |
@@ -127,7 +151,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::calibration::{DeviceProfileId, Profile};
-use crate::consent::ConsentVersion;
+use crate::consent::{ConsentVersion, Permissions, Purpose};
 use crate::manifest::Commitment;
 use crate::session::{SeatRecord, SessionRecord};
 use crate::telemetry::Telemetry;
@@ -175,10 +199,34 @@ pub struct ConsentRecord {
     /// The day everything raw about this participant is destroyed even if they
     /// never withdraw. `docs/MILESTONES.md` M4: twenty-four months.
     pub retention_until: String,
-    /// Whether this participant separately agreed that the **raw** corpus may
-    /// be published. Refusable without refusing the rest, which is what "consent
-    /// is per purpose" means.
-    pub publication: bool,
+    /// **Which of the separable purposes this participant granted.**
+    ///
+    /// Not one boolean but one answer per [`crate::consent::Purpose`], because
+    /// "consent is per purpose" is worth nothing if the corpus can only record
+    /// one purpose. Every purpose this build knows is stated, granted or
+    /// refused; a record silent about one does not decode, for the reason the
+    /// version field is not optional either.
+    ///
+    /// The permissions here are read **live**, at the moment a use is attempted,
+    /// by [`crate::permit`]. That is what makes a partial withdrawal take effect
+    /// without anything having to be recomputed: revoking a permission is an
+    /// edit to this record, and the next publication or training set reads the
+    /// edited one.
+    pub permissions: Permissions,
+    /// Whether this participant confirmed they are 18 or over.
+    ///
+    /// Asked because the answer changes the regime rather than the paperwork: a
+    /// participant under 18 is one whose consent Quebec's Law 25 does not treat
+    /// as sufficient on its own, and this project has no parental-consent
+    /// procedure, no separate text and nobody to review one. So the answer is
+    /// recorded and [`Corpus::store`] refuses a match a minor is in — a refusal
+    /// rather than a warning, and one that names the human decision it is
+    /// standing in for.
+    ///
+    /// Not a date of birth. A date of birth is personal information this project
+    /// has no use for; what it needs is the one bit that decides whether the
+    /// regime applies.
+    pub adult: bool,
     /// **Which version of `docs/CONSENT.md` this participant signed.**
     ///
     /// The field that turns a signature on paper into something a program can
@@ -207,17 +255,25 @@ impl ConsentRecord {
             pseudonym,
             consented_on,
             retention_until,
-            publication,
+            permissions,
+            adult,
             consent_version,
         } = self;
         format!(
             "pseudonym: {pseudonym}\nconsented_on: {consented_on}\nretention_until: \
-             {retention_until}\npublication: {publication}\nconsent_version: \
-             {consent_version}\n"
+             {retention_until}\nadult: {adult}\nconsent_version: \
+             {consent_version}\n{}",
+            permissions.encode()
         )
     }
 
     /// Reads a record back, or `None` if the file is not one.
+    ///
+    /// Total on every field, and **three separate absences fail identically**:
+    /// no version, no age answer, and no line for some purpose this build knows.
+    /// Each of them is a record written against a regime that is not the one
+    /// being operated, and a corpus that told them apart would be a corpus with
+    /// a case for readmitting one of them.
     #[must_use]
     pub fn decode(text: &str) -> Option<Self> {
         let field = |name: &str| -> Option<String> {
@@ -229,7 +285,12 @@ impl ConsentRecord {
             pseudonym: field("pseudonym")?,
             consented_on: field("consented_on")?,
             retention_until: field("retention_until")?,
-            publication: field("publication")? == "true",
+            permissions: Permissions::decode(text)?,
+            adult: match field("adult")?.as_str() {
+                "true" => true,
+                "false" => false,
+                _ => return None,
+            },
             consent_version: ConsentVersion::parse(&field("consent_version")?)?,
         })
     }
@@ -360,6 +421,23 @@ impl Corpus {
                          session was recorded under (docs/RISKS.md R3)",
                         record.consent_version,
                         ConsentVersion::current()
+                    ),
+                );
+            }
+            // The age gate. A refusal rather than a flag, and it names the
+            // decision it stands in for: Law 25 does not treat a minor's own
+            // consent as sufficient, this project has no parental-consent
+            // procedure and no second text, and inventing one at the door of a
+            // corpus is not a thing a program should do quietly.
+            if !record.adult {
+                return refuse(
+                    io::ErrorKind::PermissionDenied,
+                    format!(
+                        "{pseudonym}'s consent record says they are under 18. This \
+                         project's consent regime covers adults only — a minor's own \
+                         consent is not sufficient under Quebec's Law 25 and there is \
+                         no parental-consent procedure here — so the match is refused \
+                         and the decision is a human one (docs/CONSENT.md)"
                     ),
                 );
             }
@@ -781,6 +859,224 @@ impl Corpus {
             ),
         )?;
         Ok(destroyed)
+    }
+
+    /// One participant's consent record, or `None` if this corpus holds none it
+    /// can read.
+    ///
+    /// The **live** answer, read from disk on every call rather than cached, and
+    /// that is what makes a partial withdrawal mechanical: revoking a permission
+    /// rewrites this file, and the next use that asks reads the rewritten one.
+    /// Nothing in this crate holds a permission in memory across an operation.
+    ///
+    /// # Errors
+    ///
+    /// Nothing. An unreadable or absent record is `None`, because "there is no
+    /// consent record" and "the file is not one" have to be the same answer —
+    /// see [`ConsentRecord::decode`].
+    #[must_use]
+    pub fn consent_of(&self, pseudonym: &str) -> Option<ConsentRecord> {
+        fs::read_to_string(self.consent_path(pseudonym))
+            .ok()
+            .as_deref()
+            .and_then(ConsentRecord::decode)
+    }
+
+    /// Whether this participant currently permits this purpose.
+    ///
+    /// **`false` for a participant with no readable record**, which is the only
+    /// safe direction: a record that does not decode is not consent, and a use
+    /// that treated it as permission would be a use nobody agreed to.
+    #[must_use]
+    pub fn permits(&self, pseudonym: &str, purpose: Purpose) -> bool {
+        self.consent_of(pseudonym)
+            .is_some_and(|record| record.permissions.granted(purpose))
+    }
+
+    /// The person behind a pseudonym, if they agreed to be named.
+    ///
+    /// **The one machine-readable path from a pseudonym to a person, and it is
+    /// gated.** `identities/` is the file that makes a pseudonym re-identifiable
+    /// and nothing else in this crate reads it; this is where a report, an
+    /// acknowledgement or a credit list has to come through, and it refuses
+    /// without [`Purpose::NamedAttribution`].
+    ///
+    /// **What it does not reach, stated here rather than left to a reader's
+    /// charity:** a sentence somebody types into a document. The operator knows
+    /// these nine people. This gate makes the *corpus* refuse to hand out a name,
+    /// which is the most a program can do, and `docs/CONSENT.md` tells the
+    /// participant that the rest is a promise rather than a mechanism.
+    ///
+    /// # Errors
+    ///
+    /// [`io::ErrorKind::PermissionDenied`] when the participant did not grant
+    /// being named, or has no readable consent record; anything the filesystem
+    /// refuses otherwise.
+    pub fn attribution(&self, pseudonym: &str) -> io::Result<String> {
+        if !self.permits(pseudonym, Purpose::NamedAttribution) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "{pseudonym} did not agree to be named in work derived from this \
+                     corpus, so {}. They appear as {pseudonym} (docs/CONSENT.md)",
+                    Purpose::NamedAttribution.refusing_means()
+                ),
+            ));
+        }
+        let text = fs::read_to_string(self.identity_path(pseudonym))?;
+        text.lines()
+            .find_map(|line| line.strip_prefix("identity: "))
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{pseudonym}'s identity file names nobody"),
+                )
+            })
+    }
+
+    /// Withdraws **one permission** and leaves the participation intact.
+    ///
+    /// # Why this is not a smaller `withdraw`
+    ///
+    /// A total withdrawal destroys data, because the thing being taken back is
+    /// the holding of it. A partial one takes back a *use*, and the data stays —
+    /// so it is an edit to a consent record and a tombstone, and nothing is
+    /// deleted. Conflating the two would mean that a participant who no longer
+    /// wants their recordings published loses their participation as the price of
+    /// saying so, which is precisely the choice this milestone exists to stop
+    /// making for them.
+    ///
+    /// Idempotent, for the reason [`Corpus::withdraw`] is: somebody unsure their
+    /// message landed sends a second one, and an error message is not the answer
+    /// to that.
+    ///
+    /// [`Corpus::audit_purpose`] is the check, and it is run separately.
+    ///
+    /// # Errors
+    ///
+    /// Anything the filesystem refuses. A participant with no readable consent
+    /// record is **not** an error: there is nothing to revoke, the tombstone is
+    /// written anyway, and the answer is `false`.
+    pub fn withdraw_purpose(
+        &self,
+        pseudonym: &str,
+        purpose: Purpose,
+        on: &str,
+    ) -> io::Result<bool> {
+        let revoked = match self.consent_of(pseudonym) {
+            Some(mut record) if record.permissions.granted(purpose) => {
+                record.permissions.set(purpose, false);
+                fs::write(self.consent_path(pseudonym), record.encode())?;
+                true
+            }
+            _ => false,
+        };
+        fs::create_dir_all(self.root.join(WITHDRAWALS))?;
+        fs::write(
+            self.root
+                .join(WITHDRAWALS)
+                .join(format!("{pseudonym}.{}.withdrawn", purpose.tag())),
+            format!(
+                "pseudonym: {pseudonym}\nwithdrawn_purpose: {purpose}\nwithdrawn_on: \
+                 {on}\nparticipation: unchanged\n"
+            ),
+        )?;
+        Ok(revoked)
+    }
+
+    /// Every match this pseudonym is in that a use of `purpose` would still
+    /// reach.
+    ///
+    /// **The partial withdrawal's audit, and it is deliberately not a check that
+    /// the consent record was edited.** Reading back the file just written would
+    /// be the command agreeing with itself. This asks the question a participant
+    /// actually asked — *is any of my data still going to be published / used to
+    /// train something* — by running the same gate the use runs, over the matches
+    /// they are in.
+    ///
+    /// An empty result is the only acceptable outcome after a withdrawal of that
+    /// purpose. It is the analogue of [`Corpus::audit`]'s empty list, for a
+    /// withdrawal that destroys nothing.
+    ///
+    /// [`Purpose::NamedAttribution`] has no matches to name, so it answers over
+    /// the identity instead: the pseudonym itself is reported when a name can
+    /// still be obtained for it.
+    ///
+    /// # Errors
+    ///
+    /// Anything the filesystem refuses while listing the matches.
+    pub fn audit_purpose(&self, pseudonym: &str, purpose: Purpose) -> io::Result<Vec<String>> {
+        if purpose == Purpose::NamedAttribution {
+            return Ok(if self.attribution(pseudonym).is_ok() {
+                vec![pseudonym.to_owned()]
+            } else {
+                Vec::new()
+            });
+        }
+        let mut reached = Vec::new();
+        for match_id in self.matches()? {
+            let Ok(participants) = self.participants_of(&match_id) else {
+                continue;
+            };
+            if !participants.iter().any(|who| who == pseudonym) {
+                continue;
+            }
+            if participants.iter().all(|who| self.permits(who, purpose)) {
+                reached.push(match_id);
+            }
+        }
+        Ok(reached)
+    }
+
+    /// Every participant whose data is destroyed when the project's work
+    /// concludes rather than at its retention date.
+    ///
+    /// # Errors
+    ///
+    /// Anything the filesystem refuses while listing the participants.
+    pub fn due_at_conclusion(&self) -> io::Result<Vec<String>> {
+        let mut due = Vec::new();
+        let directory = self.root.join(PARTICIPANTS);
+        if !directory.exists() {
+            return Ok(due);
+        }
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(pseudonym) = name.strip_suffix(".consent") else {
+                continue;
+            };
+            if !self.permits(pseudonym, Purpose::RetentionAfterProject) {
+                due.push(pseudonym.to_owned());
+            }
+        }
+        due.sort();
+        Ok(due)
+    }
+
+    /// Carries out the retention promise: destroys everything belonging to a
+    /// participant who did not agree to it being kept after the project's work
+    /// ends.
+    ///
+    /// The same destruction [`Corpus::withdraw`] performs, on a date rather than
+    /// on a request — which is what makes [`Purpose::RetentionAfterProject`] a
+    /// permission with teeth rather than a sentence in a document. A participant
+    /// who refused it is one whose withdrawal was scheduled the day they signed.
+    ///
+    /// Idempotent, and safe to run on a corpus where nobody refused: it destroys
+    /// nothing and says so.
+    ///
+    /// # Errors
+    ///
+    /// Anything the filesystem refuses.
+    pub fn conclude(&self, on: &str) -> io::Result<Vec<(String, Withdrawal)>> {
+        let mut carried = Vec::new();
+        for pseudonym in self.due_at_conclusion()? {
+            let destroyed = self.withdraw(&pseudonym, on)?;
+            carried.push((pseudonym, destroyed));
+        }
+        Ok(carried)
     }
 
     /// Every file under the root that still mentions this pseudonym, outside the
