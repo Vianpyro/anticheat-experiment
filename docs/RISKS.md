@@ -174,6 +174,51 @@ Three consequences, and none of them is new machinery:
   now than it did: if this project ever uses input biometrics to authenticate a
   player, arts. 44–45 attach and this risk is reopened.
 
+### What the granular regime added, and the failure it was closing
+
+The hedge above says "consent is requested per purpose, so publication of the raw
+corpus is a separate opt-in". Until `docs/CONSENT.md` `2026-08-17` that sentence
+was **half true and getting less true**: publication was per purpose, and three
+other decisions about a participant's data were being taken on their behalf by
+the project's own defaults. Whether the recordings may train a bot, whether they
+are kept after the work ends, and whether somebody is named rather than
+pseudonymous are all things a reasonable person could want to decide separately,
+and none of them was a question anybody was asked.
+
+Three things changed and only the first is about the document:
+
+- **Four boxes instead of one**, chosen by a test rather than by taste: a box
+  exists only if refusing it leaves the rest of the participation possible.
+  Everything the declared purpose is structurally made of — the intentions, the
+  device stream, the session record, the lobby crossing — is stated as necessity
+  in the participant's own words instead of being offered as a choice whose two
+  outcomes are "take part" and "do not".
+- **Every one of them is a gate rather than a field.** The check is the only
+  constructor of the value the use needs (`docs/SCHEMA.md` §10a), which is this
+  register's usual answer: R8 did it for thresholds, M5 did it for the participant
+  list, and the failure mode removed is the same one — a rule somebody has to
+  remember.
+- **A consent record silent about any purpose does not decode**, so adding a
+  fifth box invalidates every signature already given. That is this entry's
+  "absent and stale fail alike" applied one level down from the version, and it is
+  what makes "an old consent cannot silently authorise a new collection" true of
+  *purposes* and not only of *fields*.
+
+**And one new artefact class, named before it exists.** A model trained on this
+corpus is a derived artefact that outlives what it derived from — the shape M5
+removed and this entry has been guarding ever since. `docs/SCHEMA.md` §10b is the
+rule: a model carries the pseudonyms it learned from, stored under the corpus
+root, so the audit's byte search reports it the first time one of them withdraws.
+Nothing forces a future model to be stored where the audit looks, and
+`docs/CONSENT.md` sends that to a human review rather than claiming otherwise.
+
+**Age is the one new refusal that is not about a purpose.** A participant under 18
+cannot give sufficient consent alone, this project has no parental-consent
+procedure and no second text, and inventing one at the door of a corpus is not a
+thing a program should do quietly — so the record carries one bit, `Corpus::store`
+refuses a match anybody under 18 is in, and the message names the human decision
+it is standing in for. No date of birth is collected: what is needed is the bit.
+
 ### What M6 added, and the one thing it made mechanical
 
 The hedge above is a page of text, a mapping held outside the repository, and a
