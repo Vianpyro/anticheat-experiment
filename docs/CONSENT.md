@@ -147,8 +147,9 @@ answer.
 > there are. It is never used to verify or confirm anyone's identity, never given
 > to a third party, and never reused by another project.
 >
-> **Who holds it.** One person, the author, on his own machine, in a directory
-> **outside the git repository**. No cloud, no database, no backup elsewhere.
+> **Who holds it.** One person, the author of the project, on their own machine,
+> in a directory **outside the git repository**. No cloud, no database, no backup
+> elsewhere.
 >
 > **How long.** 24 months from the recording, or until you withdraw, whichever
 > comes first. Statistics that identify nobody are kept without a time limit.
@@ -162,11 +163,16 @@ answer.
 > You can also withdraw **one permission** and keep taking part.
 >
 > **What is not a choice, said plainly rather than dressed as one.** The movement
-> stream, the instruction log, the session record and the lobby measurement are
-> what the declared purpose is made of. This data is necessary to this
-> experiment; refusing it means not taking part. There is no tick box for them
-> and there should not be, because a box whose only two outcomes are "take part"
-> and "do not" is not a choice, it is a form pretending to offer one.
+> stream, the instruction log and the session record are what the declared
+> purpose is made of.
+> This data is necessary to this experiment, and refusing it means not taking part.
+> There is no tick box for them and there should not be,
+> because a box whose only two outcomes are "take part" and "do not" is not a
+> choice, it is a form pretending to offer one. (The measurement the menu takes
+> of your mouse is a *calculation* over movements already recorded above, so
+> there is no box for it either — but there is a control, and it is yours: spend
+> the wait doing something else and the record simply says "not known" for you,
+> with no consequence at all. L2 §3.)
 >
 > **What is a choice**, refusable on its own with nothing else changing:
 > publication of the raw recordings, use for training a bot, keeping the data
