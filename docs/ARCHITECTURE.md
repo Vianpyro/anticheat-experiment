@@ -1740,6 +1740,51 @@ Each is a test or a lint, not a convention:
    honest players, which is `docs/SCOPE.md`'s standing position about sanctions
    arriving one level down.
 
+20. **Every separable consent is applied by a value that cannot be built without
+   the check, and never by a rule anybody follows.** `docs/CONSENT.md` offers four
+   permissions a participant may refuse on their own, and `replay::permit` is
+   where each one stops being a field:
+
+   - `replay::Publishable` is the **only** value this workspace writes to a
+     publication directory, and `Publishable::of` is its only constructor. So
+     publishing a match somebody refused is not a mistake to avoid — it is a value
+     that does not exist.
+   - `replay::TrainingSet` is the **only** value that yields corpus matches for
+     training, and `TrainingSet::load` is its only accessor. A trainer's signature
+     is `fn(…, &TrainingSet)`; a caller holding a `Corpus` and a list of
+     identifiers cannot reach the data.
+   - `Corpus::attribution` is the **only** path from a pseudonym to a person in
+     this workspace, and it refuses without `named-attribution`.
+
+   The predicate underneath all three is `all`, never `any`: a match is one
+   interleaved log, so one refusal withholds the whole of it — the rule
+   publication already had, generalised. The permissions are read off the disk at
+   the moment of use and cached nowhere, which is what makes a partial withdrawal
+   an edit to one file with nothing to invalidate.
+
+   Exercised by mutation in `replay/tests/permissions.rs`: one bit in one consent
+   record, everything else identical, and the match stops being publishable and
+   the training set stops containing it.
+
+21. **A consent record answers every question this build knows how to ask, and a
+   silence is not an answer.** `Permissions::decode` refuses a record that omits a
+   line for any `Purpose`, and `ConsentRecord::decode` refuses one that omits the
+   age answer — the same equivalence invariant 15 draws between an absent consent
+   version and a stale one, one level down.
+
+   The consequence is the property: **adding a fifth `Purpose` invalidates every
+   consent record already written**, so everybody is asked again and there is no
+   path by which an old signature quietly covers a new use. `docs/RISKS.md` R3's
+   "an old consent cannot silently authorise a new collection" becomes true of
+   *purposes* and not only of *fields*.
+
+   And two withdrawals rather than one, with two audits that are not the same
+   check. `Corpus::audit` reads every byte under the root for a name;
+   `Corpus::audit_purpose` runs the *use's own gate* over the matches the
+   participant is in, because re-reading the record a revocation just wrote would
+   be the command agreeing with itself. Empty is the only acceptable answer to
+   either.
+
 ## Directions this architecture leaves open, and does not build
 
 Recorded because they will be obvious to whoever reads `client::lobby` next, and

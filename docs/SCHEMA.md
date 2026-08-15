@@ -417,7 +417,8 @@ stratum a claim is actually made on.
 | --- | --- |
 | A match played by a bot, a script, or a headless client | `Corpus::store` refuses any seat that recorded **zero device events**, and the schema has no `provenance` value but `human` and `empty` — a part claiming otherwise does not parse. §11's view anchors are counted apart from the device events for exactly this reason: a headless client receives thirty frames a second, and counting those among the samples would hand this refusal to the attacker it exists to catch |
 | One person filling several seats | `Corpus::store` refuses a manifest naming one pseudonym twice |
-| A match nobody consented to | refused since M5; now also refused when the consent record is from another version of `docs/CONSENT.md`, or has no version at all |
+| A match nobody consented to | refused since M5; now also refused when the consent record is from another version of `docs/CONSENT.md`, has no version at all, or is silent about any purpose this build knows — a purpose nobody was asked about is a purpose nobody granted, so the record does not decode |
+| A match anybody under 18 is in | `Corpus::store` refuses a record whose age answer is `false`, and `replay enrol` refuses to write one. A minor's own consent is not sufficient under Law 25 and this project has no parental-consent procedure, so the refusal names the human decision it stands in for rather than inventing one |
 | A session recorded through OS pointer acceleration | §4d |
 | Any of it, in git | `.gitignore` plus a `ci` check on *tracked* files |
 
@@ -537,15 +538,32 @@ built and discarded inside the test — which is what `docs/MILESTONES.md` M6 as
 for. The test drives the **binary**, because a procedure checked by calling the
 functions it is a procedure for is a procedure agreeing with itself.
 
+**Before the first signature**, once per participant, on the crossing of the
+lobby they have just made and which is **never stored**:
+
+```console
+$ replay disclose <seat-N.telemetry-part>
+```
+
+`docs/CONSENT.md` §L3. It prints a few dozen of the participant's own device
+records and the four quantities this project derives from them, computed from
+their numbers; it writes nothing, and there is no path in it to a file. Then the
+operator deletes the part and never runs `store` on that session.
+
 **On enrolment**, once per participant, after the consent text is signed on paper:
 
 ```console
-$ replay enrol <corpus> <pseudonym> <identity> <consented-on> <retention-until> no|yes
+$ replay enrol <corpus> <pseudonym> <identity> <consented-on> <retention-until> \
+      yes|no <permits>
 ```
 
-The last argument is the separate publication opt-in. The consent record is
-stamped with the version of `docs/CONSENT.md` this build holds; the operator does
-not type it.
+`<permits>` is a comma-separated list of the four purposes the participant
+granted, or `none`; the argument before it is the age confirmation and `no`
+refuses the enrolment outright. The consent record is stamped with the version of
+`docs/CONSENT.md` this build holds; the operator does not type it. If the
+participant previously signed an older version, `enrol` prints what changed
+between the two before writing anything, so that a re-signature is against a
+difference rather than against the same page a second time.
 
 **After a session**, once per match, with the clients' parts collected into one
 directory:
@@ -572,12 +590,46 @@ coverage would then be a function of who managed to copy a file.
 `store` refuses rather than warns; `replay/src/corpus.rs` carries the table of
 what and why. `census` writes nothing.
 
+**Before publishing or training anything**, to find out what the evening's
+consent actually permits:
+
+```console
+$ replay permits <corpus> [<purpose>]        # writes nothing; names every refusal
+$ replay publish <corpus> <destination>      # the publishable subset, and nothing else
+```
+
+`publish` goes through `replay::Publishable`, which has no constructor that skips
+the consent records — so a match somebody refused is not a mistake to avoid, it is
+a value that cannot be built. It names every withheld match and why.
+
 **On a withdrawal request**, acknowledged within 7 days and carried out within 30:
 
 ```console
 $ replay withdraw <corpus> <pseudonym> <YYYY-MM-DD>
 $ replay audit <corpus> <pseudonym>          # separately, and it must exit 0
 ```
+
+**Or, for one permission rather than the participation:**
+
+```console
+$ replay withdraw <corpus> <pseudonym> <YYYY-MM-DD> <purpose>
+$ replay audit <corpus> <pseudonym> <purpose>    # separately, and it must exit 0
+```
+
+The partial one **destroys nothing** — the matches stay, the participation
+continues — and its audit is deliberately not a re-read of the record it just
+wrote: it runs the use's own gate over the matches the participant is in and
+lists every one the use would still reach. Empty is the only acceptable outcome.
+
+**When the project's work concludes:**
+
+```console
+$ replay conclude <corpus> <YYYY-MM-DD>
+```
+
+It destroys, in full and with an audit each, everything belonging to every
+participant who refused `retention-after-project` — a withdrawal scheduled on the
+day they signed. It is idempotent and quiet when nobody refused.
 
 `withdraw` destroys every match the pseudonym appears in — in full, including the
 other participants' contributions — then the mapping, then the consent record,
@@ -594,7 +646,7 @@ the places a pseudonym is supposed to be.
 the corpus rather than in it. No command reaches it, and no command should: it is
 the one artefact in this regime a person has to destroy deliberately.
 
-## 10. Publication
+## 10. Publication, and the other three permissions
 
 Two decisions, taken here and not revisited per match (`docs/MILESTONES.md` M6):
 
@@ -608,6 +660,53 @@ Two decisions, taken here and not revisited per match (`docs/MILESTONES.md` M6):
   practical consequence, stated in advance: one refusal in a match of nine
   withholds that match, so the publishable subset will in practice be small or
   empty, and no plan here depends on it existing.
+
+### 10a. The four separable purposes, and where each is refused
+
+`docs/CONSENT.md` offers four permissions a participant may refuse without
+refusing to take part. Publication is the one that existed as a boolean; the
+other three were decisions this project had taken silently on the participant's
+behalf.
+
+| Purpose | Refused by | The value that cannot be built |
+| --- | --- | --- |
+| `publication` | `replay::Publishable::of` | the only value this workspace writes to a publication directory |
+| `bot-training` | `replay::TrainingSet::of` | the only value that yields corpus matches for training |
+| `named-attribution` | `Corpus::attribution` | the only path from a pseudonym to a person in this workspace |
+| `retention-after-project` | `replay conclude` | not a gate but a destruction, on a date, of everybody who refused |
+
+**The permissions are read at the moment of use and cached nowhere.** That is
+what makes a partial withdrawal mechanical: revoking one is an edit to one
+consent record, and the next publication or training set is computed against the
+edited one with nothing to invalidate — the same register in which
+`replay::split::split_of` is a function rather than a file (§7) and `census`
+prints rather than writes.
+
+**One refusal withholds a whole match, in every row it applies to.** The rule is
+`all`, never `any`, for the reason publication already gave: a match is one
+interleaved log, so there is no way to publish, train on, or otherwise use one
+seat of it.
+
+### 10b. A trained model is the next derived artefact, and the rule precedes it
+
+`bot-training` is the one permission whose use produces something durable, and a
+model is exactly the shape §7 and `docs/CONSENT.md` warn about: a derived artefact
+that outlives what it derived from. A `remove_dir_all` over a match directory
+cannot reach a set of weights.
+
+There is no un-training, so the rule is destruction rather than correction: **a
+model trained on this corpus is destroyed by the same withdrawal that destroys
+the matches it learned from.** What makes that reachable rather than remembered is
+`TrainingSet::provenance` — a text block naming the consent version, the matches
+and the **pseudonyms** — stored beside the model under the corpus root. Everything
+else in a corpus file avoids naming a person; this one must, because the machinery
+that already works is `Corpus::audit` reading every byte under the root for a
+name. `replay/tests/permissions.rs` plants a model to prove the audit reports it.
+
+What that does not do, stated because a provenance file invites a reader to
+conclude more: nothing forces a future model to be stored where the audit looks.
+`docs/CONSENT.md` sends that to a human review rather than claiming to have closed
+it.
 
 ## 11. The telemetry companion — the device stream, field by field
 

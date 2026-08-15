@@ -461,6 +461,26 @@ itself:
   retracted. Both consequences are stated before recording, because a
   participant who learns them afterwards was not informed.
 
+**And a fifth thing the four above turned out to need, added while the corpus is
+still empty and therefore for free.** The four points are about *what* is
+collected and *what happens to it*; none of them is about **which of it is the
+participant's choice**, and the answer the text gave for two versions was "one
+thing is, and three decisions are the project's". Publication was a separate
+opt-in from the start; whether the recordings may train a bot, whether they are
+kept after this project's work ends, and whether somebody is named rather than
+pseudonymous were defaults nobody was asked about. `docs/CONSENT.md`
+`2026-08-17` makes them four boxes, `replay::permit` makes each of them a value a
+use cannot be built without, and withdrawal becomes partial as well as total. The
+text also asks whether the participant is 18 or over and the pipeline refuses a
+match that anybody under 18 is in. `docs/RISKS.md` R3 carries the account and
+`docs/ARCHITECTURE.md` invariants 20 and 21 are the tests.
+
+The timing is the whole of the argument, in the register R2 uses about the
+roster: the format is frozen, the lobby measures the device, and **the corpus is
+empty and no session has been recorded**. A regime rewritten now costs a page and
+a version bump. The same rewrite after the first evening costs nine people a
+re-consent, or costs the corpus.
+
 **Exit:** three humans play a match end to end on two operating systems — one
 team of the three, with the other six seats unoccupied, which is a state the
 rules already handle and the fixtures already cover; the match writes a replay;

@@ -262,7 +262,9 @@ in a security project.
 | Approving production-dependency updates | The blast radius is the running server and, for `sim`, the determinism guarantee |
 | Committing a proptest counter-example | The seed is printed into the run summary of the job that found it and pasted into `sim/proptest-regressions/properties.txt`. A bot pushing it would need write permissions on the branch, which is the automation `RISKS.md` R11 exists to refuse; the paste costs seconds and the case is permanent afterwards |
 | Rotating the replay signing key | Rotation without publishing the retired key orphans every replay signed with it (`RISKS.md` R4). Rare, consequential, and better done deliberately |
-| Admitting a participant to the human corpus | Consent is a person-to-person act, and the consent record is what makes the corpus lawfully usable (`RISKS.md` R3) |
+| Admitting a participant to the human corpus | Consent is a person-to-person act, and the consent record is what makes the corpus lawfully usable (`RISKS.md` R3). `replay enrol` files the answers; it does not collect them |
+| Showing a participant their own device stream before they sign | `replay disclose` renders the page, and the operator sits beside them while they read it. What it demonstrates is the one claim in `docs/CONSENT.md` a participant cannot evaluate from prose, and the crossing it reads is deliberately never stored |
+| Naming somebody in a report, a talk or an acknowledgement | `Corpus::attribution` refuses to hand out a name without `named-attribution`, and that is the whole of what a program can reach. A name somebody already knows passes through no gate — `docs/CONSENT.md` states that to the participant rather than implying otherwise, and it is the one participant choice this project keeps by a promise as well as by a control |
 | Acting on a detector finding | By design, permanently. Detectors emit scores and evidence; a ban is a human judgment. This is a scope decision, not a missing feature |
 | Choosing a detector threshold | The threshold and its justification are the deliverable. A tuner that picks it optimizes a number nobody has to defend |
 

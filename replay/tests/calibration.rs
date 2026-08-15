@@ -22,7 +22,7 @@ use replay::calibration::{
     CalibrationState, DeviceProfileId, Estimate, Observations, Profile, SeatCalibration,
     rate_seats, sufficiency,
 };
-use replay::consent::ConsentVersion;
+use replay::consent::{ConsentVersion, Permissions};
 use replay::corpus::{ConsentRecord, Corpus};
 use replay::keys::SigningKey;
 use replay::manifest::{MatchId, Pseudonym, SessionFacts, SimCommit};
@@ -67,7 +67,8 @@ fn consent(pseudonym: &str) -> ConsentRecord {
         pseudonym: pseudonym.to_owned(),
         consented_on: "2026-09-01".to_owned(),
         retention_until: "2028-09-01".to_owned(),
-        publication: false,
+        permissions: Permissions::none(),
+        adult: true,
         consent_version: ConsentVersion::current(),
     }
 }

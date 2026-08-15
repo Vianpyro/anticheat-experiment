@@ -34,11 +34,15 @@
 //! replay keygen <name>                  # <name>.signing-key and <name>.public-key
 //! replay verify <replay> <keys> [<telemetry>]   # resimulate, check the seal, report
 //! replay inspect <replay>               # print the manifest, check nothing
-//! replay enrol <corpus> <pseudonym> <identity> <consented-on> <retention-until> <publication>
+//! replay disclose <telemetry-part>      # show a participant their own device stream
+//! replay enrol <corpus> <pseudonym> <identity> <consented-on> <retention-until> <adult> <permits>
 //! replay store <corpus> <replay> <parts-dir> <recorded-on> <supervision> [<telemetry>]
 //! replay census <corpus>                # what the corpus is, and what it supports
-//! replay withdraw <corpus> <pseudonym> <date>
-//! replay audit <corpus> <pseudonym>     # non-zero if anything is left
+//! replay permits <corpus> [<purpose>]   # what each separable purpose reaches
+//! replay publish <corpus> <destination> # the publishable subset, and nothing else
+//! replay conclude <corpus> <date>       # destroy what may not be kept past the project
+//! replay withdraw <corpus> <pseudonym> <date> [<purpose>]
+//! replay audit <corpus> <pseudonym> [<purpose>]  # non-zero if anything is left
 //! ```
 //!
 //! Exit status: 0 on success, 1 when the thing being checked is wrong, 2 when
@@ -52,6 +56,28 @@
 //! only the filing. It stamps the consent record with the version of
 //! `docs/CONSENT.md` this build holds, so the operator cannot record somebody
 //! against a text that is not the one in front of them.
+//!
+//! # The commands the granular regime added, and why each is a command
+//!
+//! `docs/CONSENT.md` offers four permissions a participant may refuse on their
+//! own. A permission with no command behind it is enforced by whoever remembers
+//! it, so there is one entry point per purpose and each of them goes through
+//! `replay::permit`:
+//!
+//! | Command | The purpose it applies | What it refuses |
+//! | --- | --- | --- |
+//! | `publish` | `publication` | a match any participant of which refused it, by name, before anything is written |
+//! | `permits` | all four | nothing — it *reports*, which is how an operator finds out what an evening's consent actually permits before running anything |
+//! | `conclude` | `retention-after-project` | nothing — it destroys, on a date, exactly what a participant who refused indefinite retention asked to have destroyed |
+//! | `withdraw … <purpose>` | one | nothing — it revokes, and `audit … <purpose>` is the separate check |
+//!
+//! `disclose` is not a corpus command and takes no corpus. It prints a
+//! participant's **own** device stream back at them — a few dozen records of
+//! `dx`, `dy` and a timestamp, and the four things a page of prose says can be
+//! worked out from them. It writes nothing, ever: it is a reading of a file the
+//! client already produced, shown to the person who produced it, and
+//! `docs/CONSENT.md` puts it in the procedure before the signature rather than
+//! beside it as an illustration.
 //!
 //! `store` is the pipeline. It takes the sealed replay and the directory of
 //! session parts the nine clients wrote, assembles them into one session record,
@@ -71,9 +97,10 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use replay::calibration::{DeviceProfileId, Profile, rate_seats};
-use replay::consent::ConsentVersion;
+use replay::consent::{ConsentVersion, Permissions, Purpose};
 use replay::corpus::{ConsentRecord, Corpus};
 use replay::manifest::Commitment;
+use replay::permit::Publishable;
 use replay::session::{SeatRecord, SessionRecord, Supervision};
 use replay::split::{HOLDOUT_IN, Split, split_of};
 use replay::telemetry::{Telemetry, TelemetryError};
@@ -93,13 +120,15 @@ fn main() -> ExitCode {
             Some(Path::new(&arguments[3])),
         ),
         ("inspect", 2) => inspect(Path::new(&arguments[1])),
-        ("enrol", 7) => enrol(
+        ("disclose", 2) => disclose(Path::new(&arguments[1])),
+        ("enrol", 8) => enrol(
             &arguments[1],
             &arguments[2],
             &arguments[3],
             &arguments[4],
             &arguments[5],
             &arguments[6],
+            &arguments[7],
         ),
         ("store", 6) => store(
             &arguments[1],
@@ -118,8 +147,19 @@ fn main() -> ExitCode {
             Some(Path::new(&arguments[6])),
         ),
         ("census", 2) => census(&arguments[1]),
-        ("withdraw", 4) => withdraw(&arguments[1], &arguments[2], &arguments[3]),
+        ("permits", 2) => permits(&arguments[1], None),
+        ("permits", 3) => permits(&arguments[1], Some(&arguments[2])),
+        ("publish", 3) => publish(&arguments[1], Path::new(&arguments[2])),
+        ("conclude", 3) => conclude(&arguments[1], &arguments[2]),
+        ("withdraw", 4) => withdraw(&arguments[1], &arguments[2], &arguments[3], None),
+        ("withdraw", 5) => withdraw(
+            &arguments[1],
+            &arguments[2],
+            &arguments[3],
+            Some(&arguments[4]),
+        ),
         ("audit", 3) => audit(&arguments[1], &arguments[2]),
+        ("audit", 4) => audit_purpose(&arguments[1], &arguments[2], &arguments[3]),
         _ => usage(),
     }
 }
@@ -128,36 +168,70 @@ fn usage() -> ExitCode {
     eprintln!("usage: replay keygen <name>");
     eprintln!("       replay verify <replay> <keys> [<telemetry>]");
     eprintln!("       replay inspect <replay>");
+    eprintln!("       replay disclose <telemetry-part>");
     eprintln!(
         "       replay enrol <corpus> <pseudonym> <identity> <consented-on> \
-         <retention-until> <publication:yes|no>"
+         <retention-until> <adult:yes|no> <permits>"
     );
     eprintln!(
         "       replay store <corpus> <replay> <parts-dir> <recorded-on> \
          <in-person|remote|unsupervised> [<telemetry>]"
     );
     eprintln!("       replay census <corpus>");
-    eprintln!("       replay withdraw <corpus> <pseudonym> <date>");
-    eprintln!("       replay audit <corpus> <pseudonym>");
+    eprintln!("       replay permits <corpus> [<purpose>]");
+    eprintln!("       replay publish <corpus> <destination>");
+    eprintln!("       replay conclude <corpus> <date>");
+    eprintln!("       replay withdraw <corpus> <pseudonym> <date> [<purpose>]");
+    eprintln!("       replay audit <corpus> <pseudonym> [<purpose>]");
+    eprintln!();
+    eprintln!(
+        "       <permits> is a comma-separated list of the purposes a participant \
+         granted, or `none`:"
+    );
+    for purpose in Purpose::ALL {
+        eprintln!(
+            "         {:<24} refusing it means {}",
+            purpose.tag(),
+            purpose.refusing_means()
+        );
+    }
     ExitCode::from(2)
 }
 
 /// Records one participant's consent and their pseudonym mapping.
+///
+/// # What it prints that it did not used to, and why that is the point
+///
+/// A participant re-signing because the document moved is entitled to read the
+/// **difference** rather than the whole page; a re-signature against a text
+/// somebody skimmed for the second time is administrative rather than informed.
+/// So this reads whatever record it is about to replace and, if that record was
+/// signed against an older version, prints `replay::consent::since` — every
+/// change between the two, in the participant's own words — before writing
+/// anything. On an ordinary first enrolment it prints nothing, because a command
+/// that emits a paragraph every run teaches its reader to skip it.
 fn enrol(
     root: &str,
     pseudonym: &str,
     identity: &str,
     consented_on: &str,
     retention_until: &str,
-    publication: &str,
+    adult: &str,
+    permits: &str,
 ) -> ExitCode {
-    let publication = match publication {
-        "yes" => true,
-        "no" => false,
-        other => {
-            eprintln!("replay: publication is yes or no, not {other}");
-            return ExitCode::from(2);
+    let Some(adult) = yes_or_no(adult) else {
+        eprintln!("replay: adult is yes or no, not {adult}");
+        return ExitCode::from(2);
+    };
+    let Some(permissions) = parse_permits(permits) else {
+        eprintln!(
+            "replay: {permits:?} is not a permission list. A comma-separated \
+             selection of the purposes below, or `none`:"
+        );
+        for purpose in Purpose::ALL {
+            eprintln!("replay:   {}", purpose.tag());
         }
+        return ExitCode::from(2);
     };
     if replay::Pseudonym::parse(pseudonym).is_none() {
         eprintln!(
@@ -166,30 +240,342 @@ fn enrol(
         );
         return ExitCode::from(2);
     }
+    // The age question, refused here as well as at `store`. Two refusals rather
+    // than one because they answer different questions: this one stops an
+    // operator writing a record that could never be used, and `store`'s stops a
+    // record written by hand or before this check existed from admitting a
+    // match. `docs/CONSENT.md` states the regime; neither of them decides it.
+    if !adult {
+        eprintln!(
+            "replay: refused: this project's consent regime covers adults only. A \
+             participant under 18 cannot give sufficient consent on their own \
+             under Quebec's Law 25, and there is no parental-consent procedure, \
+             no second text and nobody to review one here. This is a human \
+             decision and not a flag to override (docs/CONSENT.md)."
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let corpus = Corpus::open(root);
+    // The difference, before anything is written.
+    if let Some(previous) = corpus.consent_of(pseudonym) {
+        let changes = replay::consent::since(&previous.consent_version);
+        if !changes.is_empty() {
+            println!(
+                "replay: {pseudonym} last signed consent document {}. What changed \
+                 since, newest first — this is what they are re-signing for, and \
+                 they are entitled to read it rather than the whole page:",
+                previous.consent_version
+            );
+            for change in changes {
+                println!("replay:   {} — {}", change.version, change.summary);
+            }
+        }
+    }
+
     let record = ConsentRecord {
         pseudonym: pseudonym.to_owned(),
         consented_on: consented_on.to_owned(),
         retention_until: retention_until.to_owned(),
-        publication,
+        permissions,
+        adult,
         // Stamped from this build rather than typed by the operator: the version
         // is a fact about which document was on the table, and a field somebody
         // types is a field somebody types wrong.
         consent_version: ConsentVersion::current(),
     };
-    if let Err(error) = Corpus::open(root).enrol(&record, identity) {
+    if let Err(error) = corpus.enrol(&record, identity) {
         eprintln!("replay: {root}: {error}");
         return ExitCode::from(2);
     }
     println!(
         "replay: enrolled {pseudonym} under consent document {}, retained until \
-         {retention_until}, publication {}",
-        record.consent_version,
-        if publication { "agreed" } else { "refused" }
+         {retention_until}",
+        record.consent_version
     );
+    // Every purpose, granted or refused, with what the refusal means beside it.
+    // The refusals are the half worth printing: an operator who reads them here
+    // finds out what this evening's corpus will and will not permit, before the
+    // evening rather than at `publish`.
+    for purpose in Purpose::ALL {
+        if permissions.granted(purpose) {
+            println!("replay:   {:<24} granted", purpose.tag());
+        } else {
+            println!(
+                "replay:   {:<24} REFUSED — {}",
+                purpose.tag(),
+                purpose.refusing_means()
+            );
+        }
+    }
     eprintln!(
         "replay: the signed consent text is kept with the corpus and outside this \
          repository. This record is only the machine's note that one exists."
     );
+    ExitCode::SUCCESS
+}
+
+/// `yes` or `no`, and nothing else.
+fn yes_or_no(text: &str) -> Option<bool> {
+    match text {
+        "yes" => Some(true),
+        "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// A comma-separated permission list, or `none`.
+///
+/// Total: an unknown purpose refuses the whole list rather than being skipped,
+/// because a typo that silently grants nothing is a participant's decision lost
+/// in a shell.
+fn parse_permits(text: &str) -> Option<Permissions> {
+    if text == "none" {
+        return Some(Permissions::none());
+    }
+    let mut permissions = Permissions::none();
+    for tag in text.split(',') {
+        permissions.set(Purpose::parse(tag.trim())?, true);
+    }
+    Some(permissions)
+}
+
+/// What each separable purpose currently reaches, and what it does not.
+///
+/// Prints and writes nothing, in the register `census` prints and writes
+/// nothing: every answer here is recomputed from the consent records on disk, so
+/// it cannot drift from them and a withdrawal changes it the moment it happens.
+fn permits(root: &str, purpose: Option<&str>) -> ExitCode {
+    let selected = match purpose {
+        None => Purpose::ALL.to_vec(),
+        Some(tag) => match Purpose::parse(tag) {
+            Some(purpose) => vec![purpose],
+            None => {
+                eprintln!("replay: {tag:?} is not a purpose. One of:");
+                for purpose in Purpose::ALL {
+                    eprintln!("replay:   {}", purpose.tag());
+                }
+                return ExitCode::from(2);
+            }
+        },
+    };
+    let corpus = Corpus::open(root);
+    let matches = match corpus.matches() {
+        Ok(matches) => matches,
+        Err(error) => {
+            eprintln!("replay: {root}: {error}");
+            return ExitCode::from(2);
+        }
+    };
+
+    for purpose in selected {
+        println!();
+        println!(
+            "{} — refusing it means {}",
+            purpose.tag(),
+            purpose.refusing_means()
+        );
+        if purpose == Purpose::NamedAttribution {
+            // No matches to list: this purpose is about a person rather than
+            // about a recording, so the report is the roster.
+            let mut named = 0u32;
+            let mut pseudonymous = 0u32;
+            for match_id in &matches {
+                let Ok(participants) = corpus.participants_of(match_id) else {
+                    continue;
+                };
+                for pseudonym in participants {
+                    if corpus.attribution(&pseudonym).is_ok() {
+                        named = named.saturating_add(1);
+                    } else {
+                        pseudonymous = pseudonymous.saturating_add(1);
+                    }
+                }
+            }
+            println!("  {named} seat-appearance(s) may be named, {pseudonymous} may not");
+            println!(
+                "  This gate reaches the corpus and not a sentence somebody writes. \
+                 It is the one permission here kept by a promise as well as by a \
+                 control (docs/CONSENT.md)."
+            );
+            continue;
+        }
+        if purpose == Purpose::RetentionAfterProject {
+            // Not a gate over matches but a destruction date over people, so the
+            // report is the roster rather than the corpus — the same shape
+            // `named-attribution` takes, one line up.
+            let due = corpus.due_at_conclusion().unwrap_or_default();
+            println!(
+                "  {} participant(s) refused it{}",
+                due.len(),
+                if due.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", due.join(", "))
+                }
+            );
+            println!(
+                "  `replay conclude <corpus> <date>` is what carries it out, and it \
+                 destroys their matches in full."
+            );
+            continue;
+        }
+        let mut permitted = 0u32;
+        for match_id in &matches {
+            match replay::permit::everyone_in(&corpus, match_id, purpose) {
+                Ok(()) => permitted = permitted.saturating_add(1),
+                Err(error) => println!("  {match_id}: withheld — {error}"),
+            }
+        }
+        println!(
+            "  {permitted} of {} match(es) permitted. One refusal withholds a whole \
+             match: a match is one interleaved log and there is no way to use one \
+             seat of it (docs/SCHEMA.md §10).",
+            matches.len()
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// Writes the publishable subset of a corpus, and nothing else.
+///
+/// Every match goes through `replay::Publishable`, which is the only value this
+/// workspace can write to a publication directory and has no constructor that
+/// skips the consent records. So the interesting line below is not the check —
+/// there is no check here — it is that there is no other way to get a match into
+/// the destination.
+fn publish(root: &str, destination: &Path) -> ExitCode {
+    let corpus = Corpus::open(root);
+    let matches = match corpus.matches() {
+        Ok(matches) => matches,
+        Err(error) => {
+            eprintln!("replay: {root}: {error}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let mut published = Vec::new();
+    let mut withheld = 0u32;
+    for match_id in &matches {
+        match Publishable::of(&corpus, match_id) {
+            Ok(publishable) => {
+                if let Err(error) = publishable.write_to(destination) {
+                    eprintln!("replay: {}: {error}", destination.display());
+                    return ExitCode::from(2);
+                }
+                published.push(match_id.clone());
+            }
+            Err(error) => {
+                println!("replay: withheld {match_id}: {error}");
+                withheld = withheld.saturating_add(1);
+            }
+        }
+    }
+
+    println!(
+        "replay: published {} of {} match(es) to {}, withheld {withheld}",
+        published.len(),
+        matches.len(),
+        destination.display()
+    );
+    // The irreversibility, said once and where it lands. `docs/RISKS.md` R3 is
+    // about a publication nobody can recall, and a participant who withdraws
+    // this permission tomorrow is withdrawing it from every future publication
+    // and from none of this one.
+    eprintln!(
+        "replay: a publication cannot be recalled. Every refusal in force at this \
+         moment was honoured; a refusal arriving after this command is a \
+         conversation with a person, and docs/CONSENT.md says so beside the box."
+    );
+    ExitCode::SUCCESS
+}
+
+/// Destroys everything a participant who refused indefinite retention asked to
+/// have destroyed when the project's work ends.
+fn conclude(root: &str, on: &str) -> ExitCode {
+    let corpus = Corpus::open(root);
+    let due = match corpus.due_at_conclusion() {
+        Ok(due) => due,
+        Err(error) => {
+            eprintln!("replay: {root}: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    if due.is_empty() {
+        println!(
+            "replay: nobody in this corpus refused {}; nothing to destroy",
+            Purpose::RetentionAfterProject.tag()
+        );
+        return ExitCode::SUCCESS;
+    }
+    println!(
+        "replay: {} participant(s) refused {}: {}",
+        due.len(),
+        Purpose::RetentionAfterProject.tag(),
+        due.join(", ")
+    );
+    let carried = match corpus.conclude(on) {
+        Ok(carried) => carried,
+        Err(error) => {
+            eprintln!("replay: {root}: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut status = ExitCode::SUCCESS;
+    for (pseudonym, destroyed) in carried {
+        println!(
+            "replay: {pseudonym} — destroyed {} match(es), mapping {}, consent \
+             record {}",
+            destroyed.matches.len(),
+            if destroyed.identity {
+                "destroyed"
+            } else {
+                "not present"
+            },
+            if destroyed.consent {
+                "destroyed"
+            } else {
+                "not present"
+            }
+        );
+        if audit(root, &pseudonym) != ExitCode::SUCCESS {
+            status = ExitCode::FAILURE;
+        }
+    }
+    status
+}
+
+/// Prints a participant their own device stream, and derives from it what a page
+/// of prose can only assert.
+///
+/// # Why this is a command and not a screen
+///
+/// The demonstration has to show the participant *their own* movements, and the
+/// only place text can be rendered in this project is a terminal:
+/// `client::draw` has no font stack and `docs/MILESTONES.md` M4 is explicit that
+/// a glyph atlas is not in scope for a fixture's UI. So the operator runs this
+/// beside them, on the part their own client just wrote.
+///
+/// **It writes nothing.** There is no argument for a destination and no path
+/// through this function to a file, which is what keeps the demonstration
+/// crossing from becoming a recording the corpus holds: the operator points this
+/// at the part, the participant reads it, and `store` is never run on it.
+fn disclose(path: &Path) -> ExitCode {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("replay: {}: {error}", path.display());
+            return ExitCode::from(2);
+        }
+    };
+    let Some(part) = replay::TelemetryPart::decode(&bytes) else {
+        eprintln!(
+            "replay: {} is not a telemetry part (docs/SCHEMA.md §11)",
+            path.display()
+        );
+        return ExitCode::from(2);
+    };
+    print!("{}", replay::disclosure::of(&part));
     ExitCode::SUCCESS
 }
 
@@ -584,6 +970,54 @@ fn census(root: &str) -> ExitCode {
         }
     }
 
+    // What the four separable purposes actually reach, printed beside the counts
+    // they qualify. A corpus of forty matches of which two may be published is a
+    // different artefact from one of forty that may all be, and the difference is
+    // a fact about consent rather than about recording — so it belongs in the
+    // census for the same reason the supervision strata do. One refusal withholds
+    // a whole match, so these numbers fall much faster than a reader expects and
+    // that is the number worth seeing before anything is planned on it.
+    println!();
+    for purpose in Purpose::ALL {
+        if purpose == Purpose::NamedAttribution {
+            let named = people
+                .iter()
+                .filter(|who| corpus.permits(who, purpose))
+                .count();
+            println!(
+                "corpus: {} of {} participant(s) may be named; the rest appear as \
+                 their pseudonym (docs/CONSENT.md)",
+                named,
+                people.len()
+            );
+            continue;
+        }
+        if purpose == Purpose::RetentionAfterProject {
+            let due = corpus.due_at_conclusion().unwrap_or_default();
+            println!(
+                "corpus: {} participant(s) refused {} — `replay conclude` destroys \
+                 everything of theirs when the work ends{}",
+                due.len(),
+                purpose.tag(),
+                if due.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", due.join(", "))
+                }
+            );
+            continue;
+        }
+        let reached = matches
+            .iter()
+            .filter(|match_id| replay::permit::everyone_in(&corpus, match_id, purpose).is_ok())
+            .count();
+        println!(
+            "corpus: {reached} of {recorded} match(es) permit {} — one refusal \
+             withholds a whole match (docs/SCHEMA.md §10)",
+            purpose.tag()
+        );
+    }
+
     if !unaccountable.is_empty() {
         eprintln!(
             "replay: {} match(es) do not read and are in nobody's account:",
@@ -948,7 +1382,10 @@ fn describe(replay: &Replay) {
 /// destruction command that reports success without looking is the failure mode
 /// the whole mechanism exists to avoid. If anything is left, this exits non-zero
 /// having *said what*, and the corpus is in the state the next run repairs.
-fn withdraw(root: &str, pseudonym: &str, on: &str) -> ExitCode {
+fn withdraw(root: &str, pseudonym: &str, on: &str, purpose: Option<&str>) -> ExitCode {
+    if let Some(tag) = purpose {
+        return withdraw_purpose(root, pseudonym, on, tag);
+    }
     let corpus = Corpus::open(root);
     let destroyed = match corpus.withdraw(pseudonym, on) {
         Ok(destroyed) => destroyed,
@@ -980,6 +1417,83 @@ fn withdraw(root: &str, pseudonym: &str, on: &str) -> ExitCode {
         }
     );
     audit(root, pseudonym)
+}
+
+/// Revokes one permission and leaves the participation standing.
+///
+/// **Nothing is destroyed here, and that is the whole difference.** A partial
+/// withdrawal takes back a *use*; the recordings stay, the participant stays in
+/// the corpus, and what changes is that the gate for that purpose stops letting
+/// their matches through. The audit that follows is not this command reading
+/// back what it wrote — it runs the use's own gate over the matches they are in,
+/// which is the question they actually asked.
+fn withdraw_purpose(root: &str, pseudonym: &str, on: &str, tag: &str) -> ExitCode {
+    let Some(purpose) = Purpose::parse(tag) else {
+        eprintln!("replay: {tag:?} is not a purpose. One of:");
+        for purpose in Purpose::ALL {
+            eprintln!("replay:   {}", purpose.tag());
+        }
+        return ExitCode::from(2);
+    };
+    let corpus = Corpus::open(root);
+    let revoked = match corpus.withdraw_purpose(pseudonym, purpose, on) {
+        Ok(revoked) => revoked,
+        Err(error) => {
+            eprintln!("replay: {root}: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    println!(
+        "replay: {} {} for {pseudonym} on {on}",
+        purpose.tag(),
+        if revoked {
+            "withdrawn"
+        } else {
+            "was already refused or unrecorded; nothing to revoke"
+        }
+    );
+    println!(
+        "replay: participation unchanged — no match destroyed, nothing else \
+         touched. From now on, {}.",
+        purpose.refusing_means()
+    );
+    audit_purpose(root, pseudonym, tag)
+}
+
+/// Fails, by name, if any use of a withdrawn purpose would still reach this
+/// participant.
+fn audit_purpose(root: &str, pseudonym: &str, tag: &str) -> ExitCode {
+    let Some(purpose) = Purpose::parse(tag) else {
+        eprintln!("replay: {tag:?} is not a purpose. One of:");
+        for purpose in Purpose::ALL {
+            eprintln!("replay:   {}", purpose.tag());
+        }
+        return ExitCode::from(2);
+    };
+    match Corpus::open(root).audit_purpose(pseudonym, purpose) {
+        Ok(reached) if reached.is_empty() => {
+            println!(
+                "replay: no use of {} reaches {pseudonym} in this corpus",
+                purpose.tag()
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(reached) => {
+            eprintln!(
+                "replay: {} of {pseudonym}'s record(s) would still be used for {}:",
+                reached.len(),
+                purpose.tag()
+            );
+            for what in reached {
+                eprintln!("replay:   {what}");
+            }
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("replay: {root}: {error}");
+            ExitCode::from(2)
+        }
+    }
 }
 
 /// Fails, loudly and by name, if anything about a pseudonym is left.

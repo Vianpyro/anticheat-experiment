@@ -187,7 +187,8 @@ fn the_destruction_procedure_runs_end_to_end_on_a_discarded_recording() {
             &format!("{who}@example.invalid"),
             "2026-09-01",
             "2028-09-01",
-            "no",
+            "yes",
+            "none",
         ]);
         assert!(output.status.success(), "enrol refused {who}");
     }
@@ -313,6 +314,319 @@ fn the_destruction_procedure_runs_end_to_end_on_a_discarded_recording() {
     );
 }
 
+/// **The granular half of the procedure, run end to end through the tool.**
+///
+/// `docs/CONSENT.md` promises four things a participant can refuse on their own,
+/// and `replay/tests/permissions.rs` proves each gate refuses. What that file
+/// cannot establish is the same thing this one exists for: that the **commands**
+/// an operator types apply them — an argument in the wrong place, a command that
+/// reports success while writing a match it should have withheld, an exit status
+/// nobody set. All of that is invisible from inside the library.
+///
+/// Two participants, one match, and one of them refuses publication. Everything
+/// below is checked for what it did rather than for what it printed.
+#[test]
+fn the_granular_procedure_runs_end_to_end_through_the_tool() {
+    let scratch = Scratch::new("granular");
+    let corpus = scratch.join("corpus");
+    let staging = scratch.join("staging");
+    let published = scratch.join("published");
+    let replay_path = scratch.join("match.replay");
+    std::fs::create_dir_all(&staging).expect("a staging directory");
+
+    let root = corpus.display().to_string();
+    let staged = staging.display().to_string();
+    let sealed = replay_path.display().to_string();
+    let destination = published.display().to_string();
+
+    // 1. Enrol, with the permissions each participant gave. `drill-two` refused
+    //    publication and everything else; `drill-one` granted the lot.
+    assert!(
+        run(&[
+            "enrol",
+            &root,
+            "drill-one",
+            "drill-one@example.invalid",
+            "2026-09-01",
+            "2028-09-01",
+            "yes",
+            "publication,bot-training,retention-after-project,named-attribution",
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        run(&[
+            "enrol",
+            &root,
+            "drill-two",
+            "drill-two@example.invalid",
+            "2026-09-01",
+            "2028-09-01",
+            "yes",
+            "bot-training",
+        ])
+        .status
+        .success()
+    );
+
+    // …and a participant under 18 is refused by the tool, before any record
+    // exists. The exit status is what an operator sees.
+    let refused = run(&[
+        "enrol",
+        &root,
+        "drill-three",
+        "drill-three@example.invalid",
+        "2026-09-01",
+        "2028-09-01",
+        "no",
+        "none",
+    ]);
+    assert!(
+        !refused.status.success(),
+        "the tool enrolled a participant recorded as under 18"
+    );
+    assert!(
+        !corpus
+            .join("participants")
+            .join("drill-three.consent")
+            .exists(),
+        "a refused enrolment wrote a consent record anyway"
+    );
+
+    // 2. Record and file, exactly as the procedure above does.
+    let match_id = seal_to(&replay_path, ["drill-one", "drill-two"]);
+    for seat in 0..2usize {
+        std::fs::write(
+            staging.join(format!("seat-{seat}.session-part")),
+            a_part(seat),
+        )
+        .expect("write a session part");
+    }
+    assert!(
+        run(&["store", &root, &sealed, &staged, "2026-09-01", "in-person"])
+            .status
+            .success(),
+        "store refused a match the consent regime accounts for"
+    );
+
+    // 3. `permits` reports, before anything is run on the corpus, what the
+    //    evening's consent actually permits.
+    let output = run(&["permits", &root]);
+    assert!(output.status.success());
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        printed.contains("withheld") && printed.contains("drill-two"),
+        "`permits` does not name who withheld what:\n{printed}"
+    );
+
+    // 4. Publish. The one match in this corpus has a refusal in it, so nothing is
+    //    written — and the antecedent matters: the destination must not merely be
+    //    empty because the corpus is (`docs/RISKS.md` R15).
+    let output = run(&["publish", &root, &destination]);
+    assert!(output.status.success(), "publish exited non-zero");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        printed.contains("published 0 of 1 match(es)") && printed.contains("withheld"),
+        "publish did not withhold a match a participant refused:\n{printed}"
+    );
+    assert!(
+        !published.join("matches").exists(),
+        "a match a participant refused publication for reached the destination"
+    );
+
+    // …and once they permit it, the same command writes it — which is what makes
+    // the refusal above a refusal rather than a publish command that does
+    // nothing.
+    assert!(
+        run(&[
+            "enrol",
+            &root,
+            "drill-two",
+            "drill-two@example.invalid",
+            "2026-09-01",
+            "2028-09-01",
+            "yes",
+            "publication,bot-training",
+        ])
+        .status
+        .success()
+    );
+    let output = run(&["publish", &root, &destination]);
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("published 1 of 1 match(es)"),
+        "the same corpus with the refusal lifted still published nothing"
+    );
+    assert!(
+        published
+            .join("matches")
+            .join(match_id.to_string())
+            .join("match.replay")
+            .exists(),
+        "the publishable match did not reach the destination"
+    );
+
+    // 5. Withdraw one permission. The participation survives it, which is the
+    //    whole difference, and the command audits itself on the way out.
+    let output = run(&["withdraw", &root, "drill-one", "2026-09-20", "publication"]);
+    assert!(
+        output.status.success(),
+        "the purpose audit found a use still reaching a participant who withdrew"
+    );
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(printed.contains("participation unchanged"));
+    assert!(
+        corpus
+            .join("matches")
+            .join(match_id.to_string())
+            .join("match.replay")
+            .exists(),
+        "a partial withdrawal destroyed a match"
+    );
+    assert!(
+        corpus
+            .join("participants")
+            .join("drill-one.consent")
+            .exists(),
+        "a partial withdrawal destroyed the consent record"
+    );
+
+    // …and the next publication honours it. The destination already holds the
+    // match from step 4, which is `docs/CONSENT.md`'s point about
+    // irreversibility standing in front of a reader rather than beside them:
+    // what the withdrawal reaches is every future publication and none of the
+    // one that happened.
+    let output = run(&[
+        "publish",
+        &root,
+        &scratch.join("later").display().to_string(),
+    ]);
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("published 0 of 1 match(es)"),
+        "a publication after the withdrawal published the match anyway"
+    );
+    assert!(
+        published
+            .join("matches")
+            .join(match_id.to_string())
+            .join("match.replay")
+            .exists(),
+        "the earlier publication was silently retracted, which this project \
+         cannot do and must not claim to"
+    );
+
+    // 6. Conclude. `drill-two` re-enrolled without retention-after-project, so
+    //    the project's end destroys everything of theirs — and takes the match
+    //    with it, because a match is one interleaved log.
+    let output = run(&["conclude", &root, "2027-03-01"]);
+    assert!(output.status.success(), "conclude left something behind");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        printed.contains("drill-two") && printed.contains("destroyed 1 match(es)"),
+        "conclude did not destroy what a participant refused to have kept:\n{printed}"
+    );
+    assert!(
+        !corpus.join("matches").join(match_id.to_string()).exists(),
+        "the match survived the conclusion"
+    );
+    assert!(
+        run(&["audit", &root, "drill-two"]).status.success(),
+        "something about drill-two survived the conclusion"
+    );
+}
+
+/// **`disclose` reads a part and writes nothing**, which is the property the
+/// demonstration rests on.
+///
+/// `replay/tests/disclosure.rs` is where the page's arithmetic is checked. What
+/// this adds is the operator's half: the command exists, it exits zero on a real
+/// part file, and the directory it was pointed at is byte-for-byte what it was
+/// before — because the whole argument for showing a participant their own data
+/// before they sign is that the crossing it came from is never held.
+#[test]
+fn disclose_prints_a_participants_own_stream_and_writes_nothing() {
+    let scratch = Scratch::new("disclose");
+    let directory = scratch.join("parts");
+    std::fs::create_dir_all(&directory).expect("a directory");
+    let path = directory.join("seat-0.telemetry-part");
+
+    let mut samples = Vec::new();
+    for index in 0..64u64 {
+        samples.push(replay::telemetry::Sample {
+            at_ns: index * 1_000_000,
+            event: replay::telemetry::Event::Moved {
+                dx: if index % 2 == 0 { 5.0 } else { -2.0 },
+                dy: 1.0,
+            },
+        });
+    }
+    samples.push(replay::telemetry::Sample {
+        at_ns: 64_000_000,
+        event: replay::telemetry::Event::Viewed {
+            tick: sim::Tick(2),
+            seq: 2,
+        },
+    });
+    samples.push(replay::telemetry::Sample {
+        at_ns: 64_000_000 + 187_000_000,
+        event: replay::telemetry::Event::Pressed {
+            control: replay::telemetry::Control::Move,
+            down: true,
+        },
+    });
+    let part = replay::TelemetryPart {
+        seat: sim::Seat::Blue0,
+        stream: replay::telemetry::SeatStream {
+            clock: replay::session::Clock::Dequeue,
+            platform: replay::session::Platform::Linux,
+            world_units_per_count_e6: 50_000,
+            dropped: 0,
+            samples,
+        },
+    };
+    std::fs::write(&path, part.encode()).expect("write a part");
+
+    let before = listing(&scratch.join(""));
+    let output = run(&["disclose", &path.display().to_string()]);
+    assert!(output.status.success(), "disclose refused a real part");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        printed.contains("This is your own recording"),
+        "disclose printed nothing a participant would recognise:\n{printed}"
+    );
+    assert!(
+        printed.contains("187 ms"),
+        "the reaction was not derived from this part's own anchor:\n{printed}"
+    );
+    assert_eq!(
+        listing(&scratch.join("")),
+        before,
+        "disclose wrote something. The whole argument for showing a participant \
+         their own data before they sign is that the crossing is never held."
+    );
+}
+
+/// Every path under a directory, sorted — the crudest possible statement that
+/// nothing was written.
+fn listing(root: &Path) -> Vec<String> {
+    fn walk(directory: &Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            out.push(path.display().to_string());
+            if path.is_dir() {
+                walk(&path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, &mut out);
+    out.sort();
+    out
+}
+
 /// **The pipeline refuses a session the consent regime cannot account for**, as
 /// the operator meets it: through the tool, with an exit status.
 #[test]
@@ -332,7 +646,8 @@ fn the_tool_refuses_a_match_with_no_session_parts_collected() {
                 "someone",
                 "2026-09-01",
                 "2028-09-01",
-                "no",
+                "yes",
+                "none",
             ])
             .status
             .success()

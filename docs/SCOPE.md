@@ -320,6 +320,18 @@ They are named to constrain today's architecture (a headless, allocation-cheap
 `sim` API; a player-identity notion that survives across matches), not to be
 built now.
 
+**And the second one now carries a constraint from the consent regime rather
+than only from the architecture.** Training a bot on the human corpus is a
+*different purpose* from calibrating a detector on it — one reads a recording to
+describe how people play, the other to produce something that plays — so
+`docs/CONSENT.md` makes it a separate box, refused by default. The mechanical
+consequence lands here rather than at M-whenever: `replay::TrainingSet` is the
+only value that yields corpus matches for training, it excludes every match any
+participant of which refused, and a model trained on it carries the pseudonyms it
+learned from so that a withdrawal reaches it (`docs/SCHEMA.md` §10b). An RL
+sub-project that reads the corpus through anything else is out of scope by
+construction.
+
 ## Out of scope, with reasons
 
 ### Client-side anti-tamper — excluded on evidence
