@@ -67,11 +67,24 @@ fn stored(observations: Observations) -> replay::calibration::Observations {
 /// window sizes a factor of six apart in pixels per world unit: identical trace,
 /// identical cursor, identical reaches, identical statistics.
 ///
-/// Both mutations that would break it turn this red. Resolving a click against a
-/// screen position — the natural thing to write for a menu — makes the two
-/// disagree about what was clicked as soon as the windows differ; closing a leg
-/// on a redraw rather than on a click makes the reach counts differ with the
-/// frame rate.
+/// Two mutations turn this red, and they are the two natural ways to write a
+/// menu. Driving the lobby from a **system pointer** — one device count moving
+/// it one pixel, which is what an operating system's pointer does — makes the
+/// synthetic hand miss every element, because it steers by the cursor the player
+/// sees; and **measuring the movement in pixels** rather than in the device's own
+/// counts makes the two clients report scales a factor of six apart, at
+/// `sum_counts` and `quantum`.
+///
+/// **And one mutation that does not, which is worth stating rather than
+/// discovering.** Quantising the resolved cursor to the pixel the renderer would
+/// draw it on — R14's own failure, rebuilt finer — passes this. The reason is
+/// that the measurement never reads the cursor as a *quantity*: a reach's
+/// distance comes from two positions the build fixes, and its cost comes from the
+/// raw deltas. The cursor is consulted only to decide **which** element was
+/// clicked, over radii of six and eleven world units, so a snap of a third of a
+/// unit changes nothing. That is a real robustness rather than a gap in the test
+/// — and it is also the reason this property is stated over the observations and
+/// not over the cursor.
 #[test]
 fn the_window_cannot_reach_the_lobby() {
     let hand = Hand::quick();
@@ -336,7 +349,12 @@ fn a_crossing_at_a_creep_reads_no_report_rate() {
     let device = DeviceProfileId::parse("mouse-a").expect("a device label");
     let mut profile = Profile::empty(device.clone());
     profile.fold(observations);
-    assert!(!profile.sufficient());
+    assert!(
+        !profile.sufficient(),
+        "a crossing with no fast reach in it was rated as a calibrated device: \
+         the report rate is the one quantity a creeping hand cannot produce, and \
+         sufficiency has stopped requiring it"
+    );
     assert!(
         profile
             .shortfall()

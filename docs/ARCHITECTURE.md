@@ -1704,13 +1704,23 @@ Each is a test or a lint, not a convention:
    menu and exists for the reason that one does: a measurement taken through a
    display inherits the display.
 
-   The two mutations that would break it are the two natural ways to write a
-   menu, and both turn it red. Resolving a click against a screen position makes
-   the two clients disagree about what was clicked as soon as the windows differ;
-   closing a movement on a redraw rather than on a click makes the reach count a
-   function of the frame rate. `client::lobby` holds no viewport, and
-   `client::draw` still exposes no inverse projection, so there is no screen-space
-   quantity for either to derive from.
+   The two mutations that break it are the two natural ways to write a menu.
+   Driving the lobby from a **system pointer** — one device count moving it one
+   pixel — makes the synthetic hand miss every element, because it steers by the
+   cursor a player sees; **measuring the movement in pixels** rather than in the
+   device's own counts makes two clients report scales a factor of six apart.
+   `client::lobby` holds no viewport and `client::draw` still exposes no inverse
+   projection, so there is no screen-space quantity for either to derive from.
+
+   **And a third mutation passes, which is recorded rather than left to be
+   discovered.** Quantising the resolved cursor to the pixel the renderer would
+   draw it on — R14's own failure, one order finer — changes nothing, because the
+   measurement never reads the cursor as a *quantity*: a reach's distance is two
+   positions the build fixes and its cost is the raw deltas, and the cursor
+   decides only *which* element was clicked, over radii of six and eleven world
+   units. That is a robustness of the design rather than a hole in the test, and
+   it is why the property is stated over the observations rather than over the
+   cursor.
 
    Two properties travel with it, because the measurement is worth nothing if it
    is not the thing it claims to be. A simulated crossing recovers the scale this

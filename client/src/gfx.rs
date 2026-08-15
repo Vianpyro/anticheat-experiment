@@ -299,7 +299,7 @@ impl Session {
 
     fn redraw(&mut self) {
         if self.play.in_lobby() {
-            let marks = crate::lobby::compose(self.play.lobby());
+            let marks = crate::lobby::compose(self.play.lobby(), self.play.aim());
             let viewport = self.play.viewport();
             if let Some(screen) = self.screen.as_mut()
                 && let Err(error) = screen.present(&marks, viewport)
@@ -390,6 +390,15 @@ impl ApplicationHandler<Wake> for Session {
         let at_ns = self.at_ns();
         if let DeviceEvent::MouseMotion { delta } = event {
             self.play.moved(at_ns, delta.0, delta.1);
+            // In the lobby nothing else asks for a frame: the server is not
+            // ticking yet, because it waits for every occupied seat to be ready,
+            // so there are no views arriving to wake the loop. A cursor that
+            // only moves when the player clicks is a cursor nobody can aim.
+            if self.play.in_lobby()
+                && let Some(screen) = self.screen.as_ref()
+            {
+                screen.window.request_redraw();
+            }
         }
     }
 

@@ -600,7 +600,7 @@ const fn fx(units: f64) -> sim::Fx {
 /// player needs to know is which of the four things they have already touched,
 /// and a filled disc says that.
 #[must_use]
-pub fn compose(lobby: &Lobby) -> Vec<Mark> {
+pub fn compose(lobby: &Lobby, cursor: FxVec2) -> Vec<Mark> {
     let mut marks = Vec::with_capacity(8);
     let button = |visited: bool| {
         if visited {
@@ -634,9 +634,13 @@ pub fn compose(lobby: &Lobby) -> Vec<Mark> {
         radius: fx(DUMMY_RADIUS),
         colour: colour::DAMAGE,
     });
+    // The cursor, which is the integrated one and the only one this client has.
+    // It is passed in rather than held for the reason the whole module is about:
+    // there is no path from here to a window, and drawing is the one direction
+    // the position is allowed to travel.
     marks.push(Mark::Cross {
-        at: lobby.position_of(Element::Champion),
-        colour: colour::ALLY,
+        at: cursor,
+        colour: colour::AIM,
     });
     marks
 }
