@@ -97,6 +97,7 @@ use winit::window::{Window, WindowId};
 use crate::draw::{Mark, Viewport, compose, rasterize};
 use crate::health::{Cadence, CadenceReport, Recorded, SessionPart};
 use crate::input::{Control, TraceStats};
+use crate::lobby::Element;
 use crate::play::{Aiming, Play};
 use crate::predict::Prediction;
 use crate::{ClientError, Headless};
@@ -214,6 +215,14 @@ struct Session {
     seat: Seat,
     inbox: Receiver<[u8; SERVER_FRAME_BYTES]>,
     outbox: tokio::sync::mpsc::Sender<ClientFrame>,
+    /// The `Ready` frame, held until the player asks to start.
+    ///
+    /// It used to be sent the moment the server assigned a seat, which made the
+    /// lobby a thing that did not exist: the match began as soon as the last
+    /// client connected. Holding it is what turns the wait for the other players
+    /// into an interval the client is in charge of — and `crate::lobby` is what
+    /// that interval is for.
+    ready: Option<ClientFrame>,
     /// The loop, measured against one tick. See this module's header.
     cadence: Cadence,
     /// When the current pass began, or `None` between passes.
@@ -289,6 +298,16 @@ impl Session {
     }
 
     fn redraw(&mut self) {
+        if self.play.in_lobby() {
+            let marks = crate::lobby::compose(self.play.lobby());
+            let viewport = self.play.viewport();
+            if let Some(screen) = self.screen.as_mut()
+                && let Err(error) = screen.present(&marks, viewport)
+            {
+                self.outcome = Some(Ending::Failed(error));
+            }
+            return;
+        }
         let (Some(view), Some(prediction)) = (self.headless.view(), self.prediction.as_ref())
         else {
             return;
@@ -450,7 +469,31 @@ impl Session {
         event_loop.exit();
     }
 
+    /// The player asked to start: the held `Ready` leaves, and the server begins
+    /// ticking once every occupied seat has done the same.
+    fn start(&mut self) {
+        let Some(ready) = self.ready.take() else {
+            return;
+        };
+        if self.outbox.try_send(ready).is_err() {
+            self.outcome.get_or_insert(Ending::Over);
+        }
+    }
+
     fn press(&mut self, at_ns: u64, control: Control, down: bool) {
+        if self.play.in_lobby() {
+            // The lobby's own click path. It records the press into the same
+            // trace either way — including a click that lands on nothing, which
+            // is a thing the player did — and answers what was hit so that
+            // `Ready` can leave.
+            if self.play.pressed_in_lobby(at_ns, control, down) == Some(Element::Ready) {
+                self.start();
+            }
+            if let Some(screen) = self.screen.as_ref() {
+                screen.window.request_redraw();
+            }
+            return;
+        }
         let Some((view, own)) = self.aiming() else {
             return;
         };
@@ -538,7 +581,6 @@ pub fn play(
 
     let (in_tx, in_rx) = std::sync::mpsc::channel();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<ClientFrame>(64);
-    out_tx.try_send(ready).map_err(|error| error.to_string())?;
 
     runtime.spawn(async move {
         loop {
@@ -572,6 +614,7 @@ pub fn play(
         seat,
         inbox: in_rx,
         outbox: out_tx,
+        ready: Some(ready),
         cadence: Cadence::new(),
         pass_began: None,
         outcome: None,
@@ -587,9 +630,10 @@ pub fn play(
     if let Some(recorded) = recorded {
         let part = SessionPart {
             seat,
-            declared: recorded.declared,
+            declared: recorded.declared.clone(),
             trace: stats,
             cadence,
+            calibration: session.play.lobby().observations(),
         };
         std::fs::create_dir_all(&recorded.directory)
             .map_err(|error| format!("{}: {error}", recorded.directory.display()))?;

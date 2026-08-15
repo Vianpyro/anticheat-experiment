@@ -126,6 +126,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::calibration::{DeviceProfileId, Profile};
 use crate::consent::ConsentVersion;
 use crate::manifest::Commitment;
 use crate::session::{SeatRecord, SessionRecord};
@@ -591,6 +592,63 @@ impl Corpus {
                 io::Error::new(io::ErrorKind::InvalidData, format!("{match_id}: {error}"))
             }),
         }
+    }
+
+    /// A participant's device profile: every session they have already recorded
+    /// on this device, folded.
+    ///
+    /// **Computed, never stored.** A profile file would be a derived artefact
+    /// with two failure modes this corpus has spent two milestones removing: it
+    /// can disagree with the matches it was derived from, and it outlives a
+    /// withdrawal that destroyed them. `replay::split::split_of` is a function
+    /// rather than a file for the same reason and `census` prints rather than
+    /// writes for the same reason. The cost is a walk over the corpus, which is
+    /// milliseconds on the dozens of matches `docs/SCOPE.md` puts in scope.
+    ///
+    /// `skip` is the match being filed, so that rating a seat compares it against
+    /// the profile as it stood **before** this session — a check that folds the
+    /// session in first is a check agreeing with itself.
+    ///
+    /// A match this corpus cannot account for contributes nothing, and neither
+    /// does a seat that declares another device: two devices under one profile is
+    /// exactly the pooling the label exists to prevent.
+    ///
+    /// # Errors
+    ///
+    /// Anything the filesystem refuses while listing the matches.
+    pub fn profile_of(
+        &self,
+        pseudonym: &str,
+        device: &DeviceProfileId,
+        skip: Option<&str>,
+    ) -> io::Result<Profile> {
+        let mut profile = Profile::empty(device.clone());
+        for match_id in self.matches()? {
+            if skip == Some(match_id.as_str()) {
+                continue;
+            }
+            let (Ok(replay), Ok(session)) = (self.replay_of(&match_id), self.session_of(&match_id))
+            else {
+                continue;
+            };
+            for (index, slot) in replay.manifest.participants.iter().enumerate() {
+                if slot.as_ref().map(ToString::to_string).as_deref() != Some(pseudonym) {
+                    continue;
+                }
+                let Some(SeatRecord::Human {
+                    declared,
+                    calibration,
+                    ..
+                }) = session.seats.get(index)
+                else {
+                    continue;
+                };
+                if &declared.device_profile_id == device {
+                    profile.fold(calibration.observations);
+                }
+            }
+        }
+        Ok(profile)
     }
 
     /// The session record a match directory holds.

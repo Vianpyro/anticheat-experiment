@@ -70,6 +70,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::ExitCode;
 
+use replay::calibration::{DeviceProfileId, Profile, rate_seats};
 use replay::consent::ConsentVersion;
 use replay::corpus::{ConsentRecord, Corpus};
 use replay::manifest::Commitment;
@@ -245,7 +246,7 @@ fn store(
         return ExitCode::from(2);
     }
 
-    let session = match SessionRecord::assemble(
+    let mut session = match SessionRecord::assemble(
         replay.manifest.match_id,
         ConsentVersion::current(),
         recorded_on,
@@ -259,6 +260,28 @@ fn store(
         }
     };
 
+    // How well each seat's device is known, decided **here** and frozen into the
+    // record. It is a decision rather than a measurement — it reads the
+    // participant's earlier sessions on the same device — and freezing it is what
+    // lets a distribution stratify later without recomputing anything, which is
+    // what `docs/SCHEMA.md` §8 requires of a stratum a published number rests on.
+    //
+    // It refuses nothing. A seat nobody has calibrated is filed as `partial` and
+    // the match is stored: `docs/SCHEMA.md` §4e, and `docs/SCOPE.md`'s standing
+    // decision that an anti-cheat which degrades honest play has cost more than
+    // it caught.
+    let corpus = Corpus::open(root);
+    let filed = replay.manifest.match_id.to_string();
+    let participants = replay.manifest.participants.clone();
+    rate_seats(&mut session, &|seat: usize, device: &DeviceProfileId| {
+        let Some(Some(pseudonym)) = participants.get(seat) else {
+            return Profile::empty(device.clone());
+        };
+        corpus
+            .profile_of(pseudonym.as_str(), device, Some(&filed))
+            .unwrap_or_else(|_| Profile::empty(device.clone()))
+    });
+
     let telemetry = match telemetry_path {
         None => None,
         Some(path) => match read_telemetry(path) {
@@ -267,7 +290,7 @@ fn store(
         },
     };
 
-    match Corpus::open(root).store(&replay, &session, telemetry.as_ref()) {
+    match corpus.store(&replay, &session, telemetry.as_ref()) {
         Ok(()) => {
             println!(
                 "replay: stored {} — {} seat(s) occupied, {}, supervision {}, {}",
@@ -279,6 +302,31 @@ fn store(
                     "DEGRADED: a client fell behind the tick"
                 } else {
                     "every client kept the tick"
+                }
+            );
+            // The calibration strata, printed on the way out for the reason
+            // `docs/RISKS.md` R15 gives about counters: an operator who reads
+            // `4 sufficient, 5 partial` knows what the evening bought, and one
+            // who reads `1 mismatched` knows to ask whose mouse changed before
+            // the answer is six months old.
+            let mut states: BTreeMap<&'static str, u32> = BTreeMap::new();
+            for seat in &session.seats {
+                if matches!(seat, SeatRecord::Human { .. }) {
+                    *states.entry(seat.calibration().tag()).or_insert(0) += 1;
+                }
+            }
+            println!(
+                "replay: calibration — {}; an insufficiently calibrated seat is \
+                 marked and never refused, and a detector that reads a distance \
+                 or a speed answers None for it (docs/SCHEMA.md §4e)",
+                if states.is_empty() {
+                    "-".to_owned()
+                } else {
+                    states
+                        .iter()
+                        .map(|(state, seats)| format!("{seats} {state}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 }
             );
             match &telemetry {
@@ -343,6 +391,8 @@ fn census(root: &str) -> ExitCode {
     let mut device_events = 0u64;
     let mut telemetry_bytes = 0u64;
     let mut polling: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut calibration: BTreeMap<&'static str, u32> = BTreeMap::new();
+    let mut profiles: BTreeMap<(String, String), Profile> = BTreeMap::new();
 
     for match_id in &matches {
         let (Ok(replay), Ok(session)) = (corpus.replay_of(match_id), corpus.session_of(match_id))
@@ -361,9 +411,28 @@ fn census(root: &str) -> ExitCode {
                 device_events = device_events.saturating_add(seat.samples);
             }
         }
-        for seat in &session.seats {
-            if let SeatRecord::Human { declared, .. } = seat {
-                *polling.entry(declared.device_polling_hz).or_insert(0) += 1;
+        for (index, seat) in session.seats.iter().enumerate() {
+            let SeatRecord::Human {
+                declared,
+                calibration: seat_calibration,
+                ..
+            } = seat
+            else {
+                continue;
+            };
+            *polling.entry(declared.device_polling_hz).or_insert(0) += 1;
+            *calibration.entry(seat.calibration().tag()).or_insert(0) += 1;
+            // Folded here rather than through `Corpus::profile_of` because a
+            // census walks the corpus once and asking per seat would walk it
+            // once per seat. The answer is the same fold.
+            if let Some(Some(pseudonym)) = replay.manifest.participants.get(index) {
+                profiles
+                    .entry((
+                        pseudonym.to_string(),
+                        declared.device_profile_id.to_string(),
+                    ))
+                    .or_insert_with(|| Profile::empty(declared.device_profile_id.clone()))
+                    .fold(seat_calibration.observations);
             }
         }
         for pseudonym in replay.manifest.participants() {
@@ -465,6 +534,55 @@ fn census(root: &str) -> ExitCode {
                 .join(", ")
         }
     );
+
+    // What the lobby has bought so far, per participant and per device. The
+    // measurement is the answer to `docs/RISKS.md` R17 — nine people on nine
+    // mice, person and device perfectly confounded — and the honest form of a
+    // report on it is the shortfall rather than the estimate, because a scale
+    // estimated from too few directions is a number with the shape of a
+    // calibration and none of the basis.
+    println!(
+        "corpus: calibration — {}; an insufficiently calibrated seat is marked \
+         and never refused, and a detector that reads a distance or a speed \
+         answers None for it (docs/SCHEMA.md §4e)",
+        if calibration.is_empty() {
+            "no seat records a lobby crossing".to_owned()
+        } else {
+            calibration
+                .iter()
+                .map(|(state, seats)| format!("{seats} seat(s) {state}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    );
+    for ((pseudonym, device), profile) in &profiles {
+        let shortfall = profile.shortfall();
+        match (profile.estimate(), shortfall.is_empty()) {
+            (Some(estimate), true) => println!(
+                "corpus: {pseudonym} on {device} — {} session(s), {} reach(es): \
+                 {:.3} device count(s) per world unit, arrival cost {:.1} count(s), \
+                 fit {:.3}, {:.0} Hz measured, quantum {:.4} count(s)",
+                profile.sessions,
+                profile.observations.reaches,
+                estimate.counts_per_unit,
+                estimate.arrival_counts,
+                estimate.fit,
+                estimate.report_hz,
+                estimate.quantum
+            ),
+            (_, _) => println!(
+                "corpus: {pseudonym} on {device} — {} session(s), {} reach(es): not \
+                 yet sufficient ({})",
+                profile.sessions,
+                profile.observations.reaches,
+                if shortfall.is_empty() {
+                    "no fit over these distances".to_owned()
+                } else {
+                    shortfall.join(", ")
+                }
+            ),
+        }
+    }
 
     if !unaccountable.is_empty() {
         eprintln!(

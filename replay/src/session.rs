@@ -56,6 +56,7 @@
 
 use sim::PLAYER_COUNT;
 
+use crate::calibration::{DeviceProfileId, Observations, SeatCalibration};
 use crate::consent::ConsentVersion;
 use crate::manifest::MatchId;
 
@@ -81,8 +82,22 @@ pub enum Provenance {
 }
 
 /// What a participant was asked, and could not be measured.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Declared {
+    /// **Which device this participant played on**, as a label the operator
+    /// keeps stable for as long as the hardware does not change.
+    ///
+    /// A declaration like the two numbers below: no process can tell one mouse
+    /// from another, and `docs/CONSENT.md` promises that no model, serial or
+    /// manufacturer is collected. What it buys is the thing a session record
+    /// otherwise cannot express — that two sessions were played on **the same
+    /// device** — and without it a device profile could never be better than one
+    /// evening's worth of movements, because every session would be an island.
+    ///
+    /// It is not the pseudonym and it is not the match. A participant who
+    /// changes mouse declares a new label, which is exactly the point: two
+    /// devices must not be pooled into one profile.
+    pub device_profile_id: DeviceProfileId,
     /// Counts per inch, as the participant reports their mouse configured.
     pub device_cpi: u32,
     /// The device's report rate in hertz, as the participant reports it.
@@ -291,7 +306,18 @@ impl Clock {
 }
 
 /// One seat of one match.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// The two variants are very different sizes, and that is the shape of the data
+/// rather than an oversight: an empty seat is the absence of everything a filled
+/// one carries. There are nine of these per match and matches are counted in
+/// dozens (`docs/SCOPE.md`: scale is out of scope), so boxing the occupied
+/// variant would add an indirection and a lifetime to save a few hundred bytes
+/// nobody is short of.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "nine per match, and the empty variant is an absence rather than a case"
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SeatRecord {
     /// Nobody sat here.
     Empty,
@@ -301,6 +327,15 @@ pub enum SeatRecord {
         declared: Declared,
         /// What their client observed.
         measured: Measured,
+        /// What crossing the lobby measured about the device, and how well the
+        /// device was known when this match was filed.
+        ///
+        /// `docs/SCHEMA.md` §4e. The observations are what the client wrote; the
+        /// state is a decision taken at filing time against the participant's
+        /// earlier sessions, frozen here so that a distribution can stratify
+        /// later without recomputing anything — and so that a published number
+        /// cannot silently change stratum when the corpus grows.
+        calibration: SeatCalibration,
     },
 }
 
@@ -311,6 +346,19 @@ impl SeatRecord {
         match self {
             Self::Empty => false,
             Self::Human { measured, .. } => measured.passes_over_budget > 0,
+        }
+    }
+
+    /// How well this seat's device is known.
+    ///
+    /// [`crate::calibration::CalibrationState::Absent`] for an empty seat, which
+    /// is the honest answer rather than a special case: nobody was there, so
+    /// nothing was measured.
+    #[must_use]
+    pub const fn calibration(&self) -> crate::calibration::CalibrationState {
+        match self {
+            Self::Empty => crate::calibration::CalibrationState::Absent,
+            Self::Human { calibration, .. } => calibration.state,
         }
     }
 
@@ -350,6 +398,7 @@ impl SeatRecord {
             return None;
         }
         let declared = Declared {
+            device_profile_id: DeviceProfileId::parse(field("device_profile_id")?)?,
             device_cpi: u32::try_from(number("device_cpi")?).ok()?,
             device_polling_hz: u32::try_from(number("device_polling_hz")?).ok()?,
             pointer_acceleration: match field("pointer_acceleration")? {
@@ -372,7 +421,27 @@ impl SeatRecord {
             worst_overrun_ns: number("worst_overrun_ns")?,
             worst_pass_ns: number("worst_pass_ns")?,
         };
-        Some((seat, Self::Human { declared, measured }))
+        // A part carries what was measured and **never** a state: rating a seat
+        // needs the participant's earlier sessions, which a client has never
+        // seen and `docs/SCOPE.md` assumes is lying about anyway. The state is
+        // written by whoever files the match; until then it is the weakest
+        // answer that is true of the part alone.
+        let observations = Observations::decode(&number)?;
+        Some((
+            seat,
+            Self::Human {
+                declared,
+                measured,
+                calibration: SeatCalibration {
+                    observations,
+                    state: if observations.is_empty() {
+                        crate::calibration::CalibrationState::Absent
+                    } else {
+                        crate::calibration::CalibrationState::Partial
+                    },
+                },
+            },
+        ))
     }
 }
 
@@ -412,7 +481,7 @@ impl SessionRecord {
         supervision: Supervision,
         parts: &[(String, String)],
     ) -> Result<Self, String> {
-        let mut seats = [SeatRecord::Empty; PLAYER_COUNT];
+        let mut seats = [const { SeatRecord::Empty }; PLAYER_COUNT];
         for (name, text) in parts {
             let (seat, record) = SeatRecord::decode_part(text)
                 .ok_or_else(|| format!("{name} is not a session part"))?;
@@ -461,8 +530,13 @@ impl SessionRecord {
                 SeatRecord::Empty => {
                     out.push_str(&format!("seat.{index}.provenance: empty\n"));
                 }
-                SeatRecord::Human { declared, measured } => {
+                SeatRecord::Human {
+                    declared,
+                    measured,
+                    calibration,
+                } => {
                     let Declared {
+                        device_profile_id,
                         device_cpi,
                         device_polling_hz,
                         pointer_acceleration,
@@ -484,7 +558,12 @@ impl SessionRecord {
                     let mut put = |key: &str, value: &str| {
                         out.push_str(&format!("seat.{index}.{key}: {value}\n"));
                     };
+                    let SeatCalibration {
+                        observations,
+                        state,
+                    } = calibration;
                     put("provenance", "human");
+                    put("device_profile_id", device_profile_id.as_str());
                     put("device_cpi", &device_cpi.to_string());
                     put("device_polling_hz", &device_polling_hz.to_string());
                     put(
@@ -506,6 +585,8 @@ impl SessionRecord {
                     put("passes_over_budget", &passes_over_budget.to_string());
                     put("worst_overrun_ns", &worst_overrun_ns.to_string());
                     put("worst_pass_ns", &worst_pass_ns.to_string());
+                    put("calibration_state", state.tag());
+                    out.push_str(&observations.encode(&format!("seat.{index}.")));
                 }
             }
         }
@@ -530,7 +611,7 @@ impl SessionRecord {
         // `Supervision::parse`.
         let supervision = Supervision::parse(field("supervision")?)?;
 
-        let mut seats = [SeatRecord::Empty; PLAYER_COUNT];
+        let mut seats = [const { SeatRecord::Empty }; PLAYER_COUNT];
         for (index, slot) in seats.iter_mut().enumerate() {
             let at = |key: &str| -> Option<&str> { field(&format!("seat.{index}.{key}")) };
             let number = |key: &str| -> Option<u64> { at(key)?.parse::<u64>().ok() };
@@ -539,6 +620,7 @@ impl SessionRecord {
                 "human" => {
                     *slot = SeatRecord::Human {
                         declared: Declared {
+                            device_profile_id: DeviceProfileId::parse(at("device_profile_id")?)?,
                             device_cpi: u32::try_from(number("device_cpi")?).ok()?,
                             device_polling_hz: u32::try_from(number("device_polling_hz")?).ok()?,
                             pointer_acceleration: match at("pointer_acceleration")? {
@@ -560,6 +642,15 @@ impl SessionRecord {
                             passes_over_budget: number("passes_over_budget")?,
                             worst_overrun_ns: number("worst_overrun_ns")?,
                             worst_pass_ns: number("worst_pass_ns")?,
+                        },
+                        calibration: SeatCalibration {
+                            observations: Observations::decode(&number)?,
+                            // No default: a record with no calibration line does
+                            // not decode, for the reason `Supervision::parse`
+                            // has none.
+                            state: crate::calibration::CalibrationState::parse(at(
+                                "calibration_state",
+                            )?)?,
                         },
                     };
                 }

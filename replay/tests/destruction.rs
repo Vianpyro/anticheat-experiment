@@ -144,7 +144,18 @@ fn a_part(seat: usize) -> String {
          platform: linux\nclock: dequeue\nworld_units_per_count_e6: 50000\n\
          samples: 91234\nmotions: 90880\ncoincident: 0\nmedian_gap_ns: 1000000\n\
          budget_ns: 33333333\npasses: 24010\npasses_over_budget: 0\n\
-         worst_overrun_ns: 0\nworst_pass_ns: 5144000\n"
+         worst_overrun_ns: 0\nworst_pass_ns: 5144000\n\
+         device_profile_id: mouse-{seat}\n\
+         calibration.reaches: 16\ncalibration.octants: 255\n\
+         calibration.clamped: 0\ncalibration.min_distance_e3: 14100\n\
+         calibration.max_distance_e3: 237500\n\
+         calibration.sum_distance_e3: 1600000\n\
+         calibration.sum_counts_e3: 32128000\n\
+         calibration.sum_distance_sq_e3: 240000000\n\
+         calibration.sum_distance_counts_e3: 4800800000\n\
+         calibration.sum_counts_sq_e3: 96032000000\n\
+         calibration.fast_reaches: 12\ncalibration.fast_motions: 900\n\
+         calibration.fast_ns: 7200000000\ncalibration.quantum_e6: 1000000\n"
     )
 }
 

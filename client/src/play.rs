@@ -35,6 +35,7 @@ use sim::{Action, Fx, FxVec2, RULES, Seat};
 
 use crate::draw::{Viewport, nearest_enemy};
 use crate::input::{Aim, Control, InputTrace};
+use crate::lobby::{Element, Lobby};
 
 /// What a control press needs to know about the world to become an order.
 ///
@@ -65,6 +66,14 @@ pub struct Play {
     /// A one-shot ability asked for since the last frame. Takes precedence for
     /// the tick it was asked on and leaves the standing order alone.
     once: Option<Action>,
+    /// The wait for the other players, and the measurement hidden in it.
+    ///
+    /// Beside the aim rather than in front of it, because the lobby is driven by
+    /// **the same cursor the match is played with** — see [`crate::lobby`]. It
+    /// stops being fed the moment the player asks to start, so a click on a
+    /// champion during the match cannot be resolved against a menu that is no
+    /// longer on the screen.
+    lobby: Lobby,
 }
 
 impl Default for Play {
@@ -88,7 +97,23 @@ impl Play {
             viewport: Viewport::new(1280, 800),
             standing: Action::Idle,
             once: None,
+            lobby: Lobby::new(),
         }
+    }
+
+    /// The lobby, and what crossing it has measured.
+    #[must_use]
+    pub const fn lobby(&self) -> &Lobby {
+        &self.lobby
+    }
+
+    /// Whether the lobby is still up.
+    ///
+    /// One question and not a phase field: the lobby is up until the player asks
+    /// to start, and asking to start is a thing the lobby itself records.
+    #[must_use]
+    pub const fn in_lobby(&self) -> bool {
+        !self.lobby.is_ready()
     }
 
     /// The window changed size.
@@ -122,6 +147,35 @@ impl Play {
     pub fn moved(&mut self, at_ns: u64, dx: f64, dy: f64) {
         self.trace.moved(at_ns, dx, dy);
         self.aim.apply(dx, dy);
+        if self.in_lobby() {
+            // Third, and after the aim, because the lobby measures the cursor
+            // *this* event produced. It is handed the position rather than
+            // asked for one: there is no path from `crate::lobby` to a window,
+            // and this is the line that would have to change for one to exist.
+            self.lobby.moved(at_ns, dx, dy, self.aim.world());
+        }
+    }
+
+    /// One control transition while the lobby is up.
+    ///
+    /// A separate entry point from [`Play::pressed`] because a lobby click has
+    /// no world to consult: [`Aiming`] is a fact about the last view, and in the
+    /// lobby there is no view and no match yet. What the two share is the line
+    /// that matters — the press is recorded into the same [`InputTrace`], first
+    /// and unconditionally, including a click that lands on nothing.
+    ///
+    /// Answers what was clicked, so that the caller can send `Ready`.
+    pub fn pressed_in_lobby(
+        &mut self,
+        at_ns: u64,
+        control: Control,
+        down: bool,
+    ) -> Option<Element> {
+        self.trace.pressed(at_ns, control, down);
+        if !down || control != Control::Move {
+            return None;
+        }
+        self.lobby.clicked(at_ns, self.aim.world())
     }
 
     /// A view arrived and this client answered it with intention `seq`.
