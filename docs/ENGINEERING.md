@@ -12,7 +12,7 @@ commit.
 | --- | --- | --- |
 | `x86_64-unknown-linux-gnu` | Every CI job; release binaries; container | Primary development and server target |
 | `x86_64-pc-windows-msvc` | Every CI job; release binaries | Primary player platform, and a genuinely different toolchain |
-| `aarch64-apple-darwin` | Determinism job only; client release binary | The second CPU architecture. This is what catches determinism leaks that x86-only CI hides — it is in the matrix for a security reason, not for macOS support |
+| `aarch64-apple-darwin` | Determinism job only; release binaries for client and server | The second CPU architecture. This is what catches determinism leaks that x86-only CI hides — it is in the matrix for a security reason, not for macOS support |
 
 Not supported: 32-bit, musl, BSD, WebAssembly, Linux client packaging beyond a
 tarball. Each would add a build target for no additional evidence about the
@@ -42,7 +42,7 @@ commits are squashed away.
 
 ## Workflows
 
-Six, with their triggers and their permissions. Every workflow declares
+Seven, with their triggers and their permissions. Every workflow declares
 `permissions: contents: read` at top level and elevates per job only where
 required.
 
@@ -53,7 +53,8 @@ required.
 | `determinism` | PR and push touching `sim/`, `replay/`, the fixtures, the lockfile or the toolchain pin | `fixture` (the fixtures on Linux x86-64, Windows x86-64, macOS aarch64, under `--release`, each compared against digests committed in the repository, plus the replay and its telemetry companion sealed on Linux and committed, which every target must reproduce byte for byte, verify, and check the binding between), `properties` (the same three targets with a raised `PROPTEST_CASES`), and `sim-version` (a PR touching `sim/` must raise the crate version — `RISKS.md` R13) | `contents: read` | < 6 min |
 | `supply-chain` | PR touching a manifest, the lockfile or `deny.toml` (licenses, bans, sources) and weekly cron (advisories) | `cargo-deny` | `contents: read` | < 2 min |
 | `coverage` | Weekly cron, manual dispatch | `cargo llvm-cov`, uploaded as an artifact | `contents: read` | untimed |
-| `release` | Tag `v*` | Build matrix, container, SBOM, attestation, GitHub Release | `contents: write`, `packages: write`, `id-token: write`, `attestations: write` — this job only | < 20 min |
+| `release-plz` | Push to `main` | `release-pr` (computes the bump from conventional commits, writes `CHANGELOG.md`, opens a pull request; it does not tag, publish or push to `main`) | `contents: write`, `pull-requests: write` — this job only | < 2 min |
+| `release` | Tag `v*` | `draft`, `build` (client and server on the three targets), `checksums`, `container`, `publish` | `contents: write` on `draft`, `build`, `checksums` and `publish`; `packages: write` on `container` — per job, never at the top | < 20 min |
 
 `ci` runs fmt, clippy and the tests in one matrixed job rather than splitting a
 Linux-only `check` from a two-platform `test`, because M0's exit criterion asks
@@ -111,11 +112,16 @@ Caching: `Swatinem/rust-cache`, keyed on OS plus the pinned toolchain plus
 `Cargo.lock`. No `sccache` — it is a second cache layer to reason about for a
 workspace this size.
 
-Both third-party actions are referenced by commit SHA with the tag in a trailing
+Every third-party action is referenced by commit SHA with the tag in a trailing
 comment, since M3. `RISKS.md` R12 is why, and why not earlier: the pins and
 Renovate, which is what keeps them current, land in one change or not at all.
-The count of third-party actions is still two — `supply-chain` installs
-`cargo-deny` with `cargo install --locked` rather than reaching for a third.
+The count is three. It was two for six milestones — `supply-chain` installs
+`cargo-deny` with `cargo install --locked` rather than reaching for an action —
+and the third is `release-plz/action`, taken because `release-plz` links `cargo`
+itself and compiling it on every push to `main` to open a pull request costs
+minutes where `cargo-deny` costs seconds. `release` adds none: it publishes with
+`gh` and builds its image with `docker`, both already on the runner, which is
+three actions avoided in the one workflow that holds write tokens.
 
 ### Changes to what exists today
 
@@ -230,34 +236,105 @@ command.
 
 ## Release pipeline
 
-Triggered by a tag. `release-plz` handles the version bump, the changelog
-generated from conventional commits, and the GitHub Release. Every crate is
-configured `publish = false`: this workspace produces binaries and a container,
-nothing here belongs on crates.io, and publishing a crate named `cheat-client`
-to a public registry would be a poor decision independently.
+**Two halves with a person between them**, and the person is the point. This
+section describes what is in the repository; `MILESTONES.md` M9 records which
+parts of its exit criterion are not there yet.
 
-On tag:
+The first half is `release-plz`, in release-pull-request mode. On every push to
+`main` it reads the conventional commits since the last `v*` tag, works out
+which crates their file paths belong to, computes the next version, writes
+`CHANGELOG.md`, and **opens a pull request**. It does not tag, does not publish,
+and does not push to `main` — `release-plz.toml` switches each of those off
+individually rather than leaving them unused, and the workflow only ever invokes
+`release-pr`. That is the "pushing the release tag" row of the table below
+holding: the tool proposes a version, a human merges it, and a human pushes
+`git tag v0.2.0`. It is also R11 holding — the automation that rewrites your
+branch while you work is the one this project deleted.
+
+Two consequences of that shape, both of which will otherwise be discovered at an
+inconvenient moment:
+
+- Every crate is `publish = false`, so release-plz cannot ask crates.io what was
+  last released and `git_only = true` points it at the git tags instead. Without
+  that line it does nothing at all — no error, an empty run. And the tag pattern
+  has to be `v{{ version }}`, because its default in a workspace is one tag per
+  crate and this project pushes one tag per release.
+- GitHub does not run workflows on a pull request opened by `GITHUB_TOKEN`, so
+  the release pull request arrives with no checks on it. The alternative is a
+  personal access token, which would be this repository's first secret and a
+  credential a compromised action could read (`RISKS.md` R12) — in exchange for
+  CI on a change to a version string and a changelog. The token stays and the
+  cost is a manual step in the table below.
+
+The second half is `release`, triggered by that tag and by nothing else. Its
+first job checks that the tag and the workspace version agree — the one mistake
+the manual step makes possible is tagging before merging the release pull
+request — lifts this version's section out of `CHANGELOG.md`, and opens the
+GitHub Release **as a draft**. Then:
 
 1. Build the client and server for Linux x86-64, Windows x86-64, and macOS
-   aarch64, with `--locked`.
-2. Emit SHA-256 checksums for every artifact.
-3. Build the server container: distroless base, non-root user, `linux/amd64`
-   only. Publish to `ghcr.io`.
+   aarch64, natively on each, with `--locked`. Each archive holds the binary,
+   `LICENSE` and `README.md`, copied by name.
+2. Emit SHA-256 checksums for every artifact, into one `SHA256SUMS` computed
+   from an enumerated list of the six expected archives, so that a release
+   missing a platform fails rather than looking finished.
+3. Build the server container: distroless base, non-root user (uid 65532, read
+   back out of the built image and checked), `linux/amd64` only. Publish to
+   `ghcr.io`.
 4. Generate an SBOM (CycloneDX) for the workspace and attach it to the release.
-5. Generate a provenance attestation for the binaries and the image.
-6. Publish the GitHub Release with the generated changelog section.
+   **Not delivered** — `MILESTONES.md` M9.
+5. Generate a provenance attestation for the binaries and the image. **Not
+   delivered**; `id-token: write` is therefore granted to no job in this
+   repository, because a write permission held ahead of the thing that uses it
+   is a permission nobody is watching.
+6. Undraft the release, last, so that a run which dies halfway leaves an
+   unpublished draft rather than a release advertising three of its six
+   binaries.
+
+**Nothing in this pipeline packages a directory.** Every file that enters an
+archive is named on the line that copies it, the checksummed set is a written-out
+list, and the container's build context is a directory the workflow creates and
+puts exactly one file into. `RISKS.md` R3 and R4 are about a recording, a consent
+record or a signing key that cannot be un-published, `ci` refuses those shapes as
+*tracked* files, and this is the same rule pointed at the working tree: even a
+checkout that contained one could not ship it. A `COPY . .` in a multi-stage
+Dockerfile is exactly the tool that would.
+
+The image holds a **sibling build** of the same commit and the same lockfile
+rather than a byte-for-byte copy of the published Linux binary: reproducible
+builds are out of scope (above), and reading an asset off a draft release needs
+push access, so the alternative would be handing the registry job a write token
+it otherwise has no use for. If that ever needs to be an identity, publish the
+image's digest beside the checksums.
 
 `linux/arm64` is deliberately absent: cross-building it roughly doubles release
 time to serve a user base that does not exist. Add it the day someone asks, or
 the day you want the server on a single-board computer. Non-root and distroless
 stay, because they are nearly free and their absence would be the wrong signal
-in a security project.
+in a security project. The image runs a server that binds `127.0.0.1:0`, which
+is what `server/src/main.rs` does today, so it is a way to run the authority
+reproducibly rather than a way to host it, and the Dockerfile says so instead of
+carrying an `EXPOSE` for a port that does not exist.
+
+**One known limitation, upstream and open.** `release-plz` decides whether a
+crate changed by running `cargo package` against the previous tag, and
+`cargo package` refuses a workspace whose internal dependencies are path-only —
+then, once they carry a version requirement, resolves them from crates.io, where
+`sim`, `replay`, `protocol`, `client` and `server` are all names belonging to
+somebody else. That is release-plz issue #2595, open since January 2026. The
+consequence is bounded and worth stating plainly: the first release pull request
+works, and a later one may fail with a `cargo package` error rather than
+silently producing a wrong version. The fallback is the manual one — raise
+`[workspace.package] version` and add the changelog section by hand in a pull
+request, which is what the release workflow reads anyway.
 
 ## What stays manual, and why
 
 | Manual step | Why it is not automated |
 | --- | --- |
-| Pushing the release tag | A human decides that a version exists. Auto-tagging on merge turns every merge into a release |
+| Pushing the release tag | A human decides that a version exists. Auto-tagging on merge turns every merge into a release. `release-plz` therefore stops at a pull request, and `release.yml` refuses a tag whose version disagrees with the merged manifest |
+| Running CI on the release pull request | GitHub does not run workflows on a pull request opened by `GITHUB_TOKEN`, so it arrives with no checks. Close and reopen it to run them, or merge it knowing CI last ran on the commits it describes. The alternative is a stored personal access token — this repository's first secret, readable by any action in the job — in exchange for checks on a version string and a changelog (`RISKS.md` R12) |
+| Choosing the first version | With no previous tag, `release-plz` proposes the version the manifests already declare, and `0.0.0` is not a release. Set `[workspace.package] version` by hand once; after the first tag it computes the bumps |
 | The release notes headline | The changelog is generated; the narrative of what changed is not a thing a tool knows |
 | Approving production-dependency updates | The blast radius is the running server and, for `sim`, the determinism guarantee |
 | Committing a proptest counter-example | The seed is printed into the run summary of the job that found it and pasted into `sim/proptest-regressions/properties.txt`. A bot pushing it would need write permissions on the branch, which is the automation `RISKS.md` R11 exists to refuse; the paste costs seconds and the case is permanent afterwards |

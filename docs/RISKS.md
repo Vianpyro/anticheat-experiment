@@ -668,6 +668,48 @@ as noise (`ENGINEERING.md` offers that exit), the SHA pins must be replaced by
 tags in the same commit, so the pins never outlive the automation that maintains
 them.
 
+**The write permissions have arrived, and the precondition held.** `release-plz`
+and `release` are in the repository. Between them they hold `contents: write`,
+`pull-requests: write` and `packages: write`, every one declared on the job that
+needs it and none at the top of a workflow, so the moment this paragraph
+describes — a moved tag minting releases in this project's name — is now the
+moment being defended against rather than one being predicted.
+
+The count of third-party actions is **three**, and the third is
+`release-plz/action`, pinned at commit `2eb1d8bc` with `# v0.5.131` beside it.
+It is the one place this register's own preference was not taken: `supply-chain`
+installs `cargo-deny` with `cargo install --locked` rather than reaching for an
+action, and the same move here would have kept the count at two. It was not
+taken because `release-plz` links `cargo` itself and would compile for minutes
+on every push to `main` in order to open a pull request, where `cargo-deny`
+builds in seconds. The trade is stated rather than hidden: one more publisher to
+trust, in the workflow holding `contents: write`, bought with the minutes.
+
+Three things reduce what a moved pin could reach, and they were chosen for that
+rather than for tidiness:
+
+- **No `id-token: write`, anywhere.** The provenance attestation is the only
+  thing that needs it and `MILESTONES.md` M9 records it as not delivered, so
+  nothing in this repository can currently mint a signed statement about an
+  artefact. The permission arrives with the attestation and not before.
+- **No build cache in `release`.** `Swatinem/rust-cache` stays in `ci` and
+  `determinism`, where a poisoned entry costs a wrong test result. In `release`
+  it would cost a poisoned binary with a checksum published beside it, which is
+  the same paragraph above with a worse ending. A release compiles from scratch,
+  once per tag.
+- **No secret.** The release pull request is opened with the repository's own
+  `GITHUB_TOKEN` rather than a stored personal access token, which is why it
+  arrives with no CI on it (`ENGINEERING.md` records the manual step that costs).
+  This repository still has no secrets for a compromised action to read.
+
+And a fourth surface arrived with the container that is not an action at all:
+`server/Dockerfile`'s distroless base is pinned by digest with its tag beside it,
+for the same reason. `nonroot` is a mutable pointer exactly as `v5` is, and an
+image that moves under a running release pipeline is the same failure wearing
+different clothes. Renovate's `docker` manager keeps that digest current
+alongside the action SHAs, which is the same "the pins and the thing that
+updates them land together" this entry has insisted on from the start.
+
 ## R13 — Two builds that agree on `rules_hash` and disagree on the match
 
 **Irreversible in the same way R2 is, and less visible.** `rules_hash()` covers
@@ -742,6 +784,38 @@ rather than a constructed one: the committed cross-platform fixture pins its
 version field at `0.0.0`, which no build has, so verifying it as *this* build
 must fail with `SimVersion` — and that assertion is stable across every bump this
 entry's mechanism will ever demand.
+
+### Re-decided at M9: the number stays the human's, and `release-plz` is told so
+
+The release pipeline brought a tool that computes version bumps from
+conventional commits, which is a second mechanism pointed at the one number this
+entry is about — and a number with two owners has none. `release-plz.toml`
+therefore carries `[[package]] name = "sim"` with `release = false`, which takes
+`sim` out of every release-plz command; the `sim-version` job is unchanged and
+remains the only thing that demands the bump.
+
+The choice was between granularity and convenience, and the two reasons it went
+this way are both about meaning:
+
+- The manual bump lands in the pull request that changes the rules. A
+  release-time bump would give every replay recorded between two releases the
+  same `sim` version across a step reorder, which is the case this entry exists
+  to catch, moved to where nobody is looking.
+- `sim/Cargo.toml` bumps by a determinism judgement — patch for a change that
+  cannot move a digest, minor for anything that can. Conventional commits encode
+  a different one: a `refactor:` or `perf:` that reorders `step` is a patch under
+  semver and a minor under this rule, so the tool would have quietly overruled
+  the rule while appearing to enforce it.
+
+**The cost, which belongs beside the imperfections listed above.** release-plz
+attributes a commit to the crate whose files it touches, so a change confined to
+`sim/` is attributed to a package it does not process: a release cycle containing
+only rules changes proposes no version at all, and `[workspace.package] version`
+has to be raised by hand. That is the smallest of the failure modes on this page
+— it is loud, it happens before anything is built, and `release.yml` refuses a
+tag that disagrees with the manifest — but it is a real consequence of keeping
+this number out of the tool's hands, and it is the price of the two reasons
+above.
 
 ## R14 — Input fidelity is a property of the client, and the corpus inherits it
 

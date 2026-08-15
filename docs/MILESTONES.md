@@ -22,9 +22,14 @@ than a thing CI can stand in for. The client it will be played on is a window
 rather than a terminal, changed after M4 was merged and before M5 was started
 for the reason `RISKS.md` R14 now records: the terminal's sampling rate followed
 the pointer's speed, so the timing statistics M8 rests on were contaminated at
-the source and not, as R14 claimed, untouched. The workspace exists with
-its seven crates; the toolchain is pinned; `ci`, `pr-hygiene` and `determinism`
-are the only workflows and none holds write permissions; `LICENSE`,
+the source and not, as R14 claimed, untouched. **M9 is built as far as distribution and is not reached**, for a reason that is
+neither a calendar nor a person: its release pipeline exists and two items of its
+exit criterion — the SBOM and the provenance attestation — do not, which the M9
+section states rather than rounds off. The workspace exists with
+its seven crates; the toolchain is pinned; `ci`, `pr-hygiene`, `determinism`,
+`supply-chain`, `release-plz` and `release` are the workflows, and the last two
+are the first to hold write permissions — job-scoped, with every third-party
+action pinned by commit SHA (`RISKS.md` R12); `LICENSE`,
 `SECURITY.md` and `CONTRIBUTING.md` exist. The template's super-linter, its
 `.dockerignore` and its branch-deleting VS Code task are gone.
 
@@ -1179,6 +1184,53 @@ for Linux and Windows binaries of both client and server, a published container
 image that runs as non-root, an SBOM attached to the release, a provenance
 attestation, and a changelog entry generated from conventional commits.
 
+### M9 is built as far as distribution, and it is not reached
+
+The reason is the same shape as M4's and M8's, and it is not a calendar this
+time: **two of the six things the exit criterion asks for are not in the
+repository.** What is there is everything needed to put a binary in a tester's
+hands, which is what the milestone was cut down to.
+
+Delivered, and it is `release-plz.toml`, `.github/workflows/release-plz.yml`,
+`.github/workflows/release.yml`, `server/Dockerfile` and `.dockerignore`:
+
+- `release-plz` in release-pull-request mode. It computes the bump from
+  conventional commits and the paths they touch, writes `CHANGELOG.md`, and
+  opens a pull request. It does not tag and does not push to `main`;
+  `ENGINEERING.md`'s "what stays manual" table and `RISKS.md` R11 are why, and
+  every tagging and publishing switch in its configuration is off rather than
+  merely unused.
+- A `release` workflow on tag `v*` building client and server for
+  `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc` and
+  `aarch64-apple-darwin` with `--locked`, a `SHA256SUMS` over an enumerated list
+  of the six archives, and the GitHub Release published from the changelog
+  section this tag names.
+- The server image: distroless, non-root and checked to be non-root, amd64 only,
+  on `ghcr.io`.
+
+**Not delivered, and this is what keeps M9 open:**
+
+- **The CycloneDX SBOM.** Nothing generates one and nothing attaches one.
+- **The provenance attestation.** Nothing signs anything, which also makes
+  "signed checksums" in the criterion above an overstatement of what a tag
+  produces today: the checksums are published, and they are not signed.
+  `id-token: write` is consequently held by no job in this repository, and that
+  absence is the honest state rather than an oversight — `ENGINEERING.md` says
+  why a permission should not arrive before the thing that uses it.
+
+Two things are known about the delivered half that its green YAML does not say,
+because neither can be observed before the first real tag. `release-plz` runs
+`cargo package` to decide whether a crate changed, and on a workspace whose
+internal dependencies are path-only — where `sim`, `replay`, `protocol`,
+`client` and `server` are also the names of unrelated crates on crates.io — that
+call fails from the second release onward (release-plz issue #2595, open). And
+the changelog it generated over this repository's history caught five of about
+twenty changes. Neither is a reason to hold the milestone open, since the
+fallback for both is the manual step `ENGINEERING.md` already records — the
+narrative of a release is a person's job — but a reader who finds a thin
+changelog in a release pull request should know it is this and not an empty
+month.
+
 ---
 
 ## Tooling placement summary
@@ -1192,7 +1244,8 @@ attestation, and a changelog entry generated from conventional commits.
 | `cargo-deny` | M3 | Meaningless with zero dependencies |
 | Renovate | M3 | Same |
 | Coverage | M8, unGated | See below |
-| `release-plz`, SBOM, provenance, Docker | M9 | Nothing to release before then |
+| `release-plz`, Docker | M9 | Nothing to release before then |
+| SBOM, provenance attestation | After M9's release pipeline, and M9 stays open until they land | Same reason, one step further: they describe a release, so they cannot precede one. They are the two items of M9's exit criterion the repository does not contain |
 | Reproducible builds | Never | See `ENGINEERING.md` |
 | `cargo-audit` | Never | `cargo-deny`'s advisories check reads the same RustSec database; running both is one more automation for zero information |
 

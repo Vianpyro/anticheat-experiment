@@ -1,0 +1,31 @@
+# Belt, not braces.
+#
+# The braces are in `.github/workflows/release.yml`: the build context handed to
+# `docker build` is a directory the workflow creates and copies exactly one file
+# into, so nothing in this repository is in that context to begin with. This file
+# is for the other case — somebody running `docker build -f server/Dockerfile .`
+# by hand from the repository root, which would hand the daemon every untracked
+# file in the working tree.
+#
+# The shapes below are `.gitignore`'s, and they are here for the same reason
+# (`docs/RISKS.md` R3 and R4): a recording, a consent record or a replay signing
+# key that reaches a published image has left this machine, and a published image
+# is as irreversible as git history — it is in every pull of that tag.
+*
+!moba-server
+
+# Named again under the catch-all, so that a future edit relaxing the `*` above
+# does not silently readmit them.
+corpus/
+*.replay
+*.consent
+*.identity
+*.withdrawn
+*.session
+*.session-part
+*.telemetry
+*.telemetry-part
+*.signing-key
+.env
+.git
+target

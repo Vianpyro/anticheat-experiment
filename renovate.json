@@ -41,6 +41,13 @@
       "matchUpdateTypes": ["major"],
       "automerge": false,
       "groupName": null
+    },
+    {
+      "description": "The release image's base, pinned by digest and kept current. helpers:pinGitHubActionDigests does this for actions; a distroless tag is the same mutable pointer in the same release pipeline (docs/RISKS.md R12), and the pins have to outlive nothing.",
+      "matchManagers": ["dockerfile"],
+      "pinDigests": true,
+      "automerge": false,
+      "groupName": null
     }
   ],
   "vulnerabilityAlerts": {

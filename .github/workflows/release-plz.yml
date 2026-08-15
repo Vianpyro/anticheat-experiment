@@ -1,0 +1,84 @@
+name: release-plz
+
+# One job, one command, and the command is `release-pr` and nothing else.
+#
+# `release-plz` can also tag, publish and cut a GitHub release; this workflow
+# never invokes that half, and `release-plz.toml` switches every piece of it off
+# so that running it by hand would not do those things either. The reason is in
+# two documents and they agree. `docs/ENGINEERING.md`'s "what stays manual"
+# table puts pushing the release tag first — a human decides that a version
+# exists, and auto-tagging on merge turns every merge into a release. And
+# `docs/RISKS.md` R11 refuses an automation that rewrites a branch while you are
+# working on it, which is why `super-linter` was deleted: this one proposes a
+# branch of its own and touches nothing else.
+#
+# So the output is a pull request that changes two things — the version in
+# `Cargo.toml` and the entry in `CHANGELOG.md` — and merging it is a person's
+# act, as is the `git tag` afterwards that starts `release.yml`.
+on:
+  push:
+    branches: [main]
+
+# Elevate per job, never here.
+permissions:
+  contents: read
+
+# Never in parallel with itself: two runs would compute the same release branch
+# and race to force it. `cancel-in-progress: false` rather than `ci`'s `true`,
+# because a superseded check is worthless and a half-written pull request is
+# not.
+concurrency:
+  group: release-plz
+  cancel-in-progress: false
+
+jobs:
+  release-pr:
+    name: open the release pull request
+    # A fork has no business opening a release pull request against its own
+    # copy, and its `GITHUB_TOKEN` could not do it anyway. This makes the run
+    # skip rather than fail.
+    if: github.repository_owner == 'Vianpyro'
+    runs-on: ubuntu-latest
+    permissions:
+      # `contents: write` to push the release branch, `pull-requests: write` to
+      # open the pull request from it. Both on this job, never at the top of the
+      # file, and this is the first workflow in the repository to hold either
+      # (`docs/RISKS.md` R12).
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # The whole history. release-plz reads every commit since the last
+          # `v*` tag to work out the bump and to write the changelog; a shallow
+          # clone would make every release look like the first one.
+          fetch-depth: 0
+
+      # The third third-party action this repository uses, and the count is
+      # `docs/RISKS.md` R12's own metric, so: it is here rather than a
+      # `cargo install release-plz --locked` in the shape `supply-chain` uses
+      # for `cargo-deny`, and the difference is what each costs. `cargo-deny`
+      # builds in seconds; `release-plz` links `cargo` itself and would compile
+      # for minutes on every push to `main` to open a pull request. Pinned by
+      # commit SHA with the tag beside it like the other two, and Renovate's
+      # `helpers:pinGitHubActionDigests` keeps it current.
+      - uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9 # v0.5.131
+        with:
+          command: release-pr
+        env:
+          # The repository's own token, deliberately, and it has a consequence
+          # worth knowing before it surprises somebody: **GitHub does not run
+          # workflows on a pull request opened by `GITHUB_TOKEN`**, so the
+          # release pull request arrives with no checks on it. The alternative
+          # is a personal access token stored as a secret, which would be the
+          # first secret this repository has and a credential a compromised
+          # action could read — the exact trade `docs/RISKS.md` R12 is about, in
+          # exchange for CI on a pull request that changes a version string and
+          # a changelog.
+          #
+          # So the token stays, and `docs/ENGINEERING.md` records the manual
+          # step it costs: close and reopen the release pull request to run CI
+          # on it, or merge it knowing that CI last ran on the commits it
+          # describes.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

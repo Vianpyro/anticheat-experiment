@@ -1,0 +1,422 @@
+name: release
+
+# The only workflow in this repository that writes anything, and
+# `docs/RISKS.md` R12 is the reason every line of it is shaped the way it is.
+# Until now a compromised action could read a public checkout and poison a build
+# cache; here it could mint a release in this project's name. Three consequences,
+# all of them visible below:
+#
+#   1. Every action is pinned by commit SHA with its tag in a trailing comment,
+#      exactly as `ci.yml` does. R12 states this as a precondition on M9 rather
+#      than a hope, and it is the condition this file merges under.
+#   2. Permissions are declared on the job that needs them and never here. Five
+#      jobs run; three hold `contents: write`, one holds `packages: write`, and
+#      the build matrix — the job that runs the most code — holds the smallest
+#      set it can do its work with.
+#   3. There is no build cache in this workflow. `Swatinem/rust-cache` is in
+#      `ci` and `determinism` deliberately and stays there; a poisoned cache
+#      entry reaching a released binary is precisely the blast radius R12
+#      describes, and a release compiles from scratch once per tag.
+#
+# `id-token: write` is **not** declared anywhere in this file, and its absence is
+# deliberate: the only thing that needs it is the provenance attestation, which
+# `docs/MILESTONES.md` M9 records as not delivered. A write permission granted
+# ahead of the thing that uses it is a permission nobody is watching.
+#
+# What triggers it, and what does not: a tag, pushed by a person.
+# `docs/ENGINEERING.md`'s "what stays manual" table puts "pushing the release
+# tag" first on the list — a human decides that a version exists — and
+# `release-plz.yml` therefore stops at opening a pull request. This file is the
+# other half: it assumes the version already exists and refuses to invent one.
+on:
+  push:
+    tags:
+      - "v*"
+
+# Elevate per job, never here.
+permissions:
+  contents: read
+
+# Never cancel a release in flight. `ci` cancels superseded runs because a
+# superseded check is worthless; a superseded release is a half-uploaded set of
+# assets.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The draft exists before anything is built, for two reasons. It is where the
+  # matrix jobs put their archives, which is what lets this workflow move
+  # binaries between jobs without `upload-artifact`/`download-artifact` — two
+  # more third-party actions in the one workflow holding a write token. And a
+  # draft is invisible to everyone but the repository's owners, so a run that
+  # dies halfway leaves an unpublished draft rather than a release advertising
+  # three of its six binaries.
+  draft:
+    name: draft the release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # The tag says a version exists; the manifest says which version this
+      # commit *is*. They disagree exactly when a human tagged before merging
+      # the release pull request `release-plz` opened, which is the one mistake
+      # this pipeline's manual step makes possible — so it is checked here,
+      # before an asset exists, rather than discovered by somebody downloading
+      # `moba-server-v0.2.0` and finding 0.1.0 inside it.
+      - name: The tag and the workspace version must agree
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+
+          # `[workspace.package] version`, which every crate but `sim` inherits
+          # (`sim` owns its own for `docs/RISKS.md` R13, and it is not what a
+          # release is named after).
+          manifest=$(sed -n 's/^version = "\([0-9][0-9A-Za-z.+-]*\)"$/\1/p' Cargo.toml | head -1)
+
+          if [[ -z "$manifest" ]]; then
+            echo "::error file=Cargo.toml::the workspace declares no version"
+            exit 1
+          fi
+          if [[ "$version" != "$manifest" ]]; then
+            echo "::error::tag $tag names version $version but this commit's workspace version is $manifest."
+            echo "The release pull request that raises the version has to be merged before its tag is pushed"
+            echo "(docs/ENGINEERING.md, 'what stays manual')."
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "ok: $tag builds workspace version $manifest"
+
+      # The narrative of a release is generated from conventional commits by
+      # `release-plz` and lives in `CHANGELOG.md`, which was merged with the
+      # release pull request. This lifts out the one section this tag is about.
+      # It is deliberately fatal when the section is missing: a release whose
+      # notes are "see the commits" is the failure `docs/ENGINEERING.md` names
+      # when it keeps the release-notes headline manual — the changelog is the
+      # part a tool does know, and if the tool did not produce it, something
+      # upstream went wrong and this is where it should stop.
+      - name: The changelog section for this tag
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f CHANGELOG.md ]]; then
+            echo "::error::CHANGELOG.md does not exist; release-plz's pull request is what creates it"
+            exit 1
+          fi
+
+          # Keep-a-changelog, which is what release-plz writes: `## [0.1.0]`
+          # possibly followed by a link and a date. Everything up to the next
+          # second-level heading is this version's section.
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { inside = 1; next }
+            inside && /^## / { exit }
+            inside { print }
+          ' CHANGELOG.md > NOTES.md
+
+          if [[ ! -s NOTES.md ]]; then
+            echo "::error::CHANGELOG.md has no section for $VERSION"
+            exit 1
+          fi
+          cat NOTES.md
+
+      - name: Create the draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # Idempotent, so that a re-run after a transient failure continues a
+          # draft rather than failing on it.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "ok: draft $TAG already exists; reusing it"
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --draft \
+            --verify-tag \
+            --title "$TAG" \
+            --notes-file NOTES.md
+
+  # Client and server, natively on each platform in `docs/ENGINEERING.md`'s
+  # matrix. No cross-compilation and no `cross`: three runners are what GitHub
+  # already gives, and a cross-linked binary is a different artefact from the
+  # one the determinism job proved anything about.
+  build:
+    name: ${{ matrix.target }}
+    needs: draft
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      # A failure on one platform must not delete the evidence of the other
+      # two: the draft keeps whatever succeeded, and the run says which target
+      # did not.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # `--locked`, which is the whole point of committing `Cargo.lock`: the
+      # binary somebody downloads is built from the dependency graph `ci`,
+      # `determinism` and `cargo-deny` all saw. A release that resolved fresh
+      # versions would be a release nothing in this repository has checked.
+      #
+      # `--target` explicitly even where it is the host's own, so the artefact's
+      # name is a fact from the build rather than a claim about the runner.
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} -p client -p server
+
+      # The archives, and this is where `docs/RISKS.md` R3 and R4 reach a
+      # release workflow. Every file that goes into an archive is named on the
+      # line that copies it. Nothing here globs a directory, walks the working
+      # tree, or packages "the build output" — a recording, a consent record or
+      # a signing key sitting untracked in a checkout is exactly what such a
+      # glob would swallow, and the corpus is the one thing in this project
+      # whose publication cannot be undone.
+      #
+      # `ci` refuses those shapes as *tracked* files, which is the check that
+      # catches `git add -f`. This is the other side of the same rule: even a
+      # checkout that contained one could not ship it.
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          VERSION: ${{ needs.draft.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          bin="target/$TARGET/release"
+
+          for crate in client server; do
+            name="moba-$crate-v$VERSION-$TARGET"
+            mkdir -p "dist/$name"
+            cp "$bin/moba-$crate" "dist/$name/moba-$crate"
+            cp LICENSE "dist/$name/LICENSE"
+            cp README.md "dist/$name/README.md"
+            tar -C dist -czf "$name.tar.gz" "$name"
+            tar -tzf "$name.tar.gz"
+          done
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.draft.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bin = "target/$env:TARGET/release"
+
+          foreach ($crate in @("client", "server")) {
+            $name = "moba-$crate-v$env:VERSION-$env:TARGET"
+            New-Item -ItemType Directory -Force "dist/$name" | Out-Null
+            Copy-Item "$bin/moba-$crate.exe" "dist/$name/moba-$crate.exe"
+            Copy-Item LICENSE "dist/$name/LICENSE"
+            Copy-Item README.md "dist/$name/README.md"
+            Compress-Archive -Path "dist/$name" -DestinationPath "$name.zip" -Force
+            Get-ChildItem "$name.zip"
+          }
+
+      # Two names, both written out. `gh release upload moba-*` would work and
+      # is what a shorter workflow does; it is also a glob over a working
+      # directory deciding what gets published, which is the thing this file
+      # does not do anywhere.
+      - name: Attach to the draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.draft.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          EXT: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" \
+            "moba-client-v$VERSION-$TARGET.$EXT" \
+            "moba-server-v$VERSION-$TARGET.$EXT" \
+            --clobber
+
+  # SHA-256 for every artefact, in one file, computed from an enumerated list
+  # rather than from whatever happens to be attached. The enumeration is doing
+  # two jobs: it is the R3/R4 rule again — nothing is checksummed because it was
+  # lying around — and it is a completeness check, because a release missing the
+  # Windows server binary is otherwise a release that looks finished.
+  checksums:
+    name: checksums
+    needs: [draft, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Collect the six archives, by name
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.draft.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+
+          expected=(
+            "moba-client-v$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+            "moba-server-v$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+            "moba-client-v$VERSION-x86_64-pc-windows-msvc.zip"
+            "moba-server-v$VERSION-x86_64-pc-windows-msvc.zip"
+            "moba-client-v$VERSION-aarch64-apple-darwin.tar.gz"
+            "moba-server-v$VERSION-aarch64-apple-darwin.tar.gz"
+          )
+
+          missing=0
+          for asset in "${expected[@]}"; do
+            gh release download "$TAG" --dir assets --pattern "$asset" || true
+            if [[ ! -f "assets/$asset" ]]; then
+              echo "::error::the release is missing $asset"
+              missing=1
+            fi
+          done
+          [[ "$missing" -eq 0 ]]
+
+          cd assets
+          sha256sum "${expected[@]}" > ../SHA256SUMS
+          cat ../SHA256SUMS
+
+      - name: Attach the checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release upload "$TAG" SHA256SUMS --clobber
+
+  # The server image. `docs/ENGINEERING.md`: distroless base, non-root, and
+  # `linux/amd64` only — cross-building `arm64` roughly doubles release time to
+  # serve a user base that does not exist, and the day somebody asks is the day
+  # it gets added.
+  #
+  # It compiles the server rather than unpacking the archive the Linux matrix
+  # job just built, and that is a deliberate trade. Reading an asset off a
+  # *draft* release needs push access, so pulling the binary here would mean
+  # either publishing the release before it is finished or handing this job a
+  # write token it otherwise has no use for — and this is the job that talks to
+  # a registry. `docs/ENGINEERING.md` puts reproducible builds out of scope, so
+  # the honest statement is that the image holds a sibling build of the same
+  # commit and the same lockfile, not a byte-for-byte copy of the published
+  # binary. If that ever needs to be an identity rather than a sibling, the fix
+  # is to publish the image's own digest beside the checksums, not to loosen
+  # this job's permissions.
+  container:
+    name: server image
+    needs: draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Build the server
+        run: cargo build --release --locked --target x86_64-unknown-linux-gnu -p server
+
+      # The build context is a directory this step creates and puts exactly one
+      # file into. `docker build .` on the repository root would hand the daemon
+      # the whole working tree — every untracked file in it — which is the R3/R4
+      # glob this workflow refuses everywhere else. `.dockerignore` is the belt;
+      # this is the braces, and it is the one that is actually load-bearing.
+      - name: A build context containing one file
+        run: |
+          set -euo pipefail
+          mkdir -p image-context
+          cp target/x86_64-unknown-linux-gnu/release/moba-server image-context/moba-server
+          ls -l image-context
+
+      # `docker login` and `docker build` rather than `docker/login-action` and
+      # `docker/build-push-action`: both are preinstalled on the runner, this
+      # image is single-platform so there is no `buildx` matrix to drive, and
+      # `docs/RISKS.md` R12 counts third-party actions. Three actions avoided in
+      # the workflow that holds the write tokens is the trade R12 asks for.
+      - name: Publish to ghcr.io
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          # Through the environment rather than interpolated into the script, so
+          # that the shell never sees a value the event payload controls.
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-server"
+
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+          docker build \
+            -f server/Dockerfile \
+            -t "$image:$TAG" \
+            -t "$image:latest" \
+            image-context
+
+          # Non-root is a claim, so it is checked rather than asserted — this is
+          # what would catch a base-image change that quietly reverted it. Read
+          # out of the image's configuration rather than by running `id` in it,
+          # because a distroless image has no shell to run `id` with, and that
+          # is the point of a distroless image.
+          user=$(docker image inspect --format '{{.Config.User}}' "$image:$TAG")
+          echo "image user: ${user:-<unset>}"
+          if [[ -z "$user" || "$user" == "root" || "$user" == 0 || "$user" == "0:0" ]]; then
+            echo "::error::the server image runs as root (docs/ENGINEERING.md)"
+            exit 1
+          fi
+
+          docker push "$image:$TAG"
+          docker push "$image:latest"
+
+          echo "digest: $(docker image inspect --format '{{index .RepoDigests 0}}' "$image:$TAG" 2>/dev/null || echo unknown)"
+
+  # Everything succeeded, so the draft becomes a release. This is the last step
+  # rather than the first because the alternative — publish, then attach — is a
+  # release that is briefly a lie.
+  publish:
+    name: publish
+    needs: [draft, build, checksums, container]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Undraft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --draft=false
