@@ -74,6 +74,28 @@
 //! can refuse; and [`split`], the train/holdout assignment, frozen before the
 //! first detector and computed rather than stored. `docs/SCHEMA.md` is the
 //! document; these modules are what makes each of its rules a refusal.
+//!
+//! # And the companion, which is the one thing M5's freeze did have to move
+//!
+//! [`telemetry`] is a **second sealed file** carrying the device-event stream at
+//! its native 125 Hz to 1 kHz, per seat. It exists because two of
+//! `docs/MILESTONES.md` M8's five candidate signals — the inter-arrival
+//! distribution and aim-correction curvature — were not detectors with
+//! uncalibrated thresholds but detectors whose **quantity was not in the corpus**
+//! at any resolution, and the recording policy that excluded it was a decision
+//! rather than a property of the system.
+//!
+//! Three things about it are the whole design, and each of them is a refusal:
+//!
+//! - **It is not in the replay**, so M5's invariant does not move: a resimulation
+//!   is a function of the seed and the log alone, and nothing no rule reads can
+//!   influence it.
+//! - **The replay's manifest carries its digest**
+//!   ([`crate::manifest::Commitment`]), so a companion cannot be swapped for
+//!   another and a replay stays verifiable without one.
+//! - **Its absence is a named state rather than an error.** A replay committing
+//!   to [`Commitment::Absent`] is a complete replay of a match that recorded no
+//!   device telemetry, and [`verify`] says so in those words.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs, missing_debug_implementations, unused_variables)]
@@ -85,6 +107,7 @@ pub mod keys;
 pub mod manifest;
 pub mod session;
 pub mod split;
+pub mod telemetry;
 
 pub use crate::consent::ConsentVersion;
 pub use crate::container::{
@@ -93,9 +116,12 @@ pub use crate::container::{
 pub use crate::keys::{
     KeyEntry, KeyRegistry, KeyStatus, RegistryError, Signature, SigningKey, VerifyingKey,
 };
-pub use crate::manifest::{Build, Manifest, MatchId, Pseudonym, SessionFacts, SimCommit};
+pub use crate::manifest::{
+    Build, Commitment, Manifest, MatchId, Pseudonym, SessionFacts, SimCommit,
+};
 pub use crate::session::SessionRecord;
 pub use crate::split::{Split, split_of};
+pub use crate::telemetry::{Telemetry, TelemetryError, TelemetryLog, TelemetryPart};
 
 use sim::{Action, Digest, EntityId, Fx, FxVec2, Input, Outcome, Seat, Tick};
 

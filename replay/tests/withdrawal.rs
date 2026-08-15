@@ -141,6 +141,7 @@ fn a_replay(match_id: &str, participants: &[&str]) -> Replay {
             started_at_unix_ms: 1_786_000_000_000,
             participants: slots,
             sim_commit: SimCommit::Unknown,
+            telemetry: replay::Commitment::Absent,
         },
         &SigningKey::from_seed(SEAL_SEED),
     )
@@ -199,7 +200,7 @@ fn populated(scratch: &Scratch) -> Corpus {
         ("2026-09-11-a", ["bistre", "celadon"]),
     ] {
         corpus
-            .store(&a_replay(id, &who), &a_session(id, who.len()))
+            .store(&a_replay(id, &who), &a_session(id, who.len()), None)
             .expect("store");
     }
     corpus
@@ -350,6 +351,7 @@ fn an_audit_catches_a_withdrawal_that_left_one_match_behind() {
         .store(
             &a_replay("2026-09-03-a", &["alizarin", "bistre"]),
             &a_session("2026-09-03-a", 2),
+            None,
         )
         .expect("store");
     // Undo the re-enrolment, so that what is left is exactly the state a
@@ -561,6 +563,7 @@ fn a_recording_naming_someone_with_no_consent_record_is_refused() {
     let refused = corpus.store(
         &a_replay("2026-09-03-a", &["alizarin", "nobody"]),
         &a_session("2026-09-03-a", 2),
+        None,
     );
     assert!(
         refused.is_err(),
@@ -615,6 +618,7 @@ fn a_match_recorded_under_a_superseded_consent_document_is_refused() {
         .store(
             &a_replay("2026-09-03-a", &["alizarin", "bistre"]),
             &a_session("2026-09-03-a", 2),
+            None,
         )
         .expect_err("a match under a superseded document was stored");
     assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
@@ -650,6 +654,7 @@ fn a_consent_record_written_before_the_version_existed_is_not_a_consent_record()
         .store(
             &a_replay("2026-09-03-a", &["alizarin", "bistre"]),
             &a_session("2026-09-03-a", 2),
+            None,
         )
         .expect_err("a match with a versionless consent record was stored");
     assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
@@ -678,6 +683,7 @@ fn one_pseudonym_cannot_occupy_two_seats_of_one_match() {
         .store(
             &a_replay("2026-09-03-a", &["alizarin", "alizarin"]),
             &a_session("2026-09-03-a", 2),
+            None,
         )
         .expect_err("one person filled two seats and the corpus took it");
     assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
@@ -711,7 +717,11 @@ fn a_seat_that_recorded_no_device_event_is_refused() {
         measured.motions = 0;
     }
     let refused = corpus
-        .store(&a_replay("2026-09-03-a", &["alizarin", "bistre"]), &session)
+        .store(
+            &a_replay("2026-09-03-a", &["alizarin", "bistre"]),
+            &session,
+            None,
+        )
         .expect_err("a seat with no device events was stored");
     assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
     assert!(
@@ -737,7 +747,11 @@ fn a_seat_that_declares_pointer_acceleration_is_refused() {
         declared.pointer_acceleration = true;
     }
     let refused = corpus
-        .store(&a_replay("2026-09-03-a", &["alizarin", "bistre"]), &session)
+        .store(
+            &a_replay("2026-09-03-a", &["alizarin", "bistre"]),
+            &session,
+            None,
+        )
         .expect_err("an accelerated session was stored");
     assert!(
         refused.to_string().contains("pointer"),
@@ -766,6 +780,7 @@ fn a_session_record_that_disagrees_with_the_replay_about_a_seat_is_refused() {
         .store(
             &a_replay("2026-09-03-a", &["alizarin", "bistre"]),
             &a_session("2026-09-03-a", 1),
+            None,
         )
         .expect_err("a match with a missing session part was stored");
     assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
@@ -779,6 +794,7 @@ fn a_session_record_that_disagrees_with_the_replay_about_a_seat_is_refused() {
         .store(
             &a_replay("2026-09-03-b", &["alizarin"]),
             &a_session("2026-09-03-b", 2),
+            None,
         )
         .expect_err("a match with a session part for an empty seat was stored");
     assert!(refused.to_string().contains("seat 1"));
@@ -797,6 +813,7 @@ fn a_session_record_naming_another_match_is_refused() {
         .store(
             &a_replay("2026-09-03-a", &["alizarin"]),
             &a_session("2026-09-03-b", 1),
+            None,
         )
         .expect_err("a session record for another match was stored");
     assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
@@ -918,6 +935,452 @@ fn withdrawing_destroys_the_session_record_and_every_field_m6_added_to_it() {
         corpus.audit("alizarin").expect("audit"),
         Vec::<PathBuf>::new()
     );
+}
+
+// ---------------------------------------------------------------------------
+// The telemetry companion, which is the richest personal information here and
+// the one file a search for a pseudonym structurally cannot find
+// ---------------------------------------------------------------------------
+
+/// How many device events and motions the small companion below carries per
+/// seat. Small, because `Corpus::store` cross-checks these against the session
+/// record and a fixture at a real 118 000 samples would be three megabytes of
+/// scratch per seat to assert an equality.
+const TRACED_SAMPLES: u64 = 6;
+/// Motions among them.
+const TRACED_MOTIONS: u64 = 3;
+
+/// One seat's stream: three motions, three presses, three view anchors.
+fn a_stream(seat: usize) -> replay::telemetry::SeatStream {
+    use replay::telemetry::{Event, Sample};
+    let mut samples = Vec::new();
+    for index in 0..3u64 {
+        samples.push(Sample {
+            at_ns: index * 8_000_000 + seat as u64,
+            event: Event::Moved {
+                dx: index as f64 * 0.5,
+                dy: -(index as f64),
+            },
+        });
+        samples.push(Sample {
+            at_ns: index * 8_000_000 + 1_000_000 + seat as u64,
+            event: Event::Pressed {
+                control: replay::telemetry::Control::Move,
+                down: index % 2 == 0,
+            },
+        });
+        samples.push(Sample {
+            at_ns: index * 8_000_000 + 2_000_000 + seat as u64,
+            event: Event::Viewed {
+                tick: sim::Tick(index as u32),
+                seq: index as u32,
+            },
+        });
+    }
+    replay::telemetry::SeatStream {
+        clock: Clock::Dequeue,
+        platform: Platform::Linux,
+        world_units_per_count_e6: 50_000,
+        dropped: 0,
+        samples,
+    }
+}
+
+/// A seat record whose counts agree with [`a_stream`], so that `Corpus::store`'s
+/// cross-check has something consistent to accept.
+fn a_traced_seat() -> SeatRecord {
+    let SeatRecord::Human {
+        declared,
+        mut measured,
+    } = a_seat()
+    else {
+        unreachable!("a_seat is a human seat")
+    };
+    measured.samples = TRACED_SAMPLES;
+    measured.motions = TRACED_MOTIONS;
+    SeatRecord::Human { declared, measured }
+}
+
+/// A session record whose seats are traced.
+fn a_traced_session(match_id: &str, participants: usize) -> SessionRecord {
+    let mut session = a_session(match_id, participants);
+    for slot in session.seats.iter_mut().take(participants) {
+        *slot = a_traced_seat();
+    }
+    session
+}
+
+/// A match, its companion, and the replay that commits to it.
+fn a_traced_match(match_id: &str, participants: &[&str]) -> (Replay, replay::Telemetry) {
+    let mut slots: [Option<Pseudonym>; PLAYER_COUNT] = [const { None }; PLAYER_COUNT];
+    for (slot, who) in slots.iter_mut().zip(participants) {
+        *slot = Pseudonym::parse(who);
+    }
+    let mut id = [b'-'; 16];
+    for (slot, byte) in id.iter_mut().zip(match_id.bytes()) {
+        *slot = byte;
+    }
+    let mut log = replay::TelemetryLog::new();
+    for seat in 0..participants.len() {
+        log.seats[seat] = Some(a_stream(seat));
+    }
+    let facts = |telemetry| SessionFacts {
+        match_id: MatchId(id),
+        started_at_unix_ms: 1_786_000_000_000,
+        participants: slots.clone(),
+        sim_commit: SimCommit::Unknown,
+        telemetry,
+    };
+    let key = SigningKey::from_seed(SEAL_SEED);
+    let companion = replay::telemetry::seal(&log, &facts(replay::Commitment::Absent), &key);
+    let sealed = replay::seal(
+        &a_recording(),
+        &facts(replay::Commitment::Sealed(companion.digest())),
+        &key,
+    );
+    (sealed, companion)
+}
+
+/// A corpus of one traced match.
+fn traced(scratch: &Scratch) -> (Corpus, String) {
+    let corpus = scratch.corpus();
+    for pseudonym in ["alizarin", "bistre"] {
+        corpus
+            .enrol(&consent(pseudonym), &format!("{pseudonym}@example.invalid"))
+            .expect("enrol");
+    }
+    let (sealed, companion) = a_traced_match("2026-09-03-a", &["alizarin", "bistre"]);
+    corpus
+        .store(
+            &sealed,
+            &a_traced_session("2026-09-03-a", 2),
+            Some(&companion),
+        )
+        .expect("store a traced match");
+    (corpus, filed_as("2026-09-03-a"))
+}
+
+/// **The claim `docs/CONSENT.md` now makes about the device stream, proved by
+/// breaking the destruction.**
+///
+/// The companion is the richest personal information in this corpus — the
+/// movement of a hand, hundreds of times a second — and it names **no
+/// pseudonym**, deliberately, so that the signed manifest stays the one naming of
+/// a person. That is exactly why a search for a name cannot find one left behind,
+/// and why the audit has to reach it some other way.
+///
+/// So the withdrawal is broken on purpose here: the two files a search *could*
+/// find are removed and the companion is left. A corpus in that state holds one
+/// person's hand movements with nothing left to say whose, and the audit reports
+/// it for every pseudonym including one the corpus has never held.
+#[test]
+fn an_audit_catches_a_withdrawal_that_left_the_telemetry_companion_behind() {
+    let scratch = Scratch::new("orphan-telemetry");
+    let (corpus, filed) = traced(&scratch);
+    let directory = scratch.path().join("matches").join(&filed);
+
+    assert!(
+        directory.join("match.telemetry").exists(),
+        "the companion was never filed, so leaving it behind proves nothing"
+    );
+    assert_eq!(
+        corpus.audit("nobody-at-all").expect("audit"),
+        Vec::<PathBuf>::new(),
+        "the corpus is already indefensible before the fault is planted"
+    );
+
+    // The withdrawal somebody wrote by hand, that knew about two files.
+    std::fs::remove_file(directory.join("match.replay")).expect("remove the replay");
+    std::fs::remove_file(directory.join("match.session")).expect("remove the session record");
+
+    for pseudonym in ["alizarin", "bistre", "nobody-at-all"] {
+        let traces = corpus.audit(pseudonym).expect("audit");
+        assert!(
+            traces.iter().any(|path| path.ends_with(&filed)),
+            "auditing {pseudonym} did not report a telemetry companion with no \
+             manifest in front of it: {traces:?}"
+        );
+    }
+
+    // And the withdrawal this project actually performs takes the directory
+    // whole, so the same corpus is defensible after it.
+    let (corpus, filed) = traced(&Scratch::new("withdraw-telemetry"));
+    let _ = filed;
+    corpus.withdraw("alizarin", "2026-09-20").expect("withdraw");
+    assert_eq!(
+        corpus.audit("alizarin").expect("audit"),
+        Vec::<PathBuf>::new(),
+        "the withdrawal left the companion behind"
+    );
+}
+
+/// A withdrawal destroys the stream, and the assertion reads it first.
+#[test]
+fn withdrawing_destroys_the_device_stream_it_could_not_be_searched_for() {
+    let scratch = Scratch::new("withdraw-stream");
+    let (corpus, filed) = traced(&scratch);
+    let path = scratch
+        .path()
+        .join("matches")
+        .join(&filed)
+        .join("match.telemetry");
+
+    let before = std::fs::read(&path).expect("the companion");
+    let companion = replay::Telemetry::decode(&before).expect("decode");
+    let device_events: u64 = companion
+        .manifest
+        .seats
+        .iter()
+        .flatten()
+        .map(|seat| seat.samples)
+        .sum();
+    assert!(
+        device_events > 0,
+        "the companion holds no device event, so destroying it proves nothing"
+    );
+    assert!(
+        !String::from_utf8_lossy(&before).contains("alizarin"),
+        "the companion names a pseudonym, which would make this test pass for the \
+         wrong reason — the audit's byte search would find it"
+    );
+
+    corpus.withdraw("alizarin", "2026-09-20").expect("withdraw");
+    assert!(
+        !path.exists(),
+        "{device_events} device event(s) of somebody's hand survived their \
+         withdrawal"
+    );
+    assert_eq!(
+        corpus.audit("alizarin").expect("audit"),
+        Vec::<PathBuf>::new()
+    );
+    println!(
+        "withdrawal: {device_events} device event(s) destroyed with the match \
+         directory that held them"
+    );
+}
+
+/// A file the schema does not name is reported, whoever is being audited.
+///
+/// `docs/SCHEMA.md` §1 says there is no other file, and until the companion
+/// arrived nothing enforced it. The case it is really about is a **client's
+/// telemetry part** left in a match directory by an interrupted collection: it
+/// is one seat's hand movements, it names nobody, and no search for a pseudonym
+/// in any corpus would ever report it.
+#[test]
+fn an_audit_catches_a_file_the_schema_does_not_name() {
+    let scratch = Scratch::new("stray-part");
+    let (corpus, filed) = traced(&scratch);
+    let directory = scratch.path().join("matches").join(&filed);
+
+    assert_eq!(
+        corpus.audit("nobody-at-all").expect("audit"),
+        Vec::<PathBuf>::new()
+    );
+
+    let part = replay::TelemetryPart {
+        seat: sim::Seat::Blue0,
+        stream: a_stream(0),
+    };
+    std::fs::write(directory.join("seat-0.telemetry-part"), part.encode()).expect("plant a part");
+
+    let traces = corpus.audit("nobody-at-all").expect("audit");
+    assert!(
+        traces.iter().any(|path| path.ends_with(&filed)),
+        "a telemetry part left in a match directory was not reported: {traces:?}"
+    );
+    println!("audit: a stray telemetry part is reported as unaccountable");
+}
+
+/// The two directions of the commitment, refused at the door.
+#[test]
+fn a_companion_the_replay_did_not_name_and_a_commitment_with_no_companion_are_both_refused() {
+    let scratch = Scratch::new("commitment");
+    let corpus = scratch.corpus();
+    for pseudonym in ["alizarin", "bistre"] {
+        corpus
+            .enrol(&consent(pseudonym), &format!("{pseudonym}@example.invalid"))
+            .expect("enrol");
+    }
+
+    // A replay that commits to a companion, stored without one.
+    let (sealed, companion) = a_traced_match("2026-09-03-a", &["alizarin", "bistre"]);
+    let refused = corpus.store(&sealed, &a_traced_session("2026-09-03-a", 2), None);
+    let error = refused.expect_err("a commitment with no companion was stored");
+    assert!(
+        error.to_string().contains("commits to telemetry companion"),
+        "refused for the wrong reason: {error}"
+    );
+
+    // And a replay that commits to none, stored with one.
+    let untraced = a_replay("2026-09-03-b", &["alizarin", "bistre"]);
+    let refused = corpus.store(&untraced, &a_session("2026-09-03-b", 2), Some(&companion));
+    let error = refused.expect_err("a companion nobody named was stored");
+    assert!(
+        error
+            .to_string()
+            .contains("commits to no telemetry companion"),
+        "refused for the wrong reason: {error}"
+    );
+    println!("store: both directions of the commitment are refused");
+}
+
+/// The session record and the companion hold the same numbers about each seat,
+/// and neither is derived from the other, so `Corpus::store` refuses them
+/// disagreeing.
+#[test]
+fn a_session_record_that_disagrees_with_the_companion_about_a_seat_is_refused() {
+    let scratch = Scratch::new("counts-drift");
+    let corpus = scratch.corpus();
+    for pseudonym in ["alizarin", "bistre"] {
+        corpus
+            .enrol(&consent(pseudonym), &format!("{pseudonym}@example.invalid"))
+            .expect("enrol");
+    }
+    let (sealed, companion) = a_traced_match("2026-09-03-a", &["alizarin", "bistre"]);
+
+    // The session record says the client saw one more device event than the
+    // stream holds. Neither file is derived from the other — the summary is what
+    // survives when there is no companion — so nothing but this check notices.
+    let mut session = a_traced_session("2026-09-03-a", 2);
+    if let SeatRecord::Human { measured, .. } = &mut session.seats[1] {
+        measured.samples += 1;
+    }
+    let error = corpus
+        .store(&sealed, &session, Some(&companion))
+        .expect_err("a session record that miscounts its own seat was stored");
+    assert!(
+        error.to_string().contains("seat 1"),
+        "refused for the wrong reason: {error}"
+    );
+    println!("store: {error}");
+
+    // …and the same for a covariate rather than a count.
+    let mut session = a_traced_session("2026-09-03-a", 2);
+    if let SeatRecord::Human { measured, .. } = &mut session.seats[0] {
+        measured.platform = Platform::Windows;
+    }
+    let error = corpus
+        .store(&sealed, &session, Some(&companion))
+        .expect_err("two files disagreeing about a platform were stored");
+    assert!(error.to_string().contains("seat 0"));
+    println!("store: {error}");
+}
+
+/// A companion that does not verify against the replay beside it never reaches
+/// the disk.
+#[test]
+fn a_substituted_companion_is_refused_at_the_door() {
+    let scratch = Scratch::new("substituted");
+    let corpus = scratch.corpus();
+    for pseudonym in ["alizarin", "bistre"] {
+        corpus
+            .enrol(&consent(pseudonym), &format!("{pseudonym}@example.invalid"))
+            .expect("enrol");
+    }
+    let (sealed, _) = a_traced_match("2026-09-03-a", &["alizarin", "bistre"]);
+    // Another match's companion, honestly sealed by the same key.
+    let (_, elsewhere) = a_traced_match("2026-09-11-a", &["alizarin", "bistre"]);
+
+    let error = corpus
+        .store(
+            &sealed,
+            &a_traced_session("2026-09-03-a", 2),
+            Some(&elsewhere),
+        )
+        .expect_err("another match's companion was stored");
+    assert!(
+        error.to_string().contains("telemetry companion is refused"),
+        "refused for the wrong reason: {error}"
+    );
+    assert_eq!(
+        corpus.matches().expect("matches"),
+        Vec::<String>::new(),
+        "the match directory was created before the companion was refused"
+    );
+    println!("store: {error}");
+}
+
+/// **A stream with no view anchors is a client whose wiring is broken.**
+///
+/// The one part of the anchor's path no test can reach is where it is attached:
+/// `client::gfx::Session::advance` needs a display server and CI has none, which
+/// is the same admission `client::health::Cadence`'s bracket carries. So the
+/// failure is made loud instead — a seat that played a match received frames, so
+/// a stream with none in it is not a session, and `Corpus::store` says so at the
+/// door rather than letting a corpus be recorded that cannot answer the question
+/// it was recorded for.
+#[test]
+fn a_traced_seat_with_no_view_anchor_is_refused() {
+    let scratch = Scratch::new("no-anchor");
+    let corpus = scratch.corpus();
+    for pseudonym in ["alizarin", "bistre"] {
+        corpus
+            .enrol(&consent(pseudonym), &format!("{pseudonym}@example.invalid"))
+            .expect("enrol");
+    }
+
+    let mut log = replay::TelemetryLog::new();
+    for seat in 0..2usize {
+        let mut stream = a_stream(seat);
+        stream
+            .samples
+            .retain(|sample| !matches!(sample.event, replay::telemetry::Event::Viewed { .. }));
+        log.seats[seat] = Some(stream);
+    }
+    let mut id = [b'-'; 16];
+    for (slot, byte) in id.iter_mut().zip("2026-09-03-a".bytes()) {
+        *slot = byte;
+    }
+    let mut slots: [Option<Pseudonym>; PLAYER_COUNT] = [const { None }; PLAYER_COUNT];
+    slots[0] = Pseudonym::parse("alizarin");
+    slots[1] = Pseudonym::parse("bistre");
+    let facts = |telemetry| SessionFacts {
+        match_id: MatchId(id),
+        started_at_unix_ms: 1_786_000_000_000,
+        participants: slots.clone(),
+        sim_commit: SimCommit::Unknown,
+        telemetry,
+    };
+    let key = SigningKey::from_seed(SEAL_SEED);
+    let companion = replay::telemetry::seal(&log, &facts(replay::Commitment::Absent), &key);
+    let sealed = replay::seal(
+        &a_recording(),
+        &facts(replay::Commitment::Sealed(companion.digest())),
+        &key,
+    );
+
+    // The device events still count, so the silent-seat refusal does not fire and
+    // this is the anchor check or nothing.
+    // …and the fixture the rest of this file uses does carry anchors, so the
+    // refusal above is reachable only by removing them on purpose.
+    let (_, ordinary) = a_traced_match("2026-09-11-a", &["alizarin", "bistre"]);
+    assert!(
+        ordinary.manifest.seats[0].expect("seat 0 is traced").views > 0,
+        "the ordinary fixture has no anchors either, so every traced test in this \
+         file is passing on a stream this corpus would refuse"
+    );
+    assert!(
+        companion.manifest.seats[0]
+            .expect("seat 0 is traced")
+            .samples
+            > 0,
+        "the seat records no device event either, so the silent-seat check would \
+         catch this and the assertion below would be about the wrong refusal"
+    );
+
+    let error = corpus
+        .store(
+            &sealed,
+            &a_traced_session("2026-09-03-a", 2),
+            Some(&companion),
+        )
+        .expect_err("a stream with no view anchor was stored");
+    assert!(
+        error.to_string().contains("no view anchor"),
+        "refused for the wrong reason: {error}"
+    );
+    println!("store: {error}");
 }
 
 /// A session record survives its own encoding, field for field.

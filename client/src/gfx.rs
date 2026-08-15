@@ -59,6 +59,21 @@
 //! the way out is zero, and a session part with `passes: 0` is a session part an
 //! operator reads as broken.
 //!
+//! # The view anchor is attached here, and that wiring is uncovered too
+//!
+//! [`Session::advance`] records a `client::input::Event::Viewed` for every frame
+//! it folds in, which is what ties the device stream to the match
+//! (`docs/SCHEMA.md` §11c). It is one line in the same callback as everything
+//! else here, and it is checked by nobody for the same reason the `Cadence`
+//! bracket is: this loop needs a display server and CI has none.
+//!
+//! **So the failure was made loud rather than left silent.** A stream with no
+//! anchors in it is a client whose wiring is broken, not a session — a seat that
+//! played a match received frames — so `replay::Corpus::store` refuses a traced
+//! seat whose companion carries zero view anchors, by name and at the door. An
+//! operator finds out when they file the match rather than when a detector reads
+//! a corpus that cannot answer the question it was recorded for.
+//!
 //! # The pointer is hidden and not grabbed, and that was measured
 //!
 //! Cursor visibility is state on a device the process does not own; it is
@@ -260,6 +275,12 @@ impl Session {
             let seq = self.headless.next_seq();
             prediction.sent(seq, action);
             let frame = self.headless.intend(action, now_ms());
+            // The anchor, on the same monotonic clock as every device sample and
+            // taken here rather than at the top of the loop: what a reaction is
+            // measured from is the moment this client *had* the view and could
+            // act on it, and that moment is this one. `client::input::Event::Viewed`
+            // is why the record exists at all.
+            self.play.viewed(self.at_ns(), view.tick.0, seq);
             if self.outbox.try_send(frame).is_err() {
                 self.outcome.get_or_insert(Ending::Over);
                 return;
@@ -576,6 +597,26 @@ pub fn play(
         std::fs::write(&path, part.encode())
             .map_err(|error| format!("{}: {error}", path.display()))?;
         eprintln!("capture: session part {}", path.display());
+
+        // And the device stream itself, which is the artefact the session part
+        // only summarises. It goes to whoever *seals*, before the replay exists,
+        // because the replay's manifest commits to the companion's digest and a
+        // digest has to exist before something can commit to it
+        // (`replay::manifest::Commitment`).
+        let telemetry = crate::health::telemetry_part(seat, session.play.trace());
+        let path = recorded
+            .directory
+            .join(crate::health::telemetry_part_name(seat));
+        std::fs::write(&path, &telemetry)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        eprintln!(
+            "capture: telemetry part {} — {} bytes, {} device event(s), {} view \
+             anchor(s)",
+            path.display(),
+            telemetry.len(),
+            stats.samples,
+            stats.views
+        );
     }
     match session.outcome {
         Some(Ending::Failed(reason)) => Err(reason),
@@ -612,12 +653,15 @@ pub fn probe(seconds: u64) -> Result<(), String> {
     }
     report(probe.play.trace().stats());
     for sample in probe.play.trace().samples() {
-        match sample.motion {
-            crate::input::Motion::Moved { dx, dy } => {
+        match sample.event {
+            crate::input::Event::Moved { dx, dy } => {
                 println!("{}\tmove\t{dx}\t{dy}", sample.at_ns);
             }
-            crate::input::Motion::Pressed { control, down } => {
+            crate::input::Event::Pressed { control, down } => {
                 println!("{}\tpress\t{control:?}\t{down}", sample.at_ns);
+            }
+            crate::input::Event::Viewed { tick, seq } => {
+                println!("{}\tview\t{tick}\t{seq}", sample.at_ns);
             }
         }
     }
@@ -705,6 +749,7 @@ fn report(stats: TraceStats) {
     let TraceStats {
         samples,
         moves,
+        views,
         span_ns,
         gaps_ns,
         gap_mean_ns,
@@ -716,7 +761,8 @@ fn report(stats: TraceStats) {
     } = stats;
     let ms = |ns: u64| (ns as f64) / 1e6;
     eprintln!(
-        "capture: {samples} device events ({moves} motion) over {:.3} s",
+        "capture: {samples} device events ({moves} motion) and {views} view \
+         anchor(s) over {:.3} s",
         ms(span_ns) / 1e3
     );
     eprintln!(

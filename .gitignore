@@ -29,6 +29,15 @@
 *.session
 *.session-part
 
+# And the telemetry companion, which is the most personal file in the corpus and
+# the one that names nobody at all. It is the movement of somebody's hand at
+# their mouse's own report rate — `docs/SCHEMA.md` §11 — and, like the two
+# shapes above, a search for a pseudonym would never find it committed because
+# there is no pseudonym in it. The part is one seat's half of it as the client
+# wrote it out, before anything has sealed anything.
+*.telemetry
+*.telemetry-part
+
 # The replay signing key, which arrives at M5.
 #
 # A different kind of secret from the corpus and refused for a different reason:

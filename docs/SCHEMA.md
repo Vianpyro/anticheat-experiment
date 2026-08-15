@@ -25,6 +25,7 @@ withdrawal destroys it.**
   identities/<pseudonym>.identity       the mapping to a person. The sensitive file
   matches/<match_id>/match.replay       the sealed replay (docs/ARCHITECTURE.md)
   matches/<match_id>/match.session      the session record (§4)
+  matches/<match_id>/match.telemetry    the device-event stream, sealed (§11)
   withdrawals/<pseudonym>.withdrawn     a tombstone, and nothing else
 ```
 
@@ -32,12 +33,21 @@ Outside the repository, always. `.gitignore` refuses every one of these shapes
 and `ci` fails a pull request that tracks one, because `docs/RISKS.md` R3 is about
 an irreversibility git makes literal.
 
+`match.telemetry` is present exactly when the replay beside it commits to one,
+and absent exactly when it commits to `Commitment::Absent`. Both are legitimate
+states and neither is a default: §11 has the account.
+
 **There is no other file.** No index, no cache, no summary, no participant list,
-no split file. `docs/CONSENT.md` records why — a derived artefact is what outlives
-the thing it was derived from — and `Corpus::audit` is the guard: it reads every
-byte of every file under the root, so an artefact added quietly is reported the
-first time somebody withdraws. `replay/tests/withdrawal.rs` plants one to prove
-it.
+no split file, and no client's part left over from a collection. `docs/CONSENT.md`
+records why — a derived artefact is what outlives the thing it was derived from —
+and `Corpus::audit` is the guard, in two ways rather than one. It reads every
+byte of every file under the root, so an artefact carrying a pseudonym is
+reported the first time somebody withdraws; and since M8 it also reports a match
+directory holding **any file this list does not name**, which is the only check
+that reaches an artefact naming nobody at all. A `seat-3.telemetry-part` left
+behind by an interrupted collection is one seat's hand movements with nothing to
+say whose, and no search for a name in any corpus would ever find it.
+`replay/tests/withdrawal.rs` plants both to prove it.
 
 ## 2. The pseudonymous identity scheme
 
@@ -80,10 +90,17 @@ intention, roughly one per thirtieth of a second per player:
 | `received_at_ms` | when the server observed it arrive | the only real clock |
 
 M6 asked for the two timestamps and they were already there. What is **not** here
-and will not be: anything at a higher rate. `client::input::InputTrace` holds a
-kilohertz stream of raw device deltas while a session runs, and it stays outside
-the artefact resimulation is a function of (`replay/src/manifest.rs`). What
-reaches the corpus from it is the summary in §4.
+and will not be: anything at a higher rate. `sim` consumes one intention per tick
+at 30 Hz, and folding a kilohertz stream into the artefact a resimulation is a
+function of would make that resimulation a function of something no rule reads
+(`replay/src/manifest.rs`).
+
+**That is a statement about the replay and no longer a statement about the
+corpus.** Since M8 the device stream is kept — in a separate sealed file the
+replay's manifest commits to by digest, described in §11 — and what reaches the
+corpus from `client::input::InputTrace` is both the summary in §4b *and* the
+stream itself. The two hold the same numbers about each seat and neither is
+derived from the other, which is why `Corpus::store` refuses them disagreeing.
 
 ## 4. Per seat, per match — the session record
 
@@ -262,7 +279,7 @@ stratum a claim is actually made on.
 
 | Excluded | How it is enforced |
 | --- | --- |
-| A match played by a bot, a script, or a headless client | `Corpus::store` refuses any seat that recorded **zero device events**, and the schema has no `provenance` value but `human` and `empty` — a part claiming otherwise does not parse |
+| A match played by a bot, a script, or a headless client | `Corpus::store` refuses any seat that recorded **zero device events**, and the schema has no `provenance` value but `human` and `empty` — a part claiming otherwise does not parse. §11's view anchors are counted apart from the device events for exactly this reason: a headless client receives thirty frames a second, and counting those among the samples would hand this refusal to the attacker it exists to catch |
 | One person filling several seats | `Corpus::store` refuses a manifest naming one pseudonym twice |
 | A match nobody consented to | refused since M5; now also refused when the consent record is from another version of `docs/CONSENT.md`, or has no version at all |
 | A session recorded through OS pointer acceleration | §4d |
@@ -393,9 +410,23 @@ not type it.
 directory:
 
 ```console
-$ replay store <corpus> <match.replay> <parts-dir> <recorded-on>
+$ replay store <corpus> <match.replay> <parts-dir> <recorded-on> <supervision> \
+      [<match.telemetry>]
 $ replay census <corpus>
 ```
+
+The companion is an argument rather than a file `store` goes looking for, and
+both directions are refusals: a replay committing to a companion cannot be filed
+without it, and a companion cannot be filed beside a replay that named none.
+
+Sealing the companion happens **before** the replay is sealed and is
+`moba-server`'s job, because the replay's manifest carries the companion's digest
+and a digest has to exist before something commits to it. Operationally that
+means the clients' `*.telemetry-part` files have to reach the machine holding the
+signing key while the server is still running; it waits for one part per seat
+that played, with a deadline, and writes no companion at all if they do not all
+arrive. **A companion covering some of the seats is never written**, because its
+coverage would then be a function of who managed to copy a file.
 
 `store` refuses rather than warns; `replay/src/corpus.rs` carries the table of
 what and why. `census` writes nothing.
@@ -436,3 +467,190 @@ Two decisions, taken here and not revisited per match (`docs/MILESTONES.md` M6):
   practical consequence, stated in advance: one refusal in a match of nine
   withholds that match, so the publishable subset will in practice be small or
   empty, and no plan here depends on it existing.
+
+## 11. The telemetry companion — the device stream, field by field
+
+`matches/<id>/match.telemetry`, one sealed file per match, one stream per seat.
+`replay::telemetry` is the code and `docs/CONSENT.md` §2b is what a participant
+reads about it.
+
+**Why it exists.** `docs/detectors/README.md` recorded two of
+`docs/MILESTONES.md` M8's five candidate signals as *not buildable*, and the
+reason was not calibration: the inter-arrival distribution and aim-correction
+curvature are statistics over a quantity that **was not in the corpus at any
+resolution**. `client::input::InputTrace` held every device event at 125 Hz to
+1 kHz while a session ran, and §3 and §4b between them kept four summary numbers
+and dropped the rest. That was a recording-policy decision — a defensible one
+while the format's subject was resimulation — and it is reversed here, at the
+last moment at which reversing it destroys nothing, because the corpus is empty.
+
+### 11a. Where it sits, and the commitment that binds it
+
+**It is not in the replay.** M5's invariant does not move: a resimulation is a
+function of the seed and the input log alone, and nothing no rule reads can
+influence it. The device stream is a second file.
+
+**The replay's manifest carries this file's digest** — `Commitment::Sealed`, over
+the companion's whole bytes including its own manifest — and that is what does
+the work in both directions:
+
+| Without the commitment | With it |
+| --- | --- |
+| A companion can be swapped for another. An attacker holding a key the registry accepts seals a second, smoother one for the same match, internally perfect | Refused: the replay named thirty-two other bytes first (`TelemetryError::Substituted`) |
+| "Where is the telemetry" has no answer a file can give | The replay says, or says there is none |
+| A replay is only as verifiable as the largest file beside it | A replay verifies **without** the companion, and says which state it is in |
+
+**Absence is a signed state, not a missing file.** `Commitment::Absent` is what a
+match that recorded no device stream carries, and it is legitimate: a development
+run, a session whose parts never arrived, a match nobody was recording. `verify`
+reports it in those words rather than failing, and — the half that gives it teeth
+— because the absence is *inside the signature*, attaching a companion to such a
+replay afterwards is a refusal (`TelemetryError::NotCommitted`) rather than an
+upgrade.
+
+**There is one format and it is sealed**, for the reason M5 gives about the
+replay: a reader that accepts a sealed and an unsealed companion accepts the
+weaker. The one thing that is not sealed is a client's `*.telemetry-part`, and it
+cannot be — `client` may not link `replay`, which owns the signing key, so a
+client structurally cannot sign. A part is a transport between two processes, it
+names one seat rather than a match, it is **not a corpus artefact**, and §1's
+"no other file" check is what reports one left in a match directory.
+
+### 11b. Per seat, in the signed manifest
+
+| Field | What it is |
+| --- | --- |
+| `clock` | `dequeue` or `device` — what `at_ns` actually is (`client::input::CLOCK`) |
+| `platform` | `linux`, `windows`, `macos`, `other`. What a device count and a timestamp *are* differs between them |
+| `world_units_per_count_e6` | The build's sensitivity. It scales the **aim** and not the record, so it is here to make the aim reconstructible from the stream rather than to be divided out of it |
+| `samples` | Device events: motions and control transitions |
+| `motions` | Motions among them |
+| `views` | View anchors, which are **not** device events |
+| `dropped` | Device events the client's buffer refused. Nothing else in the corpus carries it, and a stream that lost its tail silently would be a distribution with a hole nobody can see |
+
+The first six duplicate §4b, deliberately: §4b is what survives when there is no
+companion, so neither file is derived from the other and both can drift.
+`Corpus::store` refuses them disagreeing, seat by seat.
+
+### 11c. Per record, in the stream
+
+Every record is **25 bytes** whatever it holds, so a file's length is a function
+of how many events it carries rather than of which ones.
+
+| Record | Carries |
+| --- | --- |
+| `Moved` | `dx`, `dy` — the platform's `f64` pair **by its bits**: the device's own units, unscaled, unrounded, unquantised. Downward-positive, which is the platforms' convention and is kept rather than corrected |
+| `Pressed` | One of the five controls the game uses, and whether it went down or up. Presses that produced no order are recorded, because a `Targeted` with nobody in range is a thing a player did |
+| `Viewed` | `tick` and `seq`: a server view for that tick reached the client, and the client answered with that intention. Thirty a second |
+
+Every record carries `at_ns` on that seat's own monotonic clock.
+
+**`Viewed` is the only record that is not the hand, and it is why a reaction is
+measurable at all.** A device stream without it is a hand in a vacuum: an
+inter-arrival distribution and a curvature statistic can be computed from motions
+alone, but a reaction is the interval between being *shown* something and
+answering it, and this is the only clock with both ends on it. `tick` is the
+replay's clock and `seq` is the log's per-player counter, so every sample in this
+stream can be placed against the match without either side carrying a wall clock.
+
+**It is not counted among the device events**, in the manifest and in
+`client::input::TraceStats` alike. §6 refuses a seat that recorded zero device
+events, which is the corpus's one mechanical defence against a headless client —
+and a headless client *receives views*. Counting anchors among the samples would
+hand that defence to the exact attacker it exists to catch.
+
+**And a traced seat with zero anchors is refused**, which is the mirror of that
+rule and exists for a different reason. The place the anchor is *attached* —
+`client::gfx::Session::advance` — is the one part of the capture path no test can
+reach, because the loop needs a display server and CI has none, which is the same
+admission `docs/RISKS.md` R16 makes about the tick-budget bracket. A seat that
+played a match received frames, so a stream with no anchor in it is a client whose
+wiring is broken rather than a session, and `Corpus::store` says so at the door.
+An operator finds out when they file the match rather than when a detector reads a
+corpus that cannot answer the question it was recorded for.
+
+### 11d. What is deliberately not in it
+
+Named, because what is missing here is missing from the whole corpus.
+
+- **No pseudonym**, and this is the field whose absence costs the most. The
+  signed manifest is the one naming of a person; a second naming here would be
+  the derived index M5 removed, in a new place. The price is that a search for a
+  name cannot find a companion left behind, which is why §1's "no other file"
+  check and `Corpus::accountable`'s coherence clause exist and why
+  `replay/tests/withdrawal.rs` breaks the withdrawal to prove they work.
+- **No wall clock, and no cross-seat time reference.** Each seat's `at_ns` is its
+  own client's monotonic clock with its own epoch; two seats' streams are **not**
+  comparable in time, and the only common reference is the tick, through `Viewed`,
+  which is the server's. A wall-clock anchor would be a number a client wrote, and
+  `docs/SCOPE.md`'s adversary model puts that in the attacker's hands by
+  definition. Anything that needs two hands aligned to the millisecond is not
+  computable from this corpus and will not become so.
+- **No aim, and no world coordinate.** The aim is an integral of these deltas
+  under `world_units_per_count_e6` and the map clamp, both of which are here or in
+  `rules_hash`. A stored aim would be a field that can disagree with its own
+  inputs.
+- **Nothing from the renderer.** No window size, no pixel, no drawn position, no
+  scale factor. `docs/RISKS.md` R14 is the entry and `client::draw` has no inverse
+  projection at all, so there is no screen-space quantity for this file to have
+  derived from.
+- **No key outside the five the game uses**, no text, no pointer position on the
+  desktop, no device model or serial, nothing from outside the match.
+- **No summary, no score, no derived statistic.** Those are §4b's, and §4b is
+  cross-checked against this file rather than computed from it.
+
+### 11e. The size budget, and what a saving would destroy
+
+The number this format costs, before anybody discovers it on a disk. Twenty-five
+bytes a record, thirty view anchors a second, and roughly ten control transitions
+a second for a busy player:
+
+| Mouse polling rate | Per seat | Nine seats | A 20-minute match | 20 matches | 40 matches |
+| --- | --- | --- | --- | --- | --- |
+| 125 Hz | 4.1 kB/s | 37 kB/s | **42.5 MiB** | 0.83 GiB | 1.66 GiB |
+| 500 Hz | 13.5 kB/s | 122 kB/s | **139 MiB** | 2.72 GiB | 5.43 GiB |
+| 1000 Hz | 26 kB/s | 234 kB/s | **268 MiB** | 5.23 GiB | 10.5 GiB |
+
+Against the replay of the same match — nine seats, one intention per tick, 34
+bytes an input — which is **10.5 MiB**. So the companion is **4× the replay at
+125 Hz and 25× at 1 kHz**, and it is the artefact that determines what a corpus
+costs to keep.
+
+**The verdict: it fits, and no saving is taken.** `docs/SCOPE.md` puts scale out
+of scope and this corpus is twenty to forty matches on one machine; the worst
+case is about five gigabytes at the reduced match count and about ten at the
+full one, which is a disk rather than a problem. What follows is what each
+available saving would have cost, because a reader is entitled to know that the
+question was asked.
+
+| Saving | What it buys | What it destroys |
+| --- | --- | --- |
+| **Quantise `dx`/`dy` to whole device counts** — two `i16` instead of two `f64` | 25 bytes → 11, a 56% cut and the only large one | **Refused, and by name.** Unaccelerated backends do not report whole counts: Wayland's relative motion is fixed-point in 1/256 of a count and X11's raw valuators are FP16.16. Rounding them puts a grid back in the record — `docs/RISKS.md` R14 exactly, one order finer — and the detector it destroys is the curvature detector this file exists to make possible, whose whole subject is the shape of a trajectory at the finest resolution the device produced |
+| **Delta-encode `at_ns`** as a gap rather than an absolute | ~16% | Nothing about the data, and the reader's totality: records stop being fixed-width, so the record count no longer bounds the buffer before an allocation and a decoder gains a case to get wrong. Not worth 16% |
+| **Compress the stream** | Plausibly 40–60%, losslessly | Nothing about the data. Not taken on two grounds: `docs/ENGINEERING.md`'s bar for a dependency in the crate that owns the signing key, and the one-format rule — a compressed and an uncompressed companion would be two files nobody can tell apart at a glance, which is M5's lesson |
+| **Drop the view anchors** | 18% at 125 Hz, 3% at 1 kHz | Every reaction statistic, entirely. See 11c |
+| **Sample at a fixed rate instead of per event** | Whatever rate you choose | A resampling of a stream the client already holds in full: it aliases anything faster than its interval and can only lose information. `client::input` refused it once already |
+
+### 11f. What a 1 kHz seat costs, which is the one honest worry
+
+At 1000 Hz the gap between two device events is **1 ms**, and `docs/RISKS.md` R14
+measured the delay this client adds between an event existing and being stamped
+at 16 µs of standard deviation and 0.26 ms at worst over 1200 samples in
+`release`. Sixteen microseconds against a millisecond is 1.6% and harmless; a
+worst pass of the capture loop at 5 ms against a 1 ms gap is **not**, because
+five device reports queued during one pass are stamped microseconds apart as the
+queue drains, which puts a burst-and-stall structure into the record that belongs
+to the client rather than to the hand.
+
+That is not a defect and it is not fixed here. What it is, is a **covariate the
+corpus already records**: `device_polling_hz` is declared per seat (§4a) and
+`median_gap_ns` is measured beside it (§4b), and `replay census` prints the
+declared rates with the sentence saying what pooling them costs. The rule:
+
+> A detector reading an inter-arrival distribution stratifies by declared polling
+> rate, or its page says it did not.
+
+`docs/RISKS.md` R14's reopening criterion is where the harder version of this
+lives: at 1 kHz the quantity a detector reads *is* at the scale of the residual,
+which is the condition under which a per-platform input stack would start buying
+something.

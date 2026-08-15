@@ -73,6 +73,7 @@ pub fn stored(
             started_at_unix_ms: 1_786_000_000_000,
             participants,
             sim_commit: replay::SimCommit::Unknown,
+            telemetry: replay::Commitment::Absent,
         },
         &key,
     );

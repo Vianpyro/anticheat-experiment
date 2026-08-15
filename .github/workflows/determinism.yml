@@ -161,10 +161,20 @@ jobs:
       # sealed on Linux and committed, and every target requires byte equality
       # with them and then verifies and resimulates them.
       #
+      # **The telemetry companion is a file too, and the three places are the
+      # same three.** It runs in this step rather than beside it because the
+      # claim is identical and the fixture is the same one: the companion's bytes
+      # are committed here as well, the replay's manifest commits to their
+      # digest, and every target has to reproduce both and check the binding
+      # between them. The one thing that is new in it is an `f64` pair per
+      # record, written by `to_bits` — exactly specified by IEEE-754, and
+      # therefore precisely the shape of claim `docs/RISKS.md` R1's negative
+      # control exists to distrust rather than assume.
+      #
       # In this job rather than a fourth one because it is the same claim as the
       # fixture's over the same three targets, and `docs/ENGINEERING.md` counts
       # automations rather than steps.
-      - name: Verify a replay sealed on another platform
+      - name: Verify a replay and its telemetry companion sealed on another platform
         shell: bash
         run: cargo test -p replay --release --locked --test sealed -- --nocapture | tee sealed.log
 

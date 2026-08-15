@@ -123,6 +123,7 @@ fn seal_to(path: &Path, participants: [&str; 2]) -> MatchId {
             started_at_unix_ms: 1_786_000_000_000,
             participants: slots,
             sim_commit: SimCommit::Unknown,
+            telemetry: replay::Commitment::Absent,
         },
         &SigningKey::from_seed(SEAL_SEED),
     );

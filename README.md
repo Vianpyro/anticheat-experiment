@@ -34,7 +34,7 @@ the detection logic never ships to the attacker.
 | --- | --- |
 | `sim` | The rules. `State`, `Input`, `step`, `view_for`, fixed-point math. Depends on nothing in the workspace |
 | `protocol` | The wire, and the only trust boundary |
-| `replay` | Replay container, signing, verification, resimulation |
+| `replay` | Replay container, signing, verification, resimulation; the corpus, and the sealed telemetry companion a replay commits to |
 | `server` | Authority: tick loop, the clock, sessions, fog application, telemetry |
 | `client` | Presentation. Never links `anticheat` |
 | `anticheat` | Detection. A pure function from telemetry to scores and evidence |
@@ -76,15 +76,12 @@ this order:
 - `docs/ENGINEERING.md` — toolchain, workflows, supply chain, release, and what
   stays manual on purpose.
 - `docs/detectors/` — one page per behavioural detector: its null model, the
-  exploit it responds to, the control it stays quiet against, and what a corpus
-  would have to be before its threshold could be a number. **None of them is
-  calibrated**, and the index says which of M8's candidate signals cannot be
-  built at all and why.
-- `docs/detectors/` — one page per behavioural detector: its null model, the
   exploit it responds to, the control it stays quiet against, and what the corpus
   would have to be before its threshold could be a number. **None of them is
-  calibrated**, and the index says which of M8's candidate signals cannot be built
-  at all and why.
+  calibrated**, and the index says which of M8's candidate signals are buildable,
+  which are not, and why.
+- `docs/SCHEMA.md` — what the human corpus holds, field by field, including the
+  telemetry companion and what it costs to keep.
 
 ## Contributing and security
 

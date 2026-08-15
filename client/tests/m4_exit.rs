@@ -46,6 +46,24 @@ use sim::{Action, Digest, Fx, FxVec2, Seat, Tick, base_position};
 mod harness;
 
 const TICKS: u32 = 1000;
+
+/// The most a single tick of movement can fall short of `champion_speed`, in raw
+/// fixed-point units.
+///
+/// **Two, and it is a function of the direction.** `FxVec2::step_toward`
+/// normalises the direction and scales it by the speed, and both operations
+/// truncate toward zero on each component independently
+/// (`docs/ARCHITECTURE.md`, "Rounding"). Along an axis the normalised vector is
+/// exact and the step loses nothing; off it, each component loses up to a unit
+/// and the magnitude loses up to two.
+///
+/// It is a constant with a test rather than a number in a comment, and the
+/// distinction is why this exists. The bound this replaces was one raw unit,
+/// generalised from a single observed correction of 13106 against a step of
+/// 13107 — which is an axis-aligned step whose *magnitude* lost one unit to the
+/// correction's own `isqrt`, and not a step that lost anything at all. The
+/// direction it had no room for turned up on Windows as 13105.
+const TICK_SHORTFALL: i32 = 2;
 const CHECKPOINT: u32 = 100;
 
 /// The tick the team turns for home.
@@ -429,11 +447,25 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
         // rather than a different number of ticks of the same one, and no amount
         // of transport jitter produces that.
         //
-        // One raw unit of slack per tick, because `step_toward` truncates toward
-        // zero: a one-tick correction arrives as 13106 against a step of 13107,
-        // and the shortfall accumulates with the number of ticks.
+        // The slack is derived from the arithmetic rather than from an
+        // observation, and that distinction is the whole of why this used to be
+        // wrong. It said "one raw unit per tick, because a one-tick correction
+        // arrives as 13106 against a step of 13107" — which is what an
+        // *axis-aligned* step does. `step_toward` normalises and then scales, and
+        // both operations truncate toward zero **per component**, so a step near
+        // 45 degrees loses a unit on each axis and its magnitude falls two short.
+        // A Windows run produced exactly that, at 13105, and a bound taken from
+        // one observed direction had no room for it.
+        //
+        // So: [`TICK_SHORTFALL`] per tick of movement, plus one for the
+        // correction's own `length()`, which is an `isqrt` and truncates too.
+        // `the_tick_shortfall_is_what_the_arithmetic_produces` is what keeps the
+        // constant honest when the rules change.
         let whole_ticks = ticks_of(report.worst_out_of_step);
-        let slack = whole_ticks.max(1);
+        let slack = whole_ticks
+            .max(1)
+            .saturating_mul(TICK_SHORTFALL)
+            .saturating_add(1);
         assert!(
             (report.worst_out_of_step - whole_ticks.saturating_mul(step)).abs() <= slack,
             "{:?}'s worst out-of-step correction, {} raw units, is not a whole \
@@ -561,6 +593,92 @@ async fn one_team_plays_a_match_that_writes_a_replay_which_verify_resimulates() 
     );
 }
 
+/// **[`TICK_SHORTFALL`] is what `sim`'s arithmetic produces**, not what one run
+/// happened to show.
+///
+/// The bound the criterion above spends is a property of `FxVec2::step_toward`,
+/// so it is derived here from `sim` rather than written down: a sweep of
+/// directions, including the diagonal where both components truncate, and the
+/// worst magnitude a full step falls short by. A change to `champion_speed`, to
+/// the fixed-point resolution or to the rounding rule moves this number, and it
+/// moves it here rather than in a Windows job six weeks later.
+#[test]
+fn the_tick_shortfall_is_what_the_arithmetic_produces() {
+    let speed = sim::RULES.champion_speed.to_raw();
+    let origin = FxVec2::new(Fx::ZERO, Fx::ZERO);
+    let mut worst = 0i32;
+    let mut worst_at = (0i32, 0i32);
+    let mut axis_aligned = 0i32;
+    let mut exact_steps = 0u32;
+    let mut full_steps = 0u32;
+
+    // Far enough away that a full step is taken, at directions on a fine grid
+    // whose two axes are coprime multiples so that the sweep does not settle on
+    // the easy angles.
+    for i in -400..=400i32 {
+        for j in -400..=400i32 {
+            let target = FxVec2::new(Fx::from_raw(i * 9_973), Fx::from_raw(j * 9_949));
+            if target.length().to_raw() <= speed {
+                continue;
+            }
+            let short = speed
+                - origin
+                    .step_toward(target, sim::RULES.champion_speed)
+                    .sub(origin)
+                    .length()
+                    .to_raw();
+            full_steps = full_steps.saturating_add(1);
+            if (i == 0) != (j == 0) {
+                axis_aligned = axis_aligned.max(short);
+            }
+            if short == 0 {
+                exact_steps = exact_steps.saturating_add(1);
+            }
+            if short > worst {
+                worst = short;
+                worst_at = (i, j);
+            }
+        }
+    }
+
+    println!(
+        "m4: one tick of movement is {speed} raw units and falls short by at most \
+         {worst} raw unit(s) (at {worst_at:?}); {full_steps} full step(s) swept, \
+         {exact_steps} of them exact, worst along an axis {axis_aligned}"
+    );
+
+    // The floor first (`docs/RISKS.md` R15): a sweep that never took a full step
+    // reports a shortfall of zero and passes, and one that only took exact steps
+    // would report the same for a different reason.
+    assert!(
+        full_steps > 1_000,
+        "the sweep took {full_steps} full step(s), so it is not a sweep"
+    );
+    assert!(
+        exact_steps > 0,
+        "no direction in the sweep produced an exact step, so the constant below \
+         is not a shortfall over a baseline"
+    );
+    assert_eq!(
+        axis_aligned, 0,
+        "an axis-aligned step loses {axis_aligned} raw unit(s), which contradicts \
+         the derivation above: along an axis the normalised vector is exact and \
+         nothing truncates"
+    );
+    assert!(
+        worst > axis_aligned,
+        "every direction loses the same amount, so the per-component truncation \
+         this constant is derived from is not what is happening"
+    );
+    assert_eq!(
+        worst, TICK_SHORTFALL,
+        "a tick of movement falls short by {worst} raw units and TICK_SHORTFALL \
+         says {TICK_SHORTFALL}: the criterion above spends this as slack, so a \
+         change to the speed, the fixed-point resolution or the rounding rule has \
+         to move it here"
+    );
+}
+
 /// The consent text exists and says the four things M4 requires of it.
 ///
 /// A document test, and worth being clear about what it is: it checks that the
@@ -614,6 +732,26 @@ fn the_consent_text_exists_and_states_the_four_required_points() {
         "the consent text does not say that withdrawal destroys other \
          participants' contributions"
     );
+    // 5. The device stream, which is the largest thing the corpus holds and the
+    //    one a participant is least likely to guess at. `docs/SCHEMA.md` §11 is
+    //    the schema; this is the obligation that it be named in the text a person
+    //    signs, at its rate, with what can be worked out from it — because a
+    //    participant who learns afterwards that the movement of their hand was
+    //    recorded hundreds of times a second was not informed.
+    assert!(
+        lower.contains("125") && lower.contains("1000 times a second"),
+        "the consent text does not say how often the device stream is sampled"
+    );
+    assert!(
+        lower.contains("every movement your mouse reports"),
+        "the consent text does not say that every device motion is kept"
+    );
+    assert!(
+        lower.contains("handwriting"),
+        "the consent text does not say what can be worked out from the device \
+         stream, which is the half a participant cannot infer from a field list"
+    );
+
     // …and the field-by-field account of what is collected, which
     // `docs/MILESTONES.md` M4 requires before the first recording session.
     for field in [

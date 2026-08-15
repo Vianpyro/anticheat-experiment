@@ -67,6 +67,24 @@
 //! reads every byte of every file under the root rather than the places a
 //! pseudonym is supposed to be — is what refuses a future one added quietly.
 //!
+//! # M8 adds a second file, and it is the one a withdrawal must not miss
+//!
+//! [`crate::telemetry::Telemetry`] is the device-event stream at its native
+//! cadence, sealed, filed as `match.telemetry` **inside the match directory** —
+//! so the single `remove_dir_all` a withdrawal already performs destroys it, and
+//! so a corpus cannot end up holding a stream of somebody's hand movements in a
+//! place `withdraw` was never told about.
+//!
+//! It is the richest personal information in this corpus and it names **no
+//! pseudonym**, exactly as the session record does not, which means a search for
+//! a name cannot find one left behind. [`Corpus::accountable`] is the answer, and
+//! it grew two clauses for it: the telemetry state has to be *coherent* — the
+//! replay commits to a companion and that companion is there, or it commits to
+//! none and there is none — and the directory has to hold **nothing else**, which
+//! is `docs/SCHEMA.md` §1's rule enforced for the first time and the only check
+//! that reaches a client's telemetry part left behind by an interrupted
+//! collection.
+//!
 //! # M6 adds one file to a match directory, and it is not an index either
 //!
 //! [`crate::session::SessionRecord`] is filed beside the replay, and it holds the
@@ -99,13 +117,19 @@
 //! | one pseudonym in two seats | one person filling several seats is not nine people, and `docs/SCHEMA.md` excludes it |
 //! | a seat that recorded no device event | a seat with no device behind it is a script, and the corpus is a human corpus |
 //! | a seat declaring pointer acceleration on | no covariate recorded here recovers the operating system's curve |
+//! | a telemetry companion the replay does not commit to, or a commitment with no companion | a companion nobody named cannot be bound to a match, and a promise with no file behind it is a corpus that cannot account for itself |
+//! | a companion that does not verify against the replay that named it | `crate::telemetry::verify`, at the door rather than at the first reader |
+//! | a seat the session record and the companion describe differently | the two files hold the same numbers about each seat and neither is derived from the other, so both can drift |
+//! | a traced seat whose stream holds no view anchor | a seat that played a match received frames; a stream with none is a client whose anchor wiring is broken, and it is the one part of that wiring no test can reach |
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::consent::ConsentVersion;
-use crate::session::SessionRecord;
+use crate::manifest::Commitment;
+use crate::session::{SeatRecord, SessionRecord};
+use crate::telemetry::Telemetry;
 use crate::{Replay, keys::VerifyingKey};
 
 /// Where the consent records live, one file per participant.
@@ -120,6 +144,18 @@ const WITHDRAWALS: &str = "withdrawals";
 const REPLAY_FILE: &str = "match.replay";
 /// The file a match's session record is stored as.
 const SESSION_FILE: &str = "match.session";
+/// The file a match's telemetry companion is stored as, when it has one.
+const TELEMETRY_FILE: &str = "match.telemetry";
+
+/// Everything a match directory is allowed to hold.
+///
+/// A list rather than a convention, because `docs/SCHEMA.md` §1's "there is no
+/// other file" is the rule the whole no-derived-index argument rests on and
+/// nothing enforced it. [`Corpus::audit`] reports a directory holding anything
+/// else — a client's telemetry part left behind, a summary somebody cached, a
+/// copy made during an interrupted store — which is the *only* check that can
+/// reach an artefact naming no pseudonym.
+const MATCH_FILES: [&str; 3] = [REPLAY_FILE, SESSION_FILE, TELEMETRY_FILE];
 
 /// One participant's consent, as recorded.
 ///
@@ -285,7 +321,12 @@ impl Corpus {
     /// [`io::ErrorKind::InvalidInput`] when the two files disagree, when one
     /// person occupies two seats, when a seat recorded no device event, or when a
     /// participant declared pointer acceleration left on.
-    pub fn store(&self, replay: &Replay, session: &SessionRecord) -> io::Result<()> {
+    pub fn store(
+        &self,
+        replay: &Replay,
+        session: &SessionRecord,
+        telemetry: Option<&Telemetry>,
+    ) -> io::Result<()> {
         let manifest = &replay.manifest;
         let refuse = |kind: io::ErrorKind, message: String| -> io::Result<()> {
             Err(io::Error::new(kind, message))
@@ -403,10 +444,153 @@ impl Corpus {
             );
         }
 
+        // 6. The telemetry companion, if this replay commits to one — and the
+        //    absence of one, if it does not. Both directions are refusals: a
+        //    corpus holding a replay whose companion is missing cannot account
+        //    for a file it promises, and a companion filed beside a replay that
+        //    named none is the substitution `crate::telemetry` exists to refuse
+        //    arriving through a directory rather than through a verifier.
+        match (manifest.telemetry, telemetry) {
+            (Commitment::Absent, None) => {}
+            (Commitment::Absent, Some(_)) => {
+                return refuse(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "the replay for {} commits to no telemetry companion and one \
+                         was offered: a companion a replay did not name is a \
+                         companion nobody can bind to this match \
+                         (docs/SCHEMA.md §11)",
+                        manifest.match_id
+                    ),
+                );
+            }
+            (Commitment::Sealed(digest), None) => {
+                return refuse(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "the replay for {} commits to telemetry companion {digest} and \
+                         none was given: a corpus that files the promise without the \
+                         file cannot account for the match (docs/SCHEMA.md §11)",
+                        manifest.match_id
+                    ),
+                );
+            }
+            (Commitment::Sealed(_), Some(companion)) => {
+                // The registry is the replay's own signer, because the companion
+                // must be sealed by the key that sealed the replay and
+                // `crate::telemetry::verify` is what says so. Building it from
+                // the manifest rather than taking one as an argument keeps
+                // `store` a function of the two files in front of it.
+                let mut keys = crate::KeyRegistry::new();
+                keys.insert(
+                    manifest.server_identity,
+                    crate::KeyStatus::Active,
+                    "the key that sealed this replay",
+                );
+                if let Err(error) = crate::telemetry::verify(replay, companion, &keys) {
+                    return refuse(
+                        io::ErrorKind::InvalidInput,
+                        format!("the telemetry companion is refused: {error}"),
+                    );
+                }
+                // …and it describes the same seats, on the same hardware, as the
+                // session record does. The two files hold the same four numbers
+                // about each seat — `docs/SCHEMA.md` §4b's summary and §11's
+                // stream — and the summary is what survives when there is no
+                // companion, so neither is derived from the other and both can
+                // drift. This is the refusal that stops them.
+                for (index, (seat, facts)) in session
+                    .seats
+                    .iter()
+                    .zip(companion.manifest.seats.iter())
+                    .enumerate()
+                {
+                    let disagreement = match (seat, facts) {
+                        (SeatRecord::Empty, None) => None,
+                        (SeatRecord::Empty, Some(_)) => Some(
+                            "empty in the session record and traced in the companion".to_owned(),
+                        ),
+                        (SeatRecord::Human { .. }, None) => Some(
+                            "occupied in the session record and absent from the companion"
+                                .to_owned(),
+                        ),
+                        (SeatRecord::Human { measured, .. }, Some(trace)) => {
+                            if measured.samples != trace.samples
+                                || measured.motions != trace.motions
+                            {
+                                Some(format!(
+                                    "counted {} device event(s) of which {} are motions in \
+                                     the session record, and {} of which {} are in the \
+                                     companion",
+                                    measured.samples,
+                                    measured.motions,
+                                    trace.samples,
+                                    trace.motions
+                                ))
+                            } else if trace.views == 0 {
+                                Some(
+                                    "recorded no view anchor at all. A seat that \
+                                     played a match received frames, so a stream \
+                                     with none in it is a client whose anchor \
+                                     wiring is broken rather than a session \
+                                     (docs/SCHEMA.md §11c)"
+                                        .to_owned(),
+                                )
+                            } else if measured.clock != trace.clock
+                                || measured.platform != trace.platform
+                                || measured.world_units_per_count_e6
+                                    != trace.world_units_per_count_e6
+                            {
+                                Some(
+                                    "was recorded on a different clock, platform or \
+                                     sensitivity in the two files"
+                                        .to_owned(),
+                                )
+                            } else {
+                                None
+                            }
+                        }
+                    };
+                    if let Some(disagreement) = disagreement {
+                        return refuse(
+                            io::ErrorKind::InvalidInput,
+                            format!("seat {index} {disagreement} (docs/SCHEMA.md §11)"),
+                        );
+                    }
+                }
+            }
+        }
+
         let directory = self.root.join(MATCHES).join(manifest.match_id.to_string());
         fs::create_dir_all(&directory)?;
         fs::write(directory.join(REPLAY_FILE), replay.encode())?;
-        fs::write(directory.join(SESSION_FILE), session.encode())
+        fs::write(directory.join(SESSION_FILE), session.encode())?;
+        if let Some(companion) = telemetry {
+            fs::write(directory.join(TELEMETRY_FILE), companion.encode())?;
+        }
+        Ok(())
+    }
+
+    /// The telemetry companion a match directory holds, if it holds one.
+    ///
+    /// `None` is the legitimate answer for a match that recorded none, and this
+    /// function does not consult the replay to find out which case it is in —
+    /// [`Corpus::accountable`] is where the two are compared, because "there is
+    /// no file" and "there should have been a file" are different questions.
+    ///
+    /// # Errors
+    ///
+    /// Anything the filesystem refuses beyond the file being absent, and
+    /// [`io::ErrorKind::InvalidData`] for a file that is not a companion.
+    pub fn telemetry_of(&self, match_id: &str) -> io::Result<Option<Telemetry>> {
+        let path = self.root.join(MATCHES).join(match_id).join(TELEMETRY_FILE);
+        match fs::read(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+            Ok(bytes) => Telemetry::decode(&bytes).map(Some).map_err(|error| {
+                io::Error::new(io::ErrorKind::InvalidData, format!("{match_id}: {error}"))
+            }),
+        }
     }
 
     /// The session record a match directory holds.
@@ -587,9 +771,7 @@ impl Corpus {
             return Ok(traces);
         }
         for match_id in self.matches()? {
-            let accountable =
-                self.replay_of(&match_id).is_ok() && self.session_of(&match_id).is_ok();
-            if !accountable {
+            if !self.accountable(&match_id) {
                 traces.push(self.root.join(MATCHES).join(match_id));
             }
         }
@@ -607,6 +789,58 @@ impl Corpus {
         })?;
         traces.sort();
         Ok(traces)
+    }
+
+    /// Whether this match directory is one somebody can give an account of.
+    ///
+    /// Four conditions, and the last two are what M8's companion added:
+    ///
+    /// 1. the replay reads — otherwise the log names seats and nobody can say
+    ///    whose seats they were;
+    /// 2. the session record reads — a seat record with no manifest in front of
+    ///    it describes somebody's session and nobody can say whose;
+    /// 3. **the telemetry state is coherent** — the replay commits to a
+    ///    companion and the companion is there and is that one, or the replay
+    ///    commits to none and there is none. A stream of somebody's hand
+    ///    movements beside a replay that never named it is the same orphan in a
+    ///    richer form, and a promise with no file behind it is a corpus that
+    ///    cannot account for itself;
+    /// 4. **the directory holds nothing else.** `docs/SCHEMA.md` §1 says there is
+    ///    no other file, and until this check nothing enforced it. It is the only
+    ///    thing that can reach an artefact naming no pseudonym — a client's
+    ///    telemetry part left behind by an interrupted collection, a cached
+    ///    summary, a copy — which is exactly the derived-index failure
+    ///    `docs/CONSENT.md` records and which a search for a name structurally
+    ///    cannot find.
+    ///
+    /// Reported unconditionally, for every pseudonym, because the question "is
+    /// this corpus in a state I can defend" has to have one answer rather than
+    /// nine.
+    #[must_use]
+    pub fn accountable(&self, match_id: &str) -> bool {
+        let Ok(replay) = self.replay_of(match_id) else {
+            return false;
+        };
+        if self.session_of(match_id).is_err() {
+            return false;
+        }
+        let coherent = match (replay.manifest.telemetry, self.telemetry_of(match_id)) {
+            (Commitment::Absent, Ok(None)) => true,
+            (Commitment::Sealed(digest), Ok(Some(companion))) => companion.digest() == digest,
+            _ => false,
+        };
+        if !coherent {
+            return false;
+        }
+        let Ok(entries) = fs::read_dir(self.root.join(MATCHES).join(match_id)) else {
+            return false;
+        };
+        entries.flatten().all(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| MATCH_FILES.contains(&name))
+        })
     }
 
     fn consent_path(&self, pseudonym: &str) -> PathBuf {

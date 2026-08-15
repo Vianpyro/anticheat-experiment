@@ -36,6 +36,7 @@
 //! | `input_log_digest` | The log, in one field inside the signature. Order is part of it, because `step` neither sorts nor deduplicates |
 //! | `outcome` | **The claim a replay actually makes.** Exploit class 2 is result forgery, and what a forger wants to assert is that they won. It is independently checkable by resimulation, which is what gives the check its own error |
 //! | `final_state_digest` | What resimulating the log has to reproduce |
+//! | `telemetry` | **The digest of the device-telemetry companion, or the named absence of one.** See [`Commitment`] |
 //!
 //! And what is deliberately **not** in it:
 //!
@@ -45,15 +46,16 @@
 //!   this matters — the delivered sequence and the produced sequence differ on
 //!   every busy tick — and there is no field here for delivery order to get
 //!   into.
-//! - **No per-tick telemetry.** `docs/MILESTONES.md` M6 wants a client-claimed
-//!   and a server-observed timestamp for every input, and both are in the log's
-//!   `TimedInput`, one per input. What is *not* here is anything at a higher
-//!   rate than that: `sim` consumes one intention per tick at 30 Hz and that
-//!   invariant does not move, so a stream of raw device deltas is a separate
-//!   artefact that lives beside a replay rather than inside one. Putting it here
-//!   would have made the manifest a telemetry container and the input log a
-//!   subset of it, and the resimulation could no longer be a function of the
-//!   file.
+//! - **No per-tick telemetry, and no device stream.** `docs/MILESTONES.md` M6
+//!   wants a client-claimed and a server-observed timestamp for every input, and
+//!   both are in the log's `TimedInput`, one per input. What is *not* here is
+//!   anything at a higher rate than that: `sim` consumes one intention per tick
+//!   at 30 Hz and that invariant does not move, so the stream of raw device
+//!   deltas is a **separate sealed file** and this manifest carries its
+//!   **digest** rather than its contents (`crate::telemetry`). Putting the
+//!   stream itself here would have made the manifest a telemetry container and
+//!   the input log a subset of it, and the resimulation could no longer be a
+//!   function of the file.
 //! - **No player identity beyond the pseudonym.** `docs/RISKS.md` R3: the
 //!   mapping is held outside the corpus, and a replay that carried a name would
 //!   make every published replay a disclosure.
@@ -248,6 +250,65 @@ impl Build {
     }
 }
 
+/// Whether a match recorded device telemetry, and if so which bytes are its.
+///
+/// # Why the digest and not the stream
+///
+/// `crate::telemetry` carries the reasoning at length and the short form belongs
+/// here, because this is the field a reader meets first. The companion holds the
+/// device-event stream at its native 125 Hz to 1 kHz; a replay holds one
+/// intention per tick at 30 Hz. Keeping the two in one file would make a
+/// resimulation a function of a stream no rule reads, which is the invariant M5
+/// froze. Keeping them in two files with nothing between them would make a
+/// companion substitutable — and a smoothed trajectory sealed by a key the
+/// registry accepts is exactly the artefact exploit class 2 is about, one level
+/// down.
+///
+/// So the manifest names thirty-two bytes and nothing else. A replay verifies
+/// with or without the companion beside it; the companion verifies only against
+/// the replay that named it.
+///
+/// # Why absence is a variant rather than a missing file
+///
+/// **A replay with no companion is a complete replay**, not a damaged one. A
+/// development run, a match nobody was recording, a session whose parts never
+/// arrived: all of them are matches, and a verifier that treated them as errors
+/// would be teaching its reader to ignore the error. So the state is named, it is
+/// inside the signature like everything else, and `verify` reports it in those
+/// words.
+///
+/// The consequence that gives it teeth: because the absence is *signed*,
+/// attaching a companion afterwards to a replay that recorded `Absent` is a
+/// refusal ([`crate::telemetry::TelemetryError::NotCommitted`]) rather than an
+/// upgrade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Commitment {
+    /// This match recorded no device telemetry, and that is the whole of it.
+    Absent,
+    /// The companion file whose bytes hash to this digest, and no other.
+    Sealed(Digest),
+}
+
+impl Commitment {
+    /// The digest committed to, if there is one.
+    #[must_use]
+    pub const fn digest(&self) -> Option<Digest> {
+        match self {
+            Self::Absent => None,
+            Self::Sealed(digest) => Some(*digest),
+        }
+    }
+}
+
+impl core::fmt::Display for Commitment {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Absent => write!(f, "none"),
+            Self::Sealed(digest) => write!(f, "{digest}"),
+        }
+    }
+}
+
 /// What a match's session knows and its authority does not.
 ///
 /// `Match` has no clock, no socket and no identity — that is what makes it a
@@ -265,11 +326,19 @@ pub struct SessionFacts {
     pub participants: [Option<Pseudonym>; PLAYER_COUNT],
     /// The commit the server was built from.
     pub sim_commit: SimCommit,
+    /// The telemetry companion this match produced, or its named absence.
+    ///
+    /// A session fact rather than an authority fact for the same reason the
+    /// participants are: `Match` has no clock, no socket and no identity, and the
+    /// device streams are the clients'. Whoever seals resolves the companion
+    /// first and hands the digest here, which is what fixes the order — the
+    /// companion is sealed, then the replay commits to it, and never the reverse.
+    pub telemetry: Commitment,
 }
 
 impl SessionFacts {
-    /// A session with nobody in it, for a match that records no participants —
-    /// which is every match in this repository's own tests.
+    /// A session with nobody in it and no telemetry, for a match that records no
+    /// participants — which is every match in this repository's own tests.
     #[must_use]
     pub fn anonymous(match_id: MatchId, started_at_unix_ms: u64) -> Self {
         Self {
@@ -277,6 +346,7 @@ impl SessionFacts {
             started_at_unix_ms,
             participants: [const { None }; PLAYER_COUNT],
             sim_commit: SimCommit::of_this_build(),
+            telemetry: Commitment::Absent,
         }
     }
 }
@@ -310,6 +380,8 @@ pub struct Manifest {
     pub outcome: Outcome,
     /// The digest the server ended on.
     pub final_state_digest: Digest,
+    /// The device-telemetry companion this match produced, or its named absence.
+    pub telemetry: Commitment,
 }
 
 impl Manifest {
@@ -344,6 +416,7 @@ impl Manifest {
             input_log_digest,
             outcome,
             final_state_digest,
+            telemetry,
         } = self;
 
         let mut out = Vec::with_capacity(MANIFEST_MIN_BYTES);
@@ -405,6 +478,19 @@ impl Manifest {
             }
         }
         out.extend_from_slice(final_state_digest.as_bytes());
+        // A tag and a fixed thirty-two bytes, zero when there is nothing to
+        // name, so that the manifest's length does not report whether a match
+        // recorded telemetry.
+        match telemetry {
+            Commitment::Absent => {
+                out.push(0);
+                out.extend_from_slice(&[0u8; 32]);
+            }
+            Commitment::Sealed(digest) => {
+                out.push(1);
+                out.extend_from_slice(digest.as_bytes());
+            }
+        }
         out
     }
 
@@ -472,6 +558,16 @@ impl Manifest {
             _ => return None,
         };
         let final_state_digest = Digest::from_bytes(reader.array::<32>()?);
+        let telemetry = match reader.u8()? {
+            0 => {
+                if reader.array::<32>()? != [0u8; 32] {
+                    return None;
+                }
+                Commitment::Absent
+            }
+            1 => Commitment::Sealed(Digest::from_bytes(reader.array::<32>()?)),
+            _ => return None,
+        };
 
         Some(Self {
             match_id,
@@ -487,6 +583,7 @@ impl Manifest {
             input_log_digest,
             outcome,
             final_state_digest,
+            telemetry,
         })
     }
 
@@ -515,4 +612,5 @@ pub const MANIFEST_MIN_BYTES: usize = 16      // match_id
     + 8                                       // inputs
     + 32                                      // input_log_digest
     + 6                                       // outcome tag + team + tick
-    + 32; // final_state_digest
+    + 32                                      // final_state_digest
+    + 33; // telemetry commitment tag + digest

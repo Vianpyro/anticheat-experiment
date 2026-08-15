@@ -248,6 +248,16 @@ exactly as many samples as a person, at the same rate, through the same capture
 path. There is no field in `SCHEMA.md` that separates them and there will not be
 one, because the difference is not in the data.
 
+**M8's telemetry companion does not change that sentence and is worth reading
+against it.** `SCHEMA.md` §11 keeps the whole device stream now rather than four
+summary numbers per seat, so a great deal more is in the file than there was —
+and a bot moving a real mouse produces exactly that stream too. What the companion
+changes is which *behavioural statistics* can be computed at all; what it does not
+touch is the ceiling above, which is a claim about hardware input injection
+producing statistically human timing and is out of the adversary model by
+construction. A larger file does not move a ceiling that was never about file
+size.
+
 So **what guarantees a match is human is supervision — a fact about a person, not
 a property of the format.** Somebody was in the room. That is a real guarantee and
 it is the only one there is, which is why it is written down rather than

@@ -225,6 +225,26 @@ pages under `docs/detectors/`. **Every threshold in it is `Uncalibrated` and a
 type refuses to let one be written down without a corpus**; the account is under
 M8 below.
 
+**And one thing M8 found that was not a calendar, which is why the format moved
+before the first session.** Two of M8's five candidate signals — the inter-arrival
+distribution and aim-correction curvature — turned out not to be detectors with
+uncalibrated thresholds. They were detectors whose **quantity was not in the
+corpus at any resolution**: the client records every device event at 125 Hz to
+1 kHz, M5 kept the stream out of the artefact a resimulation is a function of, and
+M6 kept four summary numbers and dropped the rest. Recording a hundred matches
+under that policy would have produced a hundred matches those two detectors
+cannot read.
+
+That was a decision rather than a property of the system, and it is reversed at
+the last moment at which reversing it destroys nothing: `docs/SCHEMA.md` §11 adds
+a **sealed telemetry companion**, one per match, carrying the device stream per
+seat, with the replay's manifest committing to its digest. M5's invariant does not
+move — a resimulation is still a function of the seed and the input log alone —
+and the replay's own format is what gained a field. `docs/CONSENT.md` moved to
+`2026-08-15` with a section written for a participant naming what is now recorded
+and what can be worked out from it, which is R3's version mechanism doing the job
+it was built for on the first occasion that needed it.
+
 So what is left is a calendar, three times over: M4's three humans on two
 operating systems, M6's nine people twenty times, and M8's thresholds, which are
 downstream of M6's.
@@ -995,6 +1015,34 @@ computes and prints the page the criterion asks for, and on an empty corpus it
 correctly prints that nothing here has a threshold. That is a working instrument,
 not a satisfied criterion, and the milestone stays open — exactly as `replay
 census` leaves M6 open.
+
+### And a seventh thing, which was a format rather than a detector
+
+Two of the five candidate signals this milestone names were recorded here as **not
+buildable**, and the account in `docs/detectors/README.md` was right about the
+reason and wrong about what kind of reason it was. The inter-arrival distribution
+and aim-correction curvature are statistics over the device stream; the device
+stream was not in the corpus; and the page concluded that such a detector "cannot
+exist". It could not exist *given a recording policy*, and a recording policy is a
+decision.
+
+So the decision was retaken before the first session rather than defended after
+it. `docs/SCHEMA.md` §11 is the telemetry companion — a second sealed file per
+match, the device stream at its native cadence per seat, with the replay's
+manifest carrying its digest. What that buys, and what it does not:
+
+| Candidate | Before | Now |
+| --- | --- | --- |
+| input inter-arrival distribution and quantisation | not buildable — no distribution in the corpus | **buildable, not built.** The quantity is there; the threshold still waits on nine people, and a detector must stratify by declared polling rate (`docs/RISKS.md` R14) |
+| aim-correction trajectory curvature | not buildable — the aim reaches the wire only at a click | **buildable, not built.** The deltas the aim is integrated from are in the companion. The send policy is unchanged and a curvature statistic over the *log* is still the curvature of a click sequence |
+| reaction latency floor, reaction dispersion | built, measured from a 33.3 ms tick server-side | built and unchanged, and the companion's `Viewed` anchor is what would let a later version measure the stimulus on the client's own clock instead |
+| claimed-versus-observed timestamp drift | built | unchanged |
+| account progression coherence | not built | **not buildable, and no format fixes it**: it needs months of the same nine people, which is M6's calendar |
+
+**No detector is written here, deliberately**, for the reason M6 gives about
+writing one before a corpus exists. What changed is what a corpus will be able to
+support, and the moment to change that was before the first recording rather than
+after it.
 
 ### Six things the criterion did not say, which the work had to decide
 
