@@ -1,6 +1,6 @@
 # CONSENT
 
-consent-version: 2026-08-15
+consent-version: 2026-08-16
 
 The text every participant reads and agrees to **in writing, before the first
 recording**, and the rules this project holds itself to afterwards.
@@ -39,6 +39,26 @@ because a reader who notices a document dated after its own commit is entitled
 to an explanation.
 
 ### What changed in this version, and why it needed one
+
+**§2c is new: the recording starts at the menu, not at the match**, and the
+project now works something out from it that the earlier text did not describe —
+a measurement of the *mouse* rather than of the person. That is a change in when
+data is collected and in what is derived from it, so it is a change a
+participant has to be told about before it happens rather than after; raising
+the version is what makes that mechanical, because `Corpus::store` refuses any
+match whose participants signed `2026-08-15`.
+
+**§3 gains one line**, the label that says which mouse a session was played on.
+It identifies no device — no model, no serial, no manufacturer, and the promise
+that none of those is collected is unchanged — and it exists so that two
+evenings on the same mouse can be read together.
+
+Neither is a second opt-in, for the reason given below about §2b: refusing the
+menu is refusing to reach the match, so a tick box would be a tick box for
+"participate or do not", and offering one would be the handling this project
+criticises elsewhere.
+
+### What changed in the version before it, `2026-08-15`
 
 **§2b is new: the corpus now keeps the whole device stream**, at the mouse's own
 report rate, and not only the one instruction per tick the previous version
@@ -133,7 +153,8 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 > thirtieth of a second. Your mouse reports far more often than that — between
 > **125 and 1000 times a second**, depending on the mouse — and the game on your
 > machine reads all of it. **All of it is now kept**, in a second file beside the
-> replay, one section per seat:
+> replay, one section per seat — **from the moment the menu appears, not from
+> the moment the match starts**; §2c is what that is for:
 >
 > | Recorded | What it is |
 > | --- | --- |
@@ -154,8 +175,9 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 > **What is not in it.** No key you pressed outside those five. No text, ever.
 > No screen capture, no image, no sound. Nothing about where the mouse pointer
 > is on your desktop, nothing about the size of your window or your monitor,
-> nothing from any other program, nothing from before the match or after it. The
-> file records the movement, and only during the match.
+> nothing from any other program, nothing from before the game's window opens or
+> after it closes. The file records the movement, and it records it from the menu
+> through to the end of the match — §2c is what the menu part is for.
 >
 > **If you would rather this were not recorded, the honest answer is not to take
 > part.** This is not offered as a separate box you can untick, and pretending
@@ -173,6 +195,47 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 > whose participants signed a different version of this page, so consent to the
 > old text is not consent to this one and cannot be mistaken for it.
 >
+> **2c. The menu before the match is recorded too, and here is why.**
+>
+> Between joining and playing there is a wait: nine people have to be at their
+> keyboards at once, and the last one is always a few minutes behind. During
+> that wait you are in a menu — you check your name, you confirm which version
+> of this page you agreed to, you pick a champion, and there is a practice
+> target you can click at. **Your mouse movements during that menu are recorded
+> exactly as they are during the match**, in the same file, by the same code,
+> and this section exists because "recorded" and "you might have assumed
+> otherwise" should not both be true.
+>
+> **What is worked out from it.** The positions of everything in that menu are
+> fixed and known to the project, so every click is a movement whose start and
+> end the project already knows. Putting many of them together gives:
+>
+> | Worked out | What it is |
+> | --- | --- |
+> | How many counts your mouse reports for a given distance on screen | The number that lets a movement be described in the same units for you and for somebody with a different mouse. Without it, a mouse that reports twice as much looks like a hand that moves twice as fast |
+> | How often your mouse actually reports | Measured, rather than the number you were asked for in §3 — a mouse's setting and its behaviour are not always the same thing |
+> | The smallest movement your mouse can report | A property of your hardware and your operating system, not of you |
+>
+> **What is not worked out from it.** It does not measure how good you are at
+> anything, it is not scored, nobody passes or fails it, and there is no screen
+> that tells you it is happening — because there is nothing for you to do about
+> it. It is a measurement of your **equipment**, and the reason it is taken this
+> way rather than by asking you to complete a calibration exercise is that a
+> calibration exercise is a chore, and this is a wait you were having anyway.
+>
+> **Why the project wants it.** Nine people are taking part and each of them has
+> a different mouse, so "this person moves like that" and "this mouse reports
+> like that" arrive together and cannot be told apart. Measuring the mouse is
+> what lets the project describe the *hand*. It is written down in the project's
+> own documents that this is a limit it cannot fully remove.
+>
+> **If it is not measured, nothing happens to you.** A session in which you spent
+> the wait doing something else is recorded, kept and used exactly like any
+> other. The only consequence is that the parts of the project's analysis that
+> need the measurement say "not known" for you rather than producing a number.
+> You are never refused a match, never delayed, and never told to move your
+> mouse.
+>
 > **3. What is recorded about the equipment you played on.**
 >
 > Beside each match the project keeps one more file, describing the **seat**
@@ -186,6 +249,7 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 >
 > | Field | What it is |
 > | --- | --- |
+> | `device_profile_id` | A short label — a colour or a word, chosen by the operator — meaning "the mouse you played on tonight". It is **not** your pseudonym and **not** a name for you: it names a *device*, so that two evenings on the same mouse can be read together and two evenings on different mice are not mixed up. If you change mouse, you get a new label, and you are asked nothing else about it |
 > | `device_cpi` | How many counts per inch your mouse is set to |
 > | `device_polling_hz` | How many times a second it reports |
 > | `pointer_acceleration` | Whether your operating system's pointer acceleration is on. It has to be **off** to take part, and a session that says otherwise is refused rather than recorded |
@@ -198,9 +262,16 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 > about you: a session in which the game stuttered records a pause that was the
 > computer's, and the project would otherwise read it as yours.
 >
+> Beside those, the file records **what the menu measured about your mouse**
+> (§2c) and **how much of it there is** — one of *enough*, *some*, *none*, or
+> *does not match the mouse you used last time*. That last one is not an
+> accusation and nothing happens because of it: it is what the project writes
+> down when a session's measurements do not look like the ones on record for
+> that label, which is what changing mouse looks like.
+>
 > **Nothing here identifies a device.** No model, no serial number, no
 > manufacturer, no operating-system version, no machine name. A number is not a
-> fingerprint of a mouse.
+> fingerprint of a mouse, and neither is a label somebody made up.
 >
 > The same file also records **how the session was supervised** — whether the
 > person running it was in the room with you, on a call with you, or not present
@@ -262,8 +333,9 @@ portfolio that collects behavioural biometrics from friends with no stated rules
 > is not something this project can offer.
 >
 > Withdrawing therefore destroys **every match you played in, in full** — the
-> replay, the equipment record, and the movement file in 2b — together with your
-> pseudonym mapping and your consent record. That includes the other
+> replay, the equipment record including the mouse label and the measurement in
+> §2c, and the movement file in 2b — together with your pseudonym mapping and
+> your consent record. That includes the other
 > eight players' contributions to those matches. They are not asked and are not
 > notified.
 >

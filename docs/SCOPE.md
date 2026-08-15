@@ -237,6 +237,25 @@ size it can reach. What may be claimed is what was measured: how these detectors
 scored on these nine people and on the bots in `cheat-client`, with both bounds
 beside it.
 
+**4. Person and device are perfectly confounded, and measuring the device is the
+most that can be done about it.** Nine participants play on nine mice — a choice
+taken on purpose, because a production anti-cheat does not choose its players'
+hardware and a corpus recorded on nine identical mice would demonstrate a
+detector that works on one mouse. The price is that every hand appears with
+exactly one device, so every behavioural statistic here is about a person *and*
+their hardware and nothing identifies the two separately. `docs/RISKS.md` R17
+carries it and `docs/SCHEMA.md` §4e is the parade: the lobby is laid out so that
+crossing it measures the map from device counts to world units, which lets a
+distance-shaped statistic be computed in normalised units instead of raw counts.
+
+**What that fixes is a scale and not a style, and the difference is the claim.**
+The conversion makes two participants' distances comparable. It says nothing about
+the parts of a hardware response that are not a scale, `device_cpi` remains a
+declaration nobody can check, and the `3/9 ≈ 33%` bound is untouched — a
+measurement of a mouse moves it by nothing. So no page in this repository may say
+that hardware has been controlled for; what may be said is that the scale was
+measured and the rest was not.
+
 ### What M6 established about synthetic play, and where authenticity comes from
 
 The corpus refuses a seat that recorded **zero device events**. That is the one

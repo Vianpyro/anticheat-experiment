@@ -16,6 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
+use replay::calibration::{CalibrationState, DeviceProfileId, Observations, SeatCalibration};
 use replay::consent::ConsentVersion;
 use replay::corpus::{ConsentRecord, Corpus};
 use replay::keys::SigningKey;
@@ -73,7 +74,9 @@ fn consent(pseudonym: &str) -> ConsentRecord {
 /// reaches the file they live in.
 fn a_seat() -> SeatRecord {
     SeatRecord::Human {
+        calibration: a_calibration(),
         declared: Declared {
+            device_profile_id: DeviceProfileId::parse("mouse-a").expect("a device label"),
             device_cpi: 800,
             device_polling_hz: 1000,
             pointer_acceleration: false,
@@ -95,13 +98,39 @@ fn a_seat() -> SeatRecord {
     }
 }
 
+/// One seat's lobby measurement, of the shape a client's part decodes into.
+///
+/// Enough reaches, directions and spread to be sufficient on its own, because
+/// what these tests are about is whether a withdrawal reaches the field rather
+/// than what the field says.
+fn a_calibration() -> SeatCalibration {
+    let mut observations = Observations::new();
+    observations.reaches = 24;
+    observations.octants = 0xff;
+    observations.min_distance_e3 = 40_000;
+    observations.max_distance_e3 = 240_000;
+    observations.sum_distance_e3 = 3_360_000;
+    observations.sum_counts_e3 = 67_416_000;
+    observations.sum_distance_sq_e3 = 560_000_000;
+    observations.sum_distance_counts_e3 = 11_209_400_000;
+    observations.sum_counts_sq_e3 = 224_400_000_000;
+    observations.fast_reaches = 8;
+    observations.fast_motions = 800;
+    observations.fast_ns = 6_400_000_000;
+    observations.quantum_e6 = 1_000_000;
+    SeatCalibration {
+        observations,
+        state: CalibrationState::Sufficient,
+    }
+}
+
 /// The session record that goes with `a_replay(match_id, participants)`.
 ///
 /// The seats it fills are the seats the manifest fills, because
 /// [`Corpus::store`] refuses the two disagreeing and every test here that is not
 /// about that refusal wants them to agree.
 fn a_session(match_id: &str, participants: usize) -> SessionRecord {
-    let mut seats = [SeatRecord::Empty; PLAYER_COUNT];
+    let mut seats = [const { SeatRecord::Empty }; PLAYER_COUNT];
     for slot in seats.iter_mut().take(participants) {
         *slot = a_seat();
     }
@@ -242,6 +271,140 @@ fn withdrawing_destroys_every_match_the_participant_played_in() {
         !corpus.audit("celadon").expect("audit").is_empty(),
         "another participant's data went with them"
     );
+}
+
+/// **The two fields the lobby added go with everything else, and a search for a
+/// name cannot be what proves it.**
+///
+/// `device_profile_id` is the awkward one and the reason this test is written
+/// rather than assumed. It is a label that is **stable across a participant's
+/// sessions**, which makes it a linkage key — a second thing that ties two
+/// matches to one person — and it deliberately names nobody, exactly as the rest
+/// of the session record does not. So `Corpus::audit`'s byte search for a
+/// pseudonym structurally cannot find one left behind, and the thing that
+/// destroys it is that it lives **inside the match directory** a withdrawal
+/// removes whole.
+///
+/// Two halves, and the second is what makes the first mean anything: the label
+/// and the calibration state are gone from every byte under the root, and they
+/// were there before.
+#[test]
+fn a_withdrawal_destroys_the_device_profile_and_the_calibration_state() {
+    let scratch = Scratch::new("calibration-fields");
+    let corpus = populated(&scratch);
+
+    // The antecedent (`docs/RISKS.md` R15). Both fields are in the corpus, in
+    // the matches this participant played in, before anything is destroyed.
+    let before = bytes_under(corpus.root());
+    assert!(
+        before.contains("device_profile_id: mouse-a"),
+        "no device profile label reached the corpus, so destroying one proves \
+         nothing"
+    );
+    assert!(
+        before.contains("calibration_state: sufficient"),
+        "no calibration state reached the corpus"
+    );
+    assert_eq!(
+        before.matches("device_profile_id: mouse-a").count(),
+        6,
+        "the fixture files three matches of two seats each"
+    );
+
+    corpus.withdraw("alizarin", "2026-09-20").expect("withdraw");
+
+    // The matches this participant was in are gone, and with them their labels.
+    // The remaining match keeps its own, which is the half a delete-everything
+    // implementation would also pass the assertion below with.
+    let after = bytes_under(corpus.root());
+    assert_eq!(
+        after.matches("device_profile_id: mouse-a").count(),
+        2,
+        "a device profile label survived a withdrawal of the participant whose \
+         device it labels, and no search for a pseudonym would ever find it"
+    );
+    assert_eq!(
+        corpus.audit("alizarin").expect("audit"),
+        Vec::<PathBuf>::new()
+    );
+
+    // …and the whole way: withdrawing everybody leaves neither field anywhere.
+    for who in ["bistre", "celadon"] {
+        corpus.withdraw(who, "2026-09-20").expect("withdraw");
+    }
+    let empty = bytes_under(corpus.root());
+    assert!(
+        !empty.contains("device_profile_id"),
+        "a device profile label survived every withdrawal"
+    );
+    assert!(
+        !empty.contains("calibration_state"),
+        "a calibration state survived every withdrawal"
+    );
+}
+
+/// **And a session record left behind is reported, which is the case the byte
+/// search cannot reach.**
+///
+/// The mirror of the test above and the reason the audit has an
+/// unaccountable-match clause at all: a withdrawal that removed the replay and
+/// left the session record behind leaves a file naming a device label, a
+/// hardware declaration and a calibration state, with nothing left to say whose
+/// they are. No search for a pseudonym finds it, in any corpus, for any
+/// participant.
+#[test]
+fn an_audit_catches_a_withdrawal_that_left_a_device_profile_behind() {
+    let scratch = Scratch::new("orphan-profile");
+    let corpus = populated(&scratch);
+
+    // The withdrawal, broken on purpose: the replay goes and the session record
+    // — which is where the device profile lives — stays.
+    let directory = scratch
+        .corpus()
+        .root()
+        .join("matches")
+        .join(filed_as("2026-09-03-a"));
+    std::fs::remove_file(directory.join("match.replay")).expect("remove the replay");
+
+    let left = bytes_under(corpus.root());
+    assert!(
+        left.contains("device_profile_id: mouse-a"),
+        "the orphaned record carries no device label, so this test is about \
+         nothing"
+    );
+    assert!(
+        corpus
+            .audit("a-pseudonym-this-corpus-has-never-held")
+            .expect("audit")
+            .contains(&directory),
+        "a match directory holding a device profile with no manifest in front of \
+         it was not reported"
+    );
+}
+
+/// Every byte of every file under a corpus, as one string.
+///
+/// The audit's own crudeness, borrowed: the point of both is that a check which
+/// knows where a field is supposed to be is blind in exactly the place a bug
+/// would put it.
+fn bytes_under(root: &Path) -> String {
+    fn walk(directory: &Path, out: &mut String) {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                out.push_str(&String::from_utf8_lossy(&bytes));
+                out.push('\n');
+            }
+        }
+    }
+    let mut out = String::new();
+    walk(root, &mut out);
+    out
 }
 
 /// The tombstone is the one thing that survives, and it names nobody.
@@ -992,13 +1155,18 @@ fn a_traced_seat() -> SeatRecord {
     let SeatRecord::Human {
         declared,
         mut measured,
+        calibration,
     } = a_seat()
     else {
         unreachable!("a_seat is a human seat")
     };
     measured.samples = TRACED_SAMPLES;
     measured.motions = TRACED_MOTIONS;
-    SeatRecord::Human { declared, measured }
+    SeatRecord::Human {
+        declared,
+        measured,
+        calibration,
+    }
 }
 
 /// A session record whose seats are traced.

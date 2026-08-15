@@ -59,6 +59,35 @@ every run and `anticheat report` prints it again.
   that returns a distribution over more than one stratum, and the split between
   train and holdout is a fourth axis beside the three §5, §5a and §6 name.
 
+## And a fourth, which arrived with the lobby
+
+**A detector that reads a distance or a speed abstains on a seat whose
+calibration state is not `sufficient`.** `docs/SCHEMA.md` §4e is the schema and
+`docs/RISKS.md` R17 is the reason: nine people on nine mice means every hand
+appears with exactly one device, so a distance measured in raw device counts is a
+distance about a person *and* their hardware. The lobby measures the conversion —
+device counts per world unit, fitted against geometry the build fixes — and
+`anticheat::SeatFacts::calibration` is where a detector reads whether the corpus
+has enough of it.
+
+The treatment is M8's own, one level down: `Reading::abstained` answers rather
+than `Reading::score`, exactly as a detector with no calibrated threshold answers
+`None` for everybody. **Nothing is refused and no match is blocked** — an
+insufficiently calibrated seat is a seat no distance-shaped statistic has an
+opinion about, and that is the whole of the consequence.
+
+**Neither detector family in this crate reads it**, because both read only
+*times*: a reaction is a difference of ticks and a clock divergence is a
+difference of milliseconds, and neither is a distance. The rule is written here
+before the detector that needs it exists, in the same register as §11f's
+polling-rate rule and for the same reason — the covariate cannot be added to a
+corpus after it is recorded.
+
+And the limit, because a rule invites a reader to conclude more: the conversion
+is a **scale** and not an identification. `device_cpi` is still a declaration,
+the corpus still cannot say which part of a *style* is the device's, and the
+`3/9 ≈ 33%` bound is unmoved by any of it.
+
 ## The five candidate signals, and the verdict on each
 
 `docs/MILESTONES.md` M8 named five. Three are built. **Two cannot be built, and

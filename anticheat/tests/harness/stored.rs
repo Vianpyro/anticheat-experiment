@@ -79,6 +79,7 @@ pub fn stored(
     );
 
     let declared = Declared {
+        device_profile_id: replay::DeviceProfileId::parse("mouse-a").expect("a device label"),
         device_cpi: 800,
         device_polling_hz: 1000,
         pointer_acceleration: false,
@@ -98,9 +99,13 @@ pub fn stored(
         worst_overrun_ns: if degraded { 4_000_000 } else { 0 },
         worst_pass_ns: 2_000_000,
     };
-    let mut seats = [SeatRecord::Empty; PLAYER_COUNT];
+    let mut seats = [const { SeatRecord::Empty }; PLAYER_COUNT];
     for slot in seats.iter_mut().take(people.len()) {
-        *slot = SeatRecord::Human { declared, measured };
+        *slot = SeatRecord::Human {
+            declared: declared.clone(),
+            measured,
+            calibration: replay::calibration::SeatCalibration::absent(),
+        };
     }
 
     let session = SessionRecord {

@@ -53,6 +53,7 @@ pub mod draw;
 pub mod gfx;
 pub mod health;
 pub mod input;
+pub mod lobby;
 pub mod net;
 pub mod play;
 pub mod predict;

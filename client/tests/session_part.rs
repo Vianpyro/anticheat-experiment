@@ -23,8 +23,12 @@
 
 use client::health::{Cadence, Declared, SessionPart};
 use client::input::{Control, InputTrace};
+use client::play::Play;
 use replay::session::{SeatRecord, SessionRecord};
 use sim::Seat;
+
+#[path = "harness/traversal.rs"]
+mod traversal;
 
 /// A trace with something in it, and a cadence that fell behind once.
 ///
@@ -53,15 +57,24 @@ fn a_part(seat: Seat) -> SessionPart {
     }
     cadence.pass(41_000_000);
 
+    // A real crossing of the lobby rather than a hand-written set of sums, so
+    // that the round trip below is a round trip of something the client can
+    // actually produce — and so that a change to what `client::lobby` measures
+    // fails here rather than in a corpus.
+    let mut play = Play::new();
+    traversal::cross(&mut play, traversal::Hand::quick(), 12);
+
     SessionPart {
         seat,
         declared: Declared {
+            device_profile_id: "mouse-a".to_owned(),
             device_cpi: 1600,
             device_polling_hz: 1000,
             pointer_acceleration: false,
         },
         trace: trace.stats(),
         cadence: cadence.report(),
+        calibration: play.lobby().observations(),
     }
 }
 
@@ -76,11 +89,17 @@ fn a_part_the_client_writes_is_a_part_the_corpus_reads() {
         SeatRecord::decode_part(&text).expect("the corpus could not read a part this client wrote");
     assert_eq!(seat, Seat::Red1.index(), "the part named the wrong seat");
 
-    let SeatRecord::Human { declared, measured } = record else {
+    let SeatRecord::Human {
+        declared,
+        measured,
+        calibration,
+    } = record
+    else {
         panic!("a part the client wrote decoded as an empty seat");
     };
 
     // The declared half, which is the participant's answer travelling unchanged.
+    assert_eq!(declared.device_profile_id.as_str(), "mouse-a");
     assert_eq!(declared.device_cpi, 1600);
     assert_eq!(declared.device_polling_hz, 1000);
     assert!(!declared.pointer_acceleration);
@@ -110,8 +129,67 @@ fn a_part_the_client_writes_is_a_part_the_corpus_reads() {
         }
     );
 
+    // The calibration half. Every one of these is a number the lobby measured
+    // and the corpus has to read back unchanged: a scale estimated from sums
+    // that lost a digit crossing a file boundary is a scale nobody can defend.
+    let measured_e3 = |value: f64| (value * 1e3).round() as u64;
+    let observations = calibration.observations;
+    assert_eq!(observations.reaches, part.calibration.reaches);
+    assert_eq!(observations.octants, part.calibration.octants);
+    assert_eq!(observations.clamped, part.calibration.clamped);
+    assert_eq!(
+        observations.min_distance_e3,
+        measured_e3(part.calibration.min_distance)
+    );
+    assert_eq!(
+        observations.max_distance_e3,
+        measured_e3(part.calibration.max_distance)
+    );
+    assert_eq!(
+        observations.sum_distance_e3,
+        measured_e3(part.calibration.sum_distance)
+    );
+    assert_eq!(
+        observations.sum_counts_e3,
+        measured_e3(part.calibration.sum_counts)
+    );
+    assert_eq!(
+        observations.sum_distance_sq_e3,
+        measured_e3(part.calibration.sum_distance_sq)
+    );
+    assert_eq!(
+        observations.sum_distance_counts_e3,
+        measured_e3(part.calibration.sum_distance_counts)
+    );
+    assert_eq!(
+        observations.sum_counts_sq_e3,
+        measured_e3(part.calibration.sum_counts_sq)
+    );
+    assert_eq!(observations.fast_reaches, part.calibration.fast_reaches);
+    assert_eq!(observations.fast_motions, part.calibration.fast_motions);
+    assert_eq!(observations.fast_ns, part.calibration.fast_ns);
+    assert_eq!(
+        observations.quantum_e6,
+        (part.calibration.quantum * 1e6).round() as u64
+    );
+    // **A part carries what was measured and never a state.** Rating a seat
+    // needs the participant's earlier sessions, which a client has never seen
+    // and `docs/SCOPE.md` assumes is lying about anyway, so the strongest thing
+    // a part alone can support is `partial`.
+    assert_eq!(
+        calibration.state,
+        replay::calibration::CalibrationState::Partial,
+        "a client's part rated its own seat"
+    );
+
     // `docs/RISKS.md` R15: the fixture reached the cases the assertions above
     // are about, or every one of them compared zero against zero.
+    assert!(
+        part.calibration.reaches >= 9 && part.calibration.octants_covered() >= 6,
+        "the crossing produced {} reach(es) over {} octant(s), so the equalities          above are statements about an empty measurement",
+        part.calibration.reaches,
+        part.calibration.octants_covered()
+    );
     assert!(part.trace.samples > 0 && part.trace.moves > 0);
     assert!(
         part.trace.gaps_ns.p50 > 0,

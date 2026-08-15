@@ -20,7 +20,8 @@
 //!
 //! # and, for a recording session (docs/MILESTONES.md M6):
 //! moba-client <address> <certificate-hex> \
-//!     --record <directory> --cpi <n> --polling <hz> --acceleration off
+//!     --record <directory> --profile <id> --cpi <n> --polling <hz> \
+//!     --acceleration off
 //! ```
 //!
 //! The address and the certificate are printed by `moba-server` on startup. The
@@ -40,6 +41,13 @@
 //! session that says otherwise refuses to start rather than recording something
 //! the corpus cannot use. `docs/SCHEMA.md` is the field-by-field account,
 //! including what is measured beside each of these and what stays unknown.
+//!
+//! `--profile` is the fourth, and it is the one that makes a participant's
+//! sessions poolable: an opaque label the operator keeps stable for as long as
+//! the hardware does not change, so that the device profile `client::lobby`
+//! measures accumulates across evenings instead of starting again every time.
+//! It names a device rather than a person and it is not the pseudonym; a
+//! participant who changes mouse gets a new one, which is the point.
 //!
 //! Without `--record` the client writes nothing at all. A person playing for fun
 //! is not a recording session, and a flag is the difference.
@@ -76,7 +84,28 @@ fn declared(arguments: &[String]) -> Result<Declared, String> {
         Some("on") => true,
         _ => return Err("--record needs --acceleration on|off".to_owned()),
     };
+    // Constrained here rather than at the corpus, so that an operator finds out
+    // before the evening rather than when they file it. The character set is
+    // `replay::Pseudonym`'s, and for its reason: these strings are written into a
+    // record `replay audit` reads byte by byte.
+    let profile = flag(arguments, "--profile").ok_or(
+        "--record needs --profile <id>: an opaque label for the device \
+                this participant is playing on, stable across their sessions \
+                (docs/SCHEMA.md §4a)",
+    )?;
+    if profile.is_empty()
+        || profile.len() > 32
+        || !profile
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Err(format!(
+            "--profile {profile:?} is not a device profile label: at most 32 bytes \
+             of letters, digits, `_` and `-`"
+        ));
+    }
     Ok(Declared {
+        device_profile_id: profile.to_owned(),
         device_cpi: number("--cpi")?,
         device_polling_hz: number("--polling")?,
         pointer_acceleration: acceleration,
@@ -90,10 +119,16 @@ fn main() -> ExitCode {
     let recording = flag(&arguments, "--record").map(PathBuf::from);
     // The flags and their values both start with no `--`, so the values have to
     // come out of the positional list explicitly rather than by prefix.
-    let flagged: Vec<String> = ["--record", "--cpi", "--polling", "--acceleration"]
-        .into_iter()
-        .filter_map(|name| flag(&arguments, name).map(str::to_owned))
-        .collect();
+    let flagged: Vec<String> = [
+        "--record",
+        "--profile",
+        "--cpi",
+        "--polling",
+        "--acceleration",
+    ]
+    .into_iter()
+    .filter_map(|name| flag(&arguments, name).map(str::to_owned))
+    .collect();
     let positional: Vec<&String> = arguments
         .iter()
         .filter(|argument| !argument.starts_with("--") && !flagged.contains(argument))
@@ -110,8 +145,8 @@ fn main() -> ExitCode {
     let [address, certificate] = positional.as_slice() else {
         eprintln!(
             "usage: moba-client <address> <certificate-hex> [--headless]\n       \
-             moba-client <address> <certificate-hex> --record <dir> --cpi <n> \
-             --polling <hz> --acceleration off\n       \
+             moba-client <address> <certificate-hex> --record <dir> --profile \
+             <id> --cpi <n> --polling <hz> --acceleration off\n       \
              moba-client --probe-input [seconds]"
         );
         return ExitCode::from(2);

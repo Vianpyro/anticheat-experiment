@@ -142,6 +142,27 @@ pub struct SeatFacts {
     /// available on [`SeatFacts::device_polling_hz`], and the **whole** of what
     /// the corpus holds about the device stream.
     pub median_gap_ns: u64,
+    /// **How well this seat's device is known** (`docs/SCHEMA.md` §4e).
+    ///
+    /// The one field here that governs whether a detector may answer at all.
+    /// A statistic that reads a distance or a speed does so in *device counts*,
+    /// and a count is not comparable between two participants until it has been
+    /// divided by something — which used to be `device_cpi`, a declaration
+    /// nobody checked. Since `client::lobby` there is a measured conversion
+    /// instead, and this state says whether the corpus has enough of it.
+    ///
+    /// The rule, and it is the treatment M8 already gives an uncalibrated
+    /// threshold: **a detector that depends on the scale returns `None` for a
+    /// seat whose state is not `Sufficient`**, through
+    /// [`crate::Reading::abstained`] rather than by scoring it anyway. Nothing
+    /// here blocks a match, refuses a store, or acts against anybody; an
+    /// insufficiently calibrated seat is one no distance-shaped statistic has an
+    /// opinion about.
+    ///
+    /// Neither of this crate's two detector families reads it, because both read
+    /// only *times* — and a page that says so is `docs/detectors/README.md`'s
+    /// job rather than a field's.
+    pub calibration: replay::calibration::CalibrationState,
 }
 
 /// Why a replay and a session record cannot be read together.
@@ -225,7 +246,12 @@ impl MatchTelemetry {
         let mut occupied = [false; PLAYER_COUNT];
         let mut seats: [Option<SeatFacts>; PLAYER_COUNT] = [None; PLAYER_COUNT];
         for (index, record) in session.seats.iter().enumerate() {
-            if let SeatRecord::Human { declared, measured } = record {
+            if let SeatRecord::Human {
+                declared,
+                measured,
+                calibration,
+            } = record
+            {
                 occupied[index] = true;
                 seats[index] = Some(SeatFacts {
                     device_cpi: declared.device_cpi,
@@ -234,6 +260,7 @@ impl MatchTelemetry {
                     platform: measured.platform,
                     clock: measured.clock,
                     median_gap_ns: measured.median_gap_ns,
+                    calibration: calibration.state,
                 });
             }
         }

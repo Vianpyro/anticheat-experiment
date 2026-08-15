@@ -147,6 +147,7 @@ fn a_bot_plays_a_whole_match_and_nothing_delivered_catches_it() {
 #[test]
 fn the_corpus_refuses_a_silent_bot_and_cannot_touch_a_mouse_moving_one() {
     let declared = Declared {
+        device_profile_id: replay::DeviceProfileId::parse("bot-mouse").expect("a device label"),
         device_cpi: 800,
         device_polling_hz: 1000,
         pointer_acceleration: false,
@@ -173,10 +174,11 @@ fn the_corpus_refuses_a_silent_bot_and_cannot_touch_a_mouse_moving_one() {
         recorded_on: "2026-08-13".to_owned(),
         supervision: Supervision::InPerson,
         seats: {
-            let mut seats = [SeatRecord::Empty; sim::PLAYER_COUNT];
+            let mut seats = [const { SeatRecord::Empty }; sim::PLAYER_COUNT];
             seats[Seat::Blue0.index()] = SeatRecord::Human {
-                declared,
+                declared: declared.clone(),
                 measured: measured(0),
+                calibration: replay::calibration::SeatCalibration::absent(),
             };
             seats
         },
@@ -195,10 +197,11 @@ fn the_corpus_refuses_a_silent_bot_and_cannot_touch_a_mouse_moving_one() {
         recorded_on: "2026-08-13".to_owned(),
         supervision: Supervision::InPerson,
         seats: {
-            let mut seats = [SeatRecord::Empty; sim::PLAYER_COUNT];
+            let mut seats = [const { SeatRecord::Empty }; sim::PLAYER_COUNT];
             seats[Seat::Blue0.index()] = SeatRecord::Human {
                 declared,
                 measured: measured(12_000),
+                calibration: replay::calibration::SeatCalibration::absent(),
             };
             seats
         },

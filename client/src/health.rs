@@ -169,8 +169,23 @@ pub const PART_FORMAT: &str = "moba/session-part/v1";
 /// without the number a difference of hardware reads as a difference of style.
 /// `docs/SCHEMA.md` is the field-by-field account, including what refusing
 /// pointer acceleration costs and what it does not buy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Declared {
+    /// **Which device this participant is playing on**, as a label the operator
+    /// keeps stable for as long as the hardware does not change.
+    ///
+    /// It is a declaration like the two numbers below and for the same reason:
+    /// no process can tell one mouse from another, and `docs/CONSENT.md` promises
+    /// that nothing identifying a device — no model, no serial, no manufacturer —
+    /// is collected. What this is, is the thing that makes a participant's
+    /// sessions **poolable**: without it every session is an island and a device
+    /// profile can only ever be as good as one evening, which is
+    /// `docs/SCHEMA.md` §4e's whole subject.
+    ///
+    /// It is not the pseudonym and it is not the session. A person who changes
+    /// mouse gets a new one, and that is the point — two sessions of one hand on
+    /// two devices must not be pooled into one profile.
+    pub device_profile_id: String,
     /// Counts per inch, as the participant reports their mouse configured.
     pub device_cpi: u32,
     /// The device's report rate in hertz, as the participant reports it. The
@@ -235,7 +250,7 @@ pub struct Recorded {
 /// as a **dev**-dependency, so `client/tests/session_part.rs` writes a part with
 /// this function and parses it with `replay::session::SeatRecord::decode`, and a
 /// field added on one side and not the other fails there.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SessionPart {
     /// The seat this client sat in.
     pub seat: sim::Seat,
@@ -245,6 +260,13 @@ pub struct SessionPart {
     pub trace: crate::input::TraceStats,
     /// What the loop cost.
     pub cadence: CadenceReport,
+    /// What crossing the lobby measured about the device.
+    ///
+    /// **Sufficient statistics and not an estimate** — see
+    /// [`crate::lobby::Observations`]. The fit is computed by
+    /// `replay::calibration`, on the side that is not assumed to be lying, and
+    /// pooling two sessions of one participant is addition.
+    pub calibration: crate::lobby::Observations,
 }
 
 impl SessionPart {
@@ -261,12 +283,30 @@ impl SessionPart {
             declared,
             trace,
             cadence,
+            calibration,
         } = self;
         let Declared {
+            device_profile_id,
             device_cpi,
             device_polling_hz,
             pointer_acceleration,
         } = declared;
+        let crate::lobby::Observations {
+            reaches,
+            octants,
+            min_distance,
+            max_distance,
+            sum_distance,
+            sum_counts,
+            sum_distance_sq,
+            sum_distance_counts,
+            sum_counts_sq,
+            fast_reaches,
+            fast_motions,
+            fast_ns,
+            quantum,
+            clamped,
+        } = calibration;
         let CadenceReport {
             budget_ns,
             passes,
@@ -291,6 +331,7 @@ impl SessionPart {
         out.push_str(&format!("format: {PART_FORMAT}\n"));
         out.push_str(&format!("seat: {}\n", seat.index()));
         out.push_str("provenance: human\n");
+        out.push_str(&format!("device_profile_id: {device_profile_id}\n"));
         out.push_str(&format!("device_cpi: {device_cpi}\n"));
         out.push_str(&format!("device_polling_hz: {device_polling_hz}\n"));
         out.push_str(&format!(
@@ -315,6 +356,48 @@ impl SessionPart {
         out.push_str(&format!("passes_over_budget: {passes_over_budget}\n"));
         out.push_str(&format!("worst_overrun_ns: {worst_overrun_ns}\n"));
         out.push_str(&format!("worst_pass_ns: {worst_pass_ns}\n"));
+
+        // The lobby's measurement, as integers. Distances and counts are written
+        // in thousandths and the device's own resolution in millionths, for the
+        // reason `world_units_per_count_e6` above is an integer: a record holds
+        // an exact number rather than a rendered float, so two builds reading it
+        // agree byte for byte and a corpus cannot acquire a rounding covariate.
+        let e3 = |value: &f64| -> u64 { scaled(*value, 1e3) };
+        out.push_str(&format!("calibration.reaches: {reaches}\n"));
+        out.push_str(&format!("calibration.octants: {octants}\n"));
+        out.push_str(&format!("calibration.clamped: {clamped}\n"));
+        out.push_str(&format!(
+            "calibration.min_distance_e3: {}\n",
+            e3(min_distance)
+        ));
+        out.push_str(&format!(
+            "calibration.max_distance_e3: {}\n",
+            e3(max_distance)
+        ));
+        out.push_str(&format!(
+            "calibration.sum_distance_e3: {}\n",
+            e3(sum_distance)
+        ));
+        out.push_str(&format!("calibration.sum_counts_e3: {}\n", e3(sum_counts)));
+        out.push_str(&format!(
+            "calibration.sum_distance_sq_e3: {}\n",
+            e3(sum_distance_sq)
+        ));
+        out.push_str(&format!(
+            "calibration.sum_distance_counts_e3: {}\n",
+            e3(sum_distance_counts)
+        ));
+        out.push_str(&format!(
+            "calibration.sum_counts_sq_e3: {}\n",
+            e3(sum_counts_sq)
+        ));
+        out.push_str(&format!("calibration.fast_reaches: {fast_reaches}\n"));
+        out.push_str(&format!("calibration.fast_motions: {fast_motions}\n"));
+        out.push_str(&format!("calibration.fast_ns: {fast_ns}\n"));
+        out.push_str(&format!(
+            "calibration.quantum_e6: {}\n",
+            scaled(*quantum, 1e6)
+        ));
         out
     }
 
@@ -329,6 +412,25 @@ impl SessionPart {
     pub fn file_name(&self) -> String {
         format!("seat-{}.session-part", self.seat.index())
     }
+}
+
+/// A non-negative `f64` written into a record as a scaled integer.
+///
+/// Saturating rather than wrapping, and zero for anything that is not a finite
+/// non-negative number: every value this is applied to is a length, a count or a
+/// duration, so a negative or a NaN is a broken accumulator rather than a
+/// measurement, and a record is not the place to find out.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a bounded measurement written to a text record, clamped first"
+)]
+fn scaled(value: f64, factor: f64) -> u64 {
+    let scaled = value * factor;
+    if !scaled.is_finite() || scaled <= 0.0 {
+        return 0;
+    }
+    scaled.round().min(u64::MAX as f64) as u64
 }
 
 /// The magic a telemetry part starts with. `replay::telemetry`'s reader is the

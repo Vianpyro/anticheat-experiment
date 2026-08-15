@@ -43,7 +43,7 @@
 /// A date, because that is what a participant is shown and what they can compare
 /// against the copy they signed. It must equal the `consent-version:` line in
 /// `docs/CONSENT.md`.
-pub const CURRENT: &str = "2026-08-15";
+pub const CURRENT: &str = "2026-08-16";
 
 /// The identifier of a version of the consent document.
 ///
