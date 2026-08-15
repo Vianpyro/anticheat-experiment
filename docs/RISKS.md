@@ -1393,3 +1393,88 @@ reports degraded matches; any change that puts work on the thread between
 `new_events` and `about_to_wait`; any harness that compresses a period below
 the granularity of the clock the host can schedule; or a paired reading in which
 the two platforms disagree.
+
+
+---
+
+## R17 — Person and device are perfectly confounded, and no amount of data separates them
+
+**Not irreversible in the code, and unrecoverable in the corpus, which is the
+worse of the two.** `docs/SCOPE.md` fixes nine participants and the sessions are
+recorded on whatever hardware those nine people own — a decision taken on
+purpose, because a production anti-cheat does not choose its players' mice, and a
+corpus recorded on nine identical mice would demonstrate a detector that works on
+one mouse.
+
+The cost of that choice is precise and it is worth stating in one sentence:
+**each hand appears with exactly one device, so every behavioural statistic this
+project computes is a statistic about a person *and* their hardware, and nothing
+in the design tells the two apart.** A mouse at 400 counts per inch and one at
+1600 describe the same hand differently; a 125 Hz device and a 1 kHz one report
+the same sweep differently; a driver's own scaling shifts every distance by a
+constant. That is not variance that shrinks as the corpus grows. Nine people is
+nine draws of the pair (hand, device) and there is no design under which nine
+draws identify two factors.
+
+**Decide:** before the first recording session, because the covariate cannot be
+added to a corpus afterwards and re-recording costs nine people an evening.
+
+**Hedge, and the shape of it is the whole entry: measure the device rather than
+standardise it.** `client::lobby` turns the wait for the other players into an
+instrument — elements at positions the build fixes, a `Ready` button inert until
+the lobby has been crossed, a training dummy at a known distance — so that every
+click is a movement with known endpoints and a measured cost in device counts.
+`docs/SCHEMA.md` §4e is the schema and `docs/ARCHITECTURE.md` invariant 18 is the
+test. What it buys is that a distance-shaped statistic can be computed in
+normalised units instead of raw counts.
+
+### What this does not fix, and it is most of the confound
+
+The measurement is a **conversion**, not an identification, and the honest
+statement is narrower than "the hardware has been controlled for":
+
+- **`device_cpi` is still a declaration.** The lobby recovers device counts per
+  *world unit*, never per inch, because a mouse reports counts and nothing in any
+  stream this project records says what physical distance produced them.
+  `docs/SCHEMA.md` §4c keeps the true CPI in the unknown column.
+- **A scale removed is not a style separated.** Dividing out counts per unit
+  makes two participants' distances comparable; it says nothing about the parts
+  of a hardware response that are not a scale — a sensor's acceleration curve at
+  speed, a switch's travel, the difference between a light mouse and a heavy one.
+  Those arrive inside the same nine draws and stay there.
+- **The report rate is a covariate and not a correction.** `docs/SCHEMA.md` §11f
+  already says a detector reading an inter-arrival distribution stratifies by
+  polling rate or says it did not, and a measured rate makes that stratum
+  *readable* rather than removable.
+- **Nine is still nine.** R8's arithmetic is untouched: the bound on anything a
+  person's style drives is `3/9 ≈ 33%` and no measurement of a mouse moves it by
+  a point.
+
+So what this entry claims, exactly: the corpus can now say **which part of a
+distance is the device's scale**, and it cannot say which part of a *style* is
+the device's. The second is the confound and it stays open, named rather than
+absorbed — which is the same register `docs/SCOPE.md` uses for the ceiling of
+behavioural detection and for exploit class 6.
+
+### And the failure mode the hedge introduces, which is why it is not free
+
+A measurement taken through the interface is a measurement that inherits the
+interface. Two things guard it and both are tests rather than arguments:
+
+- **the lobby must not read the display.** A menu driven by the operating
+  system's pointer would measure the accelerated pointer — R14's failure in a new
+  place — and the scale would not be the scale the match is played at.
+  `client/tests/lobby.rs` drives the same device events through two clients six
+  times apart in pixels per world unit and requires identical everything.
+- **the geometry must reach the cases the criterion is about.** A station table
+  re-tuned for how it looks on screen is a table that quietly stops covering
+  eight octants, and a measurement aligned on too few directions is exactly the
+  anisotropy R14 records. The table carries its own reach assertion
+  (`docs/RISKS.md` R15).
+
+**Reopened by**, and this is the whole list: a participant recording on two
+devices under one label, which the corpus marks as `mismatched` rather than
+detects; a change to `client::input::WORLD_UNITS_PER_COUNT`, which changes what
+every recorded scale means and must not happen after the first session; or a
+detector whose null model needs a hardware property that is not a scale, at which
+point the entry is open again and the answer is not more geometry.

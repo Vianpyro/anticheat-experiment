@@ -117,12 +117,24 @@ inherits the confusion.
 
 | Field | What it is | Why it cannot be measured |
 | --- | --- | --- |
+| `device_profile_id` | **which device this participant is playing on**, as an opaque label the operator keeps stable while the hardware does not change | nothing can tell one mouse from another, and `docs/CONSENT.md` promises no model, serial or manufacturer is collected. What it buys is the one thing a per-match record cannot otherwise express — that two sessions were played on the *same* device — and §4e is what needs it |
 | `device_cpi` | counts per inch the mouse is configured at | a mouse reports counts. Nothing in the stream says what physical distance produced them |
 | `device_polling_hz` | the device's report rate | the client observes an *arrival* rate, which is the report rate plus the platform. §4b records the observation beside the declaration |
 | `pointer_acceleration` | whether the OS's acceleration was left on | the client sees deltas after the platform has applied it, and cannot invert a curve it does not know |
 
-All three are **declarations**. They are as good as the participant's answer and
-no better, and no analysis may treat them as measurements. They are collected
+All four are **declarations**. They are as good as the participant's answer and
+no better, and no analysis may treat them as measurements.
+
+**The label is a linkage key and is treated as one.** It is stable across a
+participant's sessions, which is exactly what makes it able to tie two matches to
+one person — and it names nobody, so `Corpus::audit`'s byte search for a
+pseudonym structurally cannot find one left behind. What destroys it is that it
+lives **inside the match directory** a withdrawal removes whole, and
+`replay/tests/withdrawal.rs` asserts both halves: the label is in the corpus
+before, and it is in no byte of it after. It is constrained to `Pseudonym`'s
+character set for `audit`'s sake, and it is chosen by the operator from a list
+for the same reason a pseudonym is — a free-form field is where a real name ends
+up. They are collected
 together or not at all: a corpus holding hardware for some sessions and not others
 has a covariate present on a subset chosen by whoever remembered a flag, which is
 worse than not having it.
@@ -187,10 +199,16 @@ same size:
    reaction latency floors, claimed-versus-observed drift: none of them reads a
    distance. This is most of `docs/MILESTONES.md` M8's list.
 2. **Distance- and speed-shaped statistics are comparable only after dividing by
-   `device_cpi`**, which means they rest on a number nobody checked. A detector
-   that thresholds on a speed must say so, and must state that a participant who
-   misreported their CPI by a factor of two is a participant that detector will
-   score as an outlier for a reason that has nothing to do with how they played.
+   a scale**, and §4e is what changed about which scale. It used to be
+   `device_cpi`, a declaration nobody checked, with the consequence that a
+   participant who misreported it by a factor of two is a participant a
+   speed-thresholding detector scores as an outlier for a reason that has nothing
+   to do with how they played. There is a **measured** conversion now — device
+   counts per world unit, fitted against geometry the build fixes — and the rule
+   that goes with it is that a detector reading a distance or a speed uses it and
+   abstains on a seat that has none. What is still a declaration, and still
+   unchecked, is `device_cpi` itself: the measured scale converts counts to *world
+   units*, never to inches, and §4c keeps the inch in the unknown column.
 3. **Shape-shaped statistics — curvature, smoothness, the ratio of one distance to
    another — are scale-invariant and therefore comparable without the
    declaration.** This is the strongest position available, and it is the one a
@@ -200,6 +218,124 @@ The residual nobody can close: acceleration being *off* is itself a declaration.
 The corpus cannot tell an accelerated session from an unaccelerated one, because
 the only difference is in a transformation applied upstream of the first byte this
 project sees.
+
+### 4e. Calibration — what the lobby measured, and how well the device is known
+
+`docs/RISKS.md` R17 is the risk and `client::lobby` is the instrument.
+
+**The confound.** Nine participants and nine devices: every hand appears with
+exactly one mouse, so no analysis in this corpus can separate a person's style
+from their hardware's response. That is not variance more matches absorb, it is a
+variable the design does not identify. The parade is not to standardise the
+hardware — a production anti-cheat does not choose its players' mice — but to
+**measure its contribution**, so that a statistic reading a distance or a speed
+reads normalised units rather than raw device counts.
+
+**Where the measurement comes from.** The lobby, and there is no calibration
+screen. Every element in it stands at a position the build fixes, `Ready` is
+inert until the pseudonym, the consent version and champion select have each been
+visited, and a training dummy moves through a fixed table of stations while the
+last player connects. So a click is a movement whose **endpoints are known
+exactly** and whose **cost in device counts is measured**, and the traversal that
+produces them is the traversal that starts the match.
+
+**What the record holds, per seat.** Sufficient statistics, not an estimate:
+
+| Field | What it is |
+| --- | --- |
+| `calibration.reaches` | clicks on an element of known position with a measured crossing behind them |
+| `calibration.octants` | a bit per compass octant covered, of eight |
+| `calibration.clamped` | legs discarded because the cursor reached the map clamp during them |
+| `calibration.min_distance_e3`, `…max_distance_e3` | the shortest and longest reach, in thousandths of a world unit |
+| `calibration.sum_distance_e3`, `…sum_counts_e3`, `…sum_distance_sq_e3`, `…sum_distance_counts_e3`, `…sum_counts_sq_e3` | the five sums a least-squares fit of counts against distance needs |
+| `calibration.fast_reaches`, `…fast_motions`, `…fast_ns` | the reaches crossed fast enough for a report rate to be readable, and what they cost |
+| `calibration.quantum_e6` | the finest non-zero delta component observed, in millionths of a count |
+
+**Sums rather than a fit, and that is the whole of what makes estimation
+accumulate.** They add across sessions by `+`, so a participant's device profile
+is the sum of their sessions on one device and nothing has to be stored to make
+it so. `Corpus::profile_of` computes it from the matches on disk when somebody
+asks, in exactly the register `replay::split::split_of` is a function rather than
+a file (§7) and `census` prints rather than writes: a stored profile would be a
+derived artefact able to disagree with the corpus and able to outlive a
+withdrawal.
+
+**What is estimated from them, and what is not.** `replay::calibration::Estimate`
+fits `n = a·d + b`. The slope `a` is **device counts per world unit** — the
+conversion a distance-shaped statistic needs in order to stop being a count,
+measured against geometry the build fixes rather than taken from a number the
+client wrote about itself. The intercept `b` is the fixed cost of arriving at a
+target: the landing slop and the overshoot correction, which are **style**, and
+which are in the model in order to be kept *out* of the slope. A ratio taken from
+one movement cannot separate the two, which is the argument for a regression over
+a spread of distances rather than a direct measurement.
+
+**`device_cpi` is not recovered and does not become measurable.** A mouse reports
+counts; nothing in any stream this project records says what physical distance
+produced them, and no menu geometry changes that. §4c keeps the true CPI in the
+unknown column exactly where it was.
+
+**Sufficiency**, pooled across a participant's sessions on one device, and every
+clause is the antecedent of something the estimate claims:
+
+| Clause | Value | Why |
+| --- | --- | --- |
+| reaches | **16** | the fit has two parameters and its residual is comparable with a button's radius |
+| octants covered | **6** of 8 | a measurement aligned on one axis has hidden an anisotropy in this project once already (`docs/RISKS.md` R14) |
+| longest reach ÷ shortest | **4** | below that the slope and the intercept are not separately identified and the slope absorbs the arrival cost |
+| fast reaches | **4** | the report rate is the one quantity a slow session cannot produce: a creeping hand reports at the same rate and spends most of every interval stationary |
+
+**The state, per seat, frozen at filing time**, which is the second field this
+milestone adds to the record:
+
+| Value | What it asserts |
+| --- | --- |
+| `sufficient` | every clause above is met, counting this session and the participant's earlier ones on the same device |
+| `partial` | something was measured and it is not enough yet. **The ordinary state of a first session**, and named rather than treated as a failure: a corpus's first evening is a calibration evening |
+| `absent` | nothing was measured. A client that never crossed a lobby, a session somebody joined late |
+| `mismatched` | something was measured and it does not match the profile that device is on record as. **Not an accusation** — a mouse replaced between two evenings produces exactly this — it is the corpus declining to pool two devices under one profile |
+
+It is written by whoever *files* the match and not by the client: rating a seat
+needs the participant's earlier sessions, which a client has never seen and which
+`docs/SCOPE.md` assumes it would lie about. A client's part therefore carries the
+observations and never a state, and `client/tests/session_part.rs` asserts that a
+part rates itself no higher than `partial`.
+
+**Frozen rather than recomputed**, and that is the point of it being a field. §8
+requires a distribution to say which stratum it was computed over, and a stratum
+re-derived from the whole corpus on every read is a stratum that quietly changes
+under a published number. The observations stay beside it so the decision can be
+audited; what is fixed is the decision.
+
+**Estimating and verifying are different operations and cost different amounts.**
+Estimating needs many movements in many directions over a spread of distances, and
+no single evening owes anybody that; verifying that a device has not changed needs
+a handful. So the last person to join does not have to be calibrated that night —
+they already are, by their earlier sessions; a participant who spends the wait
+doing something else loses nothing and merely defers the refinement of their own
+profile; and the first session of a participant is explicitly a calibration
+session.
+
+**Nothing here blocks anything, and that is a decision rather than an
+implementation detail.** An insufficiently calibrated seat never stops a match
+starting and never stops a match being stored. It is *marked*, and the rule for
+whoever reads the corpus is:
+
+> A detector that depends on the scale returns `None` for a seat whose state is
+> not `sufficient`, through `anticheat::Reading::abstained` rather than by
+> scoring it anyway.
+
+That is the treatment M8 already gives an uncalibrated *threshold*, one level
+down, and the reason is `docs/SCOPE.md`'s standing one: blocking a player for a
+calibration reason is the shortest path to an anti-cheat that degrades the
+experience of honest players. `replay census` prints the four counts, and
+`anticheat::SeatFacts::calibration` is where a detector reads the state.
+
+**Neither of M8's two detector families reads it**, because both read only
+*times*. The rule above is stated for a detector that does not exist yet, in
+exactly the register §11f's polling-rate rule is: written before the first
+recording, because the covariate it is about cannot be added to a corpus
+afterwards.
 
 ## 5. The tick budget, and sessions that fell behind
 
@@ -360,6 +496,11 @@ independent: nine of them share a match, and a few dozen share a person. So:
 | a person's style | the number of **distinct people** | `3/9 ≈ 33%` | `3/9 ≈ 33%` |
 | a match's circumstances | the number of **matches** | `3/40 ≈ 7.5%` | `3/20 ≈ 15%` |
 
+**And a claim that reads a distance or a speed carries a third stratum.** §4e:
+the seats it was computed over are the ones whose calibration state is
+`sufficient`, and a page that pooled the rest has pooled device counts that mean
+different things. `replay census` prints the four counts beside the two bounds.
+
 **Both bounds appear together, everywhere a claim is made.** In every detector
 document at M8, in every published statistic, in `replay census`'s own output. A
 reader shown only the friendlier one has been handled, and the friendlier one is
@@ -473,6 +614,14 @@ Two decisions, taken here and not revisited per match (`docs/MILESTONES.md` M6):
 `matches/<id>/match.telemetry`, one sealed file per match, one stream per seat.
 `replay::telemetry` is the code and `docs/CONSENT.md` §2b is what a participant
 reads about it.
+
+**It starts at the menu.** The client's capture path runs from the moment the
+window opens, so a stream's first records are the lobby crossing §4e measures and
+`docs/CONSENT.md` §2c describes; the match's records follow, and the boundary
+between them is where the [`Viewed`](#11c-per-record-in-the-stream) anchors
+begin. Nothing about the format changes: the lobby produces the same three
+records the match does, through the same code, and a seat that crossed a lobby
+and then played is one stream.
 
 **Why it exists.** `docs/detectors/README.md` recorded two of
 `docs/MILESTONES.md` M8's five candidate signals as *not buildable*, and the

@@ -28,7 +28,7 @@ client   server --+---------+         |
 | `protocol` | The wire. Message types, framing, versioning, sequence numbers | `sim` (for `PlayerView`, `Input`, ids) | `server`, `client`, `anticheat`, any runtime |
 | `replay` | The replay container: format, signing, verification, resimulation. From M4, the corpus on disk and the commands that withdraw a participant from it and audit the result. From M6, the corpus's schema — the session record, the consent version, and the frozen train/holdout split. From M8, the telemetry companion: the device-event stream, sealed, and the commitment that binds it to a replay | `sim`; externally, an audited signature crate and a source of entropy for `keygen` | `server`, `client`, `anticheat`, any runtime |
 | `server` | Authority. Tick loop, the clock, sockets, sessions, fog application, telemetry capture, replay recording | `sim`, `protocol`, `replay`, `anticheat`, a runtime | `client`, `cheat-client` |
-| `client` | Presentation. Rendering, **input capture**, prediction, reconciliation | `sim`, `protocol`, a runtime, a window library and a framebuffer; plus `server` and `replay` as dev-dependencies for the M3 and M4 exit harnesses | `server`, **`anticheat`**, `replay`'s signing keys |
+| `client` | Presentation. Rendering, **input capture**, the lobby and the device measurement hidden in it, prediction, reconciliation | `sim`, `protocol`, a runtime, a window library and a framebuffer; plus `server` and `replay` as dev-dependencies for the M3 and M4 exit harnesses | `server`, **`anticheat`**, `replay`'s signing keys |
 | `anticheat` | Detection. Feature extraction from telemetry, detectors, thresholds, evidence bundles | `sim`, `replay`; plus `cheat-client`, `server` and `protocol` as dev-dependencies for the detector suite | `server` (it is called by the server, not the reverse), `client`, any network or filesystem I/O outside `src/bin` |
 | `cheat-client` | The attacker, and the exploit suite | `protocol` only, plus `server` as a dev-dependency for the in-process harness | `sim` internals, `client`, `anticheat` |
 
@@ -985,6 +985,57 @@ world units where a character cell was 1.158 and 4.111 — and R14's own hedge i
 why that was free: it said the quantisation lived in one function and everything
 downstream carried full precision, and it did.
 
+#### The lobby, and why the menu is where the device is measured
+
+`docs/RISKS.md` R17 is the risk this answers and `docs/SCHEMA.md` §4e is the
+schema. What belongs here is the shape of the thing.
+
+**The confound.** The corpus is nine people on nine mice — `docs/SCOPE.md` fixes
+both numbers — so every hand appears with exactly one device and no analysis can
+separate a person's style from their hardware's response. That is not variance
+more matches absorb; it is a variable the design does not identify. The parade is
+not to standardise the hardware, which a production anti-cheat cannot do, but to
+measure its contribution so that a statistic reading a distance or a speed works
+in normalised units rather than in raw device counts.
+
+**There is no calibration screen, and the lever is the geometry.** `client::lobby`
+lays five elements out at positions the build fixes: the pseudonym check and the
+consent confirmation at opposite top corners, champion select and `Ready` at
+opposite bottom ones, and a training dummy that moves through a fixed table of
+stations each time it is hit. `Ready` is **inert** until the other three have been
+visited, so three long crossings happen because the interface requires them and
+not because anybody is asked to make them; the dummy is what fills the wait for
+the last player to connect, and its table is what sweeps eight octants and a
+distance ratio above four — which one traversal of a static menu cannot do.
+
+A click on an element is therefore a movement whose **endpoints are known
+exactly** and whose **cost in device counts is measured**. That pair is the whole
+measurement, and `client/src/lobby.rs` carries the field-by-field account.
+
+**The binding constraint is that the lobby is driven by the game's own cursor.**
+It integrates raw device deltas through `client::input::Aim` — the same
+integrator, the same world units, the same clamp to `RULES.map_half_extent` — and
+never by the operating system's pointer. A menu that reacted to the OS pointer
+would be measuring the *accelerated* pointer, which is the quantity
+`docs/SCHEMA.md` §4d refuses everywhere else in this client, and the scale
+recovered from it would not be the scale the match is played at: a number worse
+than no number, because it would have the shape of a calibration. Invariant 18
+below is the test.
+
+**What the client computes is nothing.** A session's reaches are folded into the
+**sufficient statistics of a least-squares fit** rather than into its answer, so
+two sessions of one participant pool by addition and the estimate is computed once
+by `replay::calibration`, on the side this project does not assume is lying. That
+is also what makes estimation *accumulate*: `Corpus::profile_of` is a fold over
+the matches on disk, computed when somebody asks, in the register
+`replay::split::split_of` is a function rather than a file.
+
+**And it measures the mouse, not the inch.** The slope recovered is device counts
+per **world unit** — the conversion a distance-shaped statistic needs in order to
+stop being a count. `device_cpi` stays a declaration and stays in
+`docs/SCHEMA.md` §4c's unknown column: a mouse reports counts and nothing in any
+stream this project records says what physical distance produced them.
+
 #### The fallback that was recorded and not taken
 
 SGR-Pixels mode (`CSI ? 1016 h`) makes an xterm-compatible terminal report the
@@ -1644,6 +1695,73 @@ Each is a test or a lint, not a convention:
    count, its motions, its clock, its platform or its sensitivity. Neither is
    derived from the other — the summary is what survives when there is no
    companion — so nothing but that refusal would notice.
+
+18. **The lobby is driven by the integrated cursor, and the window cannot reach
+   it.** The same device events, driven through two clients differing only in
+   window size — 640×480 against 3840×2160 — produce a byte-identical
+   `InputTrace`, an identical cursor and **identical calibration observations**.
+   Asserted in `client/tests/lobby.rs`, which is invariant 12 restated over the
+   menu and exists for the reason that one does: a measurement taken through a
+   display inherits the display.
+
+   The two mutations that would break it are the two natural ways to write a
+   menu, and both turn it red. Resolving a click against a screen position makes
+   the two clients disagree about what was clicked as soon as the windows differ;
+   closing a movement on a redraw rather than on a click makes the reach count a
+   function of the frame rate. `client::lobby` holds no viewport, and
+   `client::draw` still exposes no inverse projection, so there is no screen-space
+   quantity for either to derive from.
+
+   Two properties travel with it, because the measurement is worth nothing if it
+   is not the thing it claims to be. A simulated crossing recovers the scale this
+   build actually applies — 20 device counts per world unit — to within **0.04%**,
+   with the arrival cost landing in the intercept where it belongs rather than in
+   the slope; and the dummy's station table is asserted to reach eight octants and
+   a distance ratio above four, which is `docs/RISKS.md` R15 applied to an
+   interface.
+
+19. **An insufficiently calibrated seat is marked and never refused.**
+   `Corpus::store` gained no check for it, deliberately: a seat whose device is
+   unknown is filed as `partial` or `absent` and the match is stored. What the
+   state governs is a *reading* — a detector depending on the scale answers `None`
+   for it, which is the treatment M8 already gives an uncalibrated threshold — and
+   `docs/SCHEMA.md` §4e carries the rule. Blocking a player for a calibration
+   reason is the shortest path to an anti-cheat that degrades the experience of
+   honest players, which is `docs/SCOPE.md`'s standing position about sanctions
+   arriving one level down.
+
+## Directions this architecture leaves open, and does not build
+
+Recorded because they will be obvious to whoever reads `client::lobby` next, and
+because both of them belong to a sub-project `docs/SCOPE.md` puts third in the
+queue — matchmaking — which is far enough away that an implementation written now
+would be stale before it was useful. What is worth keeping is the *observation*,
+not the code.
+
+**Calibration during matchmaking.** The wait this pass exploits is the wait for
+eight named people in a scheduled session. A matchmade queue has a different and
+larger one: a player sits in it for a minute or two with nothing to do, and the
+natural things to put there — a warm-up server, a practice range, a dummy at a
+known distance — are the same instrument as the lobby's, at a scale where a
+device profile could be estimated properly rather than accumulated over evenings.
+Nothing about `client::lobby`'s design forecloses it: the geometry is a table of
+constants and the observations pool by addition, so a queue's crossings would fold
+into the same profile as a lobby's.
+
+**The first seconds of a match are already a calibration trajectory.** A champion
+starts at its base and the player's first order is almost always a walk to a lane,
+which is a movement of **known geometry** — the base and the lane are constants of
+`sim::rules` — that nobody had to provoke and that every match in the corpus
+already contains. It is not free: the aim reaches the wire only at the instant of
+a click, so what a replay holds is the two endpoints rather than the path, and the
+path is in the telemetry companion under a different clock. Reconstructing it
+means aligning a `Viewed` anchor against the first `Move` and integrating the
+deltas between them, which is real work and is exactly the sort of thing that
+should be written against a corpus that exists rather than one that does not.
+
+Both are recorded here and in no issue tracker, for the reason
+`docs/ENGINEERING.md` gives about automation: an idea that has to be maintained
+somewhere is an idea that goes stale where nobody is reading.
 
 ## Deliberate non-abstractions
 

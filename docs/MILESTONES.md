@@ -245,6 +245,38 @@ and the replay's own format is what gained a field. `docs/CONSENT.md` moved to
 and what can be worked out from it, which is R3's version mechanism doing the job
 it was built for on the first occasion that needed it.
 
+**And one more thing found before the first session, which is a confound rather
+than a format.** The corpus is nine people on nine mice and `docs/SCOPE.md` fixes
+both, which means every hand in it appears with exactly one device: no analysis
+can separate a person's style from their hardware's response, and no number of
+matches from those nine people ever will. `docs/RISKS.md` R17 is the entry.
+
+The answer taken is to **measure** the hardware's contribution rather than to
+standardise it — a production anti-cheat does not choose its players' mice — and
+the instrument is the lobby, because the wait for the last player to connect is a
+dead interval that already exists. `client::lobby` puts every element at a
+position the build fixes, makes `Ready` inert until the lobby has been crossed,
+and stands a training dummy at a known distance; every click is then a movement
+with known endpoints and a measured cost in device counts, and nobody is asked to
+do anything. `docs/SCHEMA.md` §4e is the schema, and the record gained the two
+fields that make it accumulate: a **device profile label** per participant, so
+that two evenings on one mouse can be read together, and a **calibration state**
+per seat — sufficient, partial, absent, or out of tune with the profile on record.
+`docs/CONSENT.md` moved to `2026-08-16` with a section written for a participant
+saying that the recording starts at the menu and what the measurement deduces.
+
+Three things about it that are decisions rather than mechanism. Estimating a
+scale is expensive and **accumulates across sessions**, so the last person to join
+does not have to be calibrated that evening and the first session of a
+participant is explicitly a calibration session; verifying that a device has not
+changed is cheap and is what the fourth state reports. Nothing here **blocks**:
+an insufficiently calibrated seat never stops a match starting or being stored,
+and a detector that depends on the scale answers `None` for it, which is the
+treatment M8 already gives an uncalibrated threshold. And what is measured is
+device counts per *world unit* and never counts per inch — `device_cpi` stays a
+declaration in `docs/SCHEMA.md` §4c's unknown column, because a mouse reports
+counts and no menu geometry changes that.
+
 So what is left is a calendar, three times over: M4's three humans on two
 operating systems, M6's nine people twenty times, and M8's thresholds, which are
 downstream of M6's.
