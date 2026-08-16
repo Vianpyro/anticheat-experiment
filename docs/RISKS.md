@@ -942,9 +942,12 @@ part way through:
 The last row is R14's second failure in one number: at the same hand rate, the
 terminal's event rate tracked the pointer's speed by a factor of twenty, and the
 new path's did not move at all. Spatial resolution over the same run is one
-device count — **0.05 world units**, 23 times finer than a cell across and 82
-times finer down, with the 3.55 anisotropy gone because the capture no longer
-touches a projection.
+device count — **0.05 world units at the sensitivity of that run**, 23 times
+finer than a cell across and 82 times finer down, with the 3.55 anisotropy gone
+because the capture no longer touches a projection. The sensitivity has since
+moved to `0.15` for reasons of feel rather than of resolution — see below — which
+makes the same comparison 7.7 and 27 times finer. The anisotropy is gone either
+way, and that was the half of R14 that was about the renderer.
 
 ### What R14 becomes: reduced, and its last live half now measured rather than feared
 
@@ -1175,6 +1178,50 @@ in every distribution M8 would read. The grab is gone and
 `InputTrace::stats().coincident` now reports the class of fault rather than
 filtering it, because filtering would be a predicate on the contents of the
 record — which is what the cell crossing was.
+
+**And the first playtest priced the other side of that decision, which had never
+been paid.** "The invisible pointer drifts and a click after it has left the
+window goes elsewhere" was written down as a usability wart on a fixture. It is
+not one: the aim moves `0.05` world units per device count and the renderer draws
+about 3.5 pixels per world unit, so the drawn aim advances about a sixth of a
+pixel per count, and the invisible OS pointer is off a 1280-pixel window a long
+time before the aim reaches a lobby element in the corner. The clicks land on
+another window, `Ready` never leaves, and the server — which ticks only when
+every occupied seat is ready — never starts the match. A 226-second session
+recorded 62 924 device events and **zero view anchors**.
+
+So the grab is back on one side of a line the corpus can hold: **a session that
+records is never grabbed, and a session that records nothing is.** The second
+cannot contaminate a distribution, because it writes no part and because a match
+played without `--record` cannot enter the corpus at all (`replay::Attested`).
+`moba-client` refuses `--record --confine on` rather than ordering the two
+silently, `CursorGrabMode::Locked` is asked for first because it is not the X11
+grab this entry is about, and the client prints which mode it obtained. The
+reopening criterion is unchanged and is now runnable: `--probe-input` takes
+`--confine`, so the coincident count under a grab and without one is a
+measurement somebody can take on their own platform rather than a claim inherited
+from this one.
+
+**Two more things the same session priced, and both are about the renderer
+rather than about this entry's subject.** The aim clamps to
+`RULES.map_half_extent` and the renderer framed the triangle instead of the map,
+so the cursor stopped against an undrawn wall at the sides and left the window
+before stopping at the bottom; the drawn area is the map now and
+`client::draw::aim_limit` paints its edge. And `WORLD_UNITS_PER_COUNT` moved from
+`0.05` to `0.15`, because a sixth of a pixel per device count against a desktop
+pointer's one is not a sensitivity anybody chose — it is what falls out of a
+world-unit constant multiplied by a projection nobody was looking at.
+`docs/ARCHITECTURE.md` carries both, including what the coarser aim quantum costs
+and why `world_units_per_count_e6` is in the session record.
+
+**On which: the count is not always zero without a grab.** The playtest above ran
+ungrabbed under WSLg and reported 16 783 coincident samples in 62 822 motions —
+27%, with a median inter-arrival of 6 µs. That is the same shape of artefact this
+entry is about, arriving from a compositor rather than from a grab, and it is
+exactly what the counter exists to say: **that host's capture path is not one
+sample per motion, and a corpus must not be recorded on it** until the number is
+zero. It is a reason to check the counter before an evening rather than after
+it.
 
 ---
 

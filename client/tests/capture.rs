@@ -50,13 +50,13 @@ fn slow_then_fast() -> Vec<(u64, f64, f64)> {
     let period_ns = 8_000_000u64; // 125 Hz, an ordinary USB mouse
     let mut events = Vec::new();
     for step in 0..SLOW {
-        // 0.03 device counts a step, which is 0.0015 world units: a fortieth of
+        // 0.01 device counts a step, which is 0.0015 world units: a fortieth of
         // the narrow side of a terminal character cell, so a terminal would
         // have reported roughly one of these 770 events.
         events.push((step * period_ns, SLOW_COUNTS, 0.0));
     }
     for step in SLOW..SLOW + FAST {
-        // Twelve counts a step, which is 0.6 world units: half a cell, so a
+        // Four counts a step, which is 0.6 world units: half a cell, so a
         // terminal would have reported every second one.
         events.push((step * period_ns, FAST_COUNTS, 0.0));
     }
@@ -73,10 +73,19 @@ fn slow_then_fast() -> Vec<(u64, f64, f64)> {
 /// window's aspect ratio passed. The travel is now well inside the map and
 /// [`capture_is_a_function_of_the_device_and_not_of_the_window`] asserts that it
 /// is, so the hole cannot be reopened by a later edit to these numbers.
+///
+/// **It reopened anyway, from the other end**, which is worth recording because
+/// it is the case that guard was not written for: the counts stayed and
+/// `client::input::WORLD_UNITS_PER_COUNT` tripled, so the same fixture walked
+/// three times as far and piled up against the clamp. The assertion caught it
+/// on the first run. The counts below are therefore chosen in **world units** —
+/// the fixture travels the same 60 units it always did, and the two comments in
+/// `slow_then_fast` that quote a world distance are still true word for word —
+/// which is what makes them survive the next change to a sensitivity.
 const SLOW: u64 = 250;
 const FAST: u64 = 100;
-const SLOW_COUNTS: f64 = 0.03;
-const FAST_COUNTS: f64 = 12.0;
+const SLOW_COUNTS: f64 = 0.01;
+const FAST_COUNTS: f64 = 4.0;
 /// Where the fixture leaves the aim, in world units: comfortably inside the
 /// map's `map_half_extent`.
 const TRAVEL_COUNTS: f64 = SLOW as f64 * SLOW_COUNTS + FAST as f64 * FAST_COUNTS;
@@ -396,7 +405,7 @@ fn the_reported_distribution_is_the_one_the_stream_had() {
         stats.gap_sd_ns
     );
 
-    // The finest motion in the stream is the slow stretch's 0.03 counts, which
+    // The finest motion in the stream is the slow stretch's 0.01 counts, which
     // is 0.0015 world units — against a terminal cell of 1.16 world units
     // across and 4.11 down. That ratio is what R14 becomes.
     let finest = stats.finest_count.expect("the stream has motion in it");

@@ -78,16 +78,37 @@ use sim::{Digest, Fx, FxVec2, RULES, digest_bytes};
 /// World units the aim travels per unit of device motion.
 ///
 /// A sensitivity, and the one number in the capture path that is a taste rather
-/// than a fact. At this value a 800-count-per-inch mouse crosses the 220-unit
-/// map in about five and a half inches, and one device count moves the aim by
-/// `0.05` world units — which is the *effective aim resolution* of this client,
-/// and is set by the mouse rather than by the display.
+/// than a fact. At this value a 1600-count-per-inch mouse crosses the 256-unit
+/// map in about an inch, and one device count moves the aim by `0.15` world
+/// units — which is the *effective aim resolution* of this client, and is set by
+/// the mouse rather than by the display.
+///
+/// **It was `0.05` until the first playtest, and what moved it is that the taste
+/// was tasted.** The complaint that came back was that the cursor in the window
+/// moves more slowly than the pointer in every other application, and the
+/// arithmetic is the answer rather than the defence: the drawn aim advances
+/// `WORLD_UNITS_PER_COUNT` times the projection's pixels-per-world-unit, which
+/// at the default window is 3.125, so `0.05` was **a sixth of a pixel per
+/// count** against a desktop pointer's one. Crossing the map cost 3.2 inches of
+/// desk at 1600 CPI. At `0.15` it costs about one, which is roughly what the
+/// same hand spends crossing a screen.
+///
+/// What it costs is stated rather than absorbed: the aim's quantum is three
+/// times coarser, `0.15` world units against a champion radius of `0.5`. That is
+/// affordable because nothing in this client asks a player to be accurate to a
+/// world unit — an attack click resolves to the nearest enemy within six of the
+/// aim, the targeted spell within `RULES.targeted_range`, and a skillshot is a
+/// direction, where `0.15` at a twenty-unit throw is under half a degree.
 ///
 /// It scales the [`Aim`] path only. [`InputTrace`] records the device's own
 /// units, so changing this number does not change a single byte of recorded
 /// telemetry — which is the point of the two paths being separate, and is
-/// asserted in `client/tests/capture.rs`.
-pub const WORLD_UNITS_PER_COUNT: f64 = 0.05;
+/// asserted in `client/tests/capture.rs`. What it *does* change is what a
+/// recorded **aim** means, which is why `docs/SCHEMA.md` §4b records it per
+/// session as `world_units_per_count_e6`: a corpus spanning a change can be
+/// split rather than pooled. Moving it now is free because the corpus is empty;
+/// moving it after the first recording session is not.
+pub const WORLD_UNITS_PER_COUNT: f64 = 0.15;
 
 /// How many samples a trace holds before it starts counting instead of keeping.
 ///

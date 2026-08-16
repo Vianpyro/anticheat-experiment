@@ -99,6 +99,47 @@ impl From<std::io::Error> for NetError {
     }
 }
 
+/// How long a session may say nothing at all before the transport gives up on
+/// it.
+///
+/// Public so that `client::net`'s own constant can be asserted against it: the
+/// negotiated timeout is the minimum of the two, so a generous server and a
+/// default client produce a default connection and the whole of this reasoning
+/// evaporates silently.
+///
+/// **Ten minutes, against quinn's default of thirty seconds, and the default is
+/// what a playtest ran into.** Nothing crosses the wire between a client's
+/// `Ready` and the first tick: the server emits no frame until every occupied
+/// seat is ready, and a client sends an intention only in answer to a frame. So
+/// a lobby is a silence, and the lobby is *designed* to be a long one — it is
+/// where eight other people are waited for and where the device measurement is
+/// taken. At the default every session died thirty seconds into that wait, the
+/// bots reported nothing and exited cleanly because a closed connection is how a
+/// match ends, and the player who finally clicked `Ready` was clicking into a
+/// connection that had been gone for minutes.
+///
+/// A ceiling rather than no ceiling, because a session nobody is behind should
+/// still be reaped: with the client's keep-alive at five seconds a live peer
+/// refreshes this constantly, so what ten minutes actually bounds is how long a
+/// crashed or unplugged client holds a seat.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The transport both ends of this project run under.
+///
+/// One function so that the server's ceiling and the client's cannot drift: a
+/// timeout is negotiated as the **minimum** of the two peers' announcements, so
+/// a generous server and a default client produce a default connection, which is
+/// the failure this constant exists to remove.
+fn transport() -> quinn::TransportConfig {
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_idle_timeout(Some(
+        IDLE_TIMEOUT
+            .try_into()
+            .expect("ten minutes is inside a QUIC idle timeout"),
+    ));
+    transport
+}
+
 /// The server's own clock, in milliseconds since the epoch.
 ///
 /// The only clock in the system that is evidence of anything (`docs/SCOPE.md`,
@@ -263,11 +304,12 @@ impl Listener {
         let certificate = issued.cert.der().to_vec();
         let key = rustls::pki_types::PrivatePkcs8KeyDer::from(issued.signing_key.serialize_der());
 
-        let config = quinn::ServerConfig::with_single_cert(
+        let mut config = quinn::ServerConfig::with_single_cert(
             vec![rustls::pki_types::CertificateDer::from(certificate.clone())],
             key.into(),
         )
         .map_err(|error| NetError::Certificate(error.to_string()))?;
+        config.transport_config(std::sync::Arc::new(transport()));
 
         Ok(Self {
             endpoint: Endpoint::server(config, address)?,

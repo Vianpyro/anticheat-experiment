@@ -411,3 +411,64 @@ fn a_spent_cooldown_reads_differently_from_a_ready_one() {
     );
     assert_eq!(gauges[2].1, Fx::ONE, "an untouched cooldown reads as spent");
 }
+
+/// **The wall the cursor stops against is drawn, and it is drawn where the aim
+/// actually stops.**
+///
+/// `client::input::Aim` clamps to `RULES.map_half_extent` and nothing painted
+/// that boundary until the first playtest reported it as an invisible box inside
+/// the window. The assertion is over both screens because the lobby is the one a
+/// player meets first, and it compares against the *rule constant* rather than
+/// against a number written here — a boundary drawn somewhere other than where
+/// the clamp is would be worse than no boundary at all, because it would be a
+/// wrong explanation of a real wall.
+#[test]
+fn the_boundary_the_aim_stops_at_is_drawn_on_both_screens() {
+    let extent = RULES.map_half_extent;
+    let corners = [
+        FxVec2::new(extent.neg(), extent.neg()),
+        FxVec2::new(extent, extent.neg()),
+        FxVec2::new(extent, extent),
+        FxVec2::new(extent.neg(), extent),
+    ];
+
+    let seat = Seat::Blue0;
+    let view = empty_view(seat);
+    for (what, marks) in [
+        ("the match", compose(&scene(&view, seat))),
+        (
+            "the lobby",
+            client::lobby::compose(&client::lobby::Lobby::new(), FxVec2::ZERO),
+        ),
+    ] {
+        for (index, from) in corners.iter().enumerate() {
+            let to = corners[(index + 1) % corners.len()];
+            assert!(
+                marks.iter().any(|mark| matches!(
+                    *mark,
+                    Mark::Segment { from: a, to: b, .. } if a == *from && b == to
+                )),
+                "{what} does not draw the side of the aim's boundary from {from:?} \
+                 to {to:?}, so the cursor stops there against nothing"
+            );
+        }
+    }
+
+    // …and the whole of it is inside the window at the shape the client opens,
+    // which is what makes "drawn" mean "visible". The projection letterboxes on
+    // the shorter axis, so this is a claim about the *vertical* extent: the
+    // reachable area used to run 33 world units past the bottom edge, and a
+    // cursor that leaves the screen before it stops is the same complaint in the
+    // other direction.
+    let viewport = viewport();
+    for corner in corners {
+        let (x, y) = viewport.pixel(corner);
+        assert!(
+            y >= 0.0 && y <= f64::from(viewport.height),
+            "the aim can reach {corner:?}, which is at pixel ({x}, {y}) in a \
+             {}×{} window: off the screen",
+            viewport.width,
+            viewport.height
+        );
+    }
+}

@@ -17,6 +17,7 @@
 //! moba-client <address> <certificate-hex>              # play
 //! moba-client <address> <certificate-hex> --headless   # idle, print digests
 //! moba-client --probe-input [seconds]                  # measure the capture path
+//! moba-client … --confine on|off                       # keep the pointer in the window
 //!
 //! # and, for a recording session (docs/MILESTONES.md M6):
 //! moba-client <address> <certificate-hex> \
@@ -51,6 +52,24 @@
 //!
 //! Without `--record` the client writes nothing at all. A person playing for fun
 //! is not a recording session, and a flag is the difference.
+//!
+//! # `--confine`, and why it is the one flag `--record` refuses
+//!
+//! The OS pointer is invisible while this client runs — the aim on the screen is
+//! drawn from raw device deltas and has nothing to do with where the platform
+//! thinks the pointer is — so an ungrabbed pointer walks off the window and the
+//! clicks after it go to whatever is underneath. The first playtest priced that:
+//! the lobby's corners could not be reached, `Ready` never left, and the match
+//! never started.
+//!
+//! So the pointer is kept inside the window **unless this session is recording**.
+//! `client::gfx::Screen::hold` carries the measurement that draws the line — an
+//! X11 pointer grab delivers every raw motion event twice, five microseconds
+//! apart, which is a second mode near zero in every inter-arrival distribution a
+//! detector at M8 reads — and `--record --confine on` is refused outright rather
+//! than quietly preferring one of the two. A session that records nothing cannot
+//! reach the corpus at all (`replay::Attested`), which is what makes the other
+//! side of the line free.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -126,6 +145,7 @@ fn main() -> ExitCode {
         "--cpi",
         "--polling",
         "--acceleration",
+        "--confine",
     ]
     .into_iter()
     .filter_map(|name| flag(&arguments, name).map(str::to_owned))
@@ -135,12 +155,41 @@ fn main() -> ExitCode {
         .filter(|argument| !argument.starts_with("--") && !flagged.contains(argument))
         .collect();
 
+    // Whether to keep the OS pointer inside the window. **On unless this session
+    // records**, and the two are refused together rather than silently ordered:
+    // `client::gfx::Screen::hold` carries the measurement — an X11 grab delivers
+    // every raw motion twice — and a corpus quietly calibrated on a platform
+    // artefact is the failure that measurement exists to prevent. A session that
+    // records nothing cannot reach a corpus at all (`replay::Attested`), which is
+    // what makes the other side of the line free.
+    let confine = match flag(&arguments, "--confine") {
+        None => recording.is_none(),
+        Some("on") => true,
+        Some("off") => false,
+        Some(value) => {
+            eprintln!("moba-client: --confine is on or off, not {value}");
+            return ExitCode::from(2);
+        }
+    };
+    if confine && recording.is_some() {
+        eprintln!(
+            "moba-client: --record and --confine on are refused together. A \
+             pointer grab is an X11 platform artefact in every inter-arrival \
+             distribution a detector reads — every raw motion delivered twice, \
+             five microseconds apart — and a corpus calibrated on one is the \
+             failure that measurement exists to prevent (client::gfx, \
+             docs/ARCHITECTURE.md). Record without it, or play without \
+             recording."
+        );
+        return ExitCode::from(2);
+    }
+
     if probing {
         let seconds = positional
             .first()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(10);
-        return finish(client::gfx::probe(seconds));
+        return finish(client::gfx::probe(seconds, confine));
     }
 
     let [address, certificate] = positional.as_slice() else {
@@ -148,7 +197,9 @@ fn main() -> ExitCode {
             "usage: moba-client <address> <certificate-hex> [--headless]\n       \
              moba-client <address> <certificate-hex> --record <dir> --profile \
              <id> --cpi <n> --polling <hz> --acceleration off\n       \
-             moba-client --probe-input [seconds]"
+             moba-client --probe-input [seconds] [--confine on|off]\n\n\
+             --confine keeps the OS pointer inside the window. On by default, \
+             and refused together with --record."
         );
         return ExitCode::from(2);
     };
@@ -192,7 +243,12 @@ fn main() -> ExitCode {
             }
         },
     };
-    finish(client::gfx::play(address, &certificate, recorded.as_ref()))
+    finish(client::gfx::play(
+        address,
+        &certificate,
+        recorded.as_ref(),
+        confine,
+    ))
 }
 
 fn finish(played: Result<(), String>) -> ExitCode {

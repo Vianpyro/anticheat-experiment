@@ -73,14 +73,18 @@ const WINDOW: (u32, u32) = (1280, 800);
 /// anything, so the loop is drawing between views rather than only on them.
 const REDRAW: Duration = Duration::from_micros(16_667);
 
-/// One device count per event, which over 1200 events is 60 world units — well
-/// inside `map_half_extent`, so the aim never reaches its clamp.
+/// A quarter of a device count per event, which over 1200 events is 45 world
+/// units — well inside `map_half_extent`, so the aim never reaches its clamp.
 ///
 /// `docs/RISKS.md` R15's fourth instance was a capture fixture that saturated
 /// this clamp and made an equality true of anything. Nothing here compares two
 /// aims, but the arithmetic is written down so that a later edit to `EVENTS`
-/// has to look at it.
-const COUNTS_PER_EVENT: f64 = 1.0;
+/// has to look at it — and the guard below caught the edit that came from the
+/// other end, `client::input::WORLD_UNITS_PER_COUNT` tripling under a fixture
+/// whose counts had not moved. The number is therefore chosen in **world
+/// units**: it is the travel that has to stay inside the map, and the count is
+/// whatever produces it.
+const COUNTS_PER_EVENT: f64 = 0.25;
 
 /// What the run measured.
 struct Measured {

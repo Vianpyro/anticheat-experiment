@@ -181,12 +181,22 @@ fn main() -> ExitCode {
             playing.push(tokio::spawn(play(address, certificate.clone())));
         }
         let mut failures = 0u32;
+        let mut silent = 0usize;
         for handle in playing {
             match handle.await {
-                Ok(Ok(report)) => println!(
-                    "{:?}: {} intention(s), {} of them a fight, {} view(s), {} frame(s) lost",
-                    report.seat, report.intentions, report.fights, report.views, report.frames_lost
-                ),
+                Ok(Ok(report)) => {
+                    if report.views == 0 {
+                        silent = silent.saturating_add(1);
+                    }
+                    println!(
+                        "{:?}: {} intention(s), {} of them a fight, {} view(s), {} frame(s) lost",
+                        report.seat,
+                        report.intentions,
+                        report.fights,
+                        report.views,
+                        report.frames_lost
+                    );
+                }
                 Ok(Err(error)) => {
                     eprintln!("moba-bots: {error}");
                     failures = failures.saturating_add(1);
@@ -203,6 +213,24 @@ fn main() -> ExitCode {
         // fight, and the number is what makes that visible rather than
         // something an operator has to notice.
         println!("moba-bots: {count} seat(s) filled, {failures} failed");
+        // …and the one failure whose symptom is a page of zeroes. Every bot is
+        // ready the moment it is seated, so a bot that received no view at all
+        // was waiting for somebody else: the server runs no tick until **every**
+        // occupied seat has said `Ready`, and the playable client holds its
+        // `Ready` until the player has crossed the lobby. A reader who is handed
+        // nine lines of `0 view(s)` and no sentence goes looking for a bug in
+        // the bots.
+        if failures == 0 && silent == count {
+            println!(
+                "moba-bots: no bot received a single view, so the match never \
+                 started — the bots were seated and something else was missing. \
+                 The server runs no tick until it has `--players` seats and \
+                 every one of them has said `Ready`, and the playable client \
+                 holds its `Ready` until the player clicks it in the lobby. So \
+                 it is one of two things: fewer clients turned up than \
+                 `--players`, or somebody has not finished the lobby yet."
+            );
+        }
         if failures == 0 {
             ExitCode::SUCCESS
         } else {

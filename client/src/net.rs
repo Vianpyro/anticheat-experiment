@@ -37,6 +37,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use protocol::{ClientFrame, SERVER_FRAME_BYTES, ShardAssembler};
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
@@ -69,6 +70,35 @@ impl From<std::io::Error> for NetError {
         Self::Io(error)
     }
 }
+
+/// How long this client may say nothing before the transport gives up on it.
+///
+/// The mirror of `server::net`'s constant, and it has to be at least as large:
+/// QUIC negotiates the idle timeout as the **minimum** of what the two peers
+/// announce, so a generous server and a default client produce a default
+/// connection.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// How often this client says something when it has nothing to say.
+///
+/// **The lobby is a silence and it is supposed to be a long one.** Nothing
+/// crosses the wire between `Ready` and the first tick — the server emits no
+/// frame until every occupied seat is ready, and this client sends an intention
+/// only in answer to a frame — so at quinn's default of no keep-alive and a
+/// thirty-second idle timeout, every session died half a minute into the wait
+/// the lobby exists to fill. What that looked like from the outside was nothing
+/// at all: the bots reported no views and exited cleanly, because a closed
+/// connection is how a match ends, and the click on `Ready` went into a
+/// connection that had been gone for minutes.
+///
+/// Five seconds, which is a QUIC PING frame — a few dozen bytes, on a link this
+/// project spends 268 kbit/s per player on once a match is running. It is
+/// deliberately not something the game sends: an application-level heartbeat
+/// would be a message whose *existence* an observer counts, and
+/// `docs/ARCHITECTURE.md`'s traffic-shape invariant is about exactly that. The
+/// transport's keep-alive runs only while the connection is otherwise idle,
+/// which is to say only while there is nothing to observe.
+const KEEP_ALIVE: Duration = Duration::from_secs(5);
 
 /// The DER of the certificate a server printed, from the hex it printed it as.
 ///
@@ -114,10 +144,17 @@ impl Wire {
             .map_err(|error| NetError::Certificate(error.to_string()))?;
 
         let mut endpoint = Endpoint::client(SocketAddr::from(([0, 0, 0, 0], 0)))?;
-        endpoint.set_default_client_config(
-            quinn::ClientConfig::with_root_certificates(Arc::new(roots))
-                .map_err(|error| NetError::Certificate(error.to_string()))?,
-        );
+        let mut config = quinn::ClientConfig::with_root_certificates(Arc::new(roots))
+            .map_err(|error| NetError::Certificate(error.to_string()))?;
+        let mut transport = quinn::TransportConfig::default();
+        transport.max_idle_timeout(Some(
+            IDLE_TIMEOUT
+                .try_into()
+                .expect("ten minutes is inside a QUIC idle timeout"),
+        ));
+        transport.keep_alive_interval(Some(KEEP_ALIVE));
+        config.transport_config(Arc::new(transport));
+        endpoint.set_default_client_config(config);
 
         let connection = endpoint
             .connect(address, "localhost")
@@ -201,5 +238,55 @@ impl Wire {
     #[must_use]
     pub const fn losses(&self) -> (u32, u32) {
         (self.shards.incomplete(), self.shards.stale())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IDLE_TIMEOUT, KEEP_ALIVE};
+    use std::time::Duration;
+
+    /// quinn's default idle timeout, which is what a peer this project did not
+    /// configure announces. RFC 9308 §3.2's recommendation, and the number every
+    /// session in the first playtest died at.
+    const QUINN_DEFAULT_IDLE: Duration = Duration::from_secs(30);
+
+    /// **The keep-alive has to be shorter than the shortest timeout it could
+    /// meet, and that is not this project's.**
+    ///
+    /// A QUIC idle timeout is negotiated as the *minimum* of what the two peers
+    /// announce, so a client talking to anything left at the default gets 30
+    /// seconds whatever this crate asks for. A keep-alive above that would keep
+    /// nothing alive, and the failure would look exactly like the one it was
+    /// written to fix.
+    #[test]
+    fn the_keep_alive_is_shorter_than_a_default_peer_would_wait() {
+        assert!(
+            KEEP_ALIVE.saturating_mul(2) < QUINN_DEFAULT_IDLE,
+            "a keep-alive of {KEEP_ALIVE:?} against a default idle timeout of \
+             {QUINN_DEFAULT_IDLE:?} leaves no room for a lost ping"
+        );
+        assert!(
+            KEEP_ALIVE < IDLE_TIMEOUT,
+            "the keep-alive is longer than the timeout it refreshes"
+        );
+    }
+
+    /// **The two ends of this project announce the same ceiling.**
+    ///
+    /// The minimum is what is negotiated, so a server that waits ten minutes and
+    /// a client that waits thirty seconds is a connection that waits thirty
+    /// seconds. `server` is a dev-dependency here, which is the allowance
+    /// `docs/ARCHITECTURE.md` grants for exactly this — a claim about the two
+    /// crates together that neither can state alone.
+    #[test]
+    fn both_ends_announce_the_same_idle_ceiling() {
+        assert_eq!(
+            IDLE_TIMEOUT,
+            server::net::IDLE_TIMEOUT,
+            "the client and the server announce different idle timeouts, so the \
+             connection runs on whichever is smaller and one of the two comments \
+             explaining the number is wrong"
+        );
     }
 }

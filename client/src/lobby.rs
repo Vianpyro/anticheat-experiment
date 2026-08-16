@@ -601,7 +601,12 @@ const fn fx(units: f64) -> sim::Fx {
 /// and a filled disc says that.
 #[must_use]
 pub fn compose(lobby: &Lobby, cursor: FxVec2) -> Vec<Mark> {
-    let mut marks = Vec::with_capacity(8);
+    let mut marks = Vec::with_capacity(12);
+    // The wall the cursor stops against, before anything else. It is the same
+    // boundary the match draws and it matters more here: this is the screen a
+    // player meets first, and a cursor that stops at nothing is where the first
+    // playtest concluded the client was broken.
+    crate::draw::aim_limit(&mut marks);
     let button = |visited: bool| {
         if visited {
             colour::READY

@@ -74,13 +74,21 @@
 //! operator finds out when they file the match rather than when a detector reads
 //! a corpus that cannot answer the question it was recorded for.
 //!
-//! # The pointer is hidden and not grabbed, and that was measured
+//! # The pointer is hidden, and grabbed only when nothing is being recorded
 //!
 //! Cursor visibility is state on a device the process does not own; it is
 //! released when the window is dropped, which winit does on exit, including on
-//! the way out of a panic. The pointer is deliberately **not** grabbed, and
-//! [`Screen::open`] carries the measurement that decided it: an X11 pointer grab
-//! makes the server deliver every raw motion event twice.
+//! the way out of a panic.
+//!
+//! The pointer used to be left ungrabbed in every session, and the reason was
+//! measured rather than argued: an X11 pointer grab makes the server deliver
+//! every raw motion event twice. [`Screen::hold`] carries that measurement, what
+//! the first real playtest found the alternative to cost — a lobby whose corners
+//! cannot be reached, so `Ready` never leaves and the match never starts — and
+//! the line the two are split along. **A recording session is never grabbed; a
+//! session that records nothing is**, because a session that records nothing
+//! cannot reach a corpus (`replay::Attested`) and therefore cannot contaminate
+//! one.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -138,14 +146,54 @@ const fn control_for(key: KeyCode) -> Option<Control> {
     }
 }
 
+/// What the OS pointer is doing while this window has focus.
+///
+/// Three states rather than a `bool`, because which grab a platform *gave* is
+/// not the same question as which one was asked for, and the difference is the
+/// one that matters: `Locked` and `Confined` cost different things, and only one
+/// of them is the mode the measurement below is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pointer {
+    /// Not grabbed. The invisible OS pointer is free to leave the window and a
+    /// click after it has gone is delivered to whatever is under it.
+    ///
+    /// **What a recording session runs under, always** — see [`Screen::hold`].
+    Free,
+    /// Pinned to one point inside the window (`CursorGrabMode::Locked`).
+    ///
+    /// The best of the three and the one asked for first: the pointer cannot
+    /// leave, and it is not the X11 pointer grab the measurement is about.
+    /// Wayland, Windows and macOS.
+    Locked,
+    /// Kept inside the window's area (`CursorGrabMode::Confined`).
+    ///
+    /// The fallback, and on X11 it is the mode that delivers every raw motion
+    /// **twice**. Taken only because the alternative on that platform is a
+    /// pointer that walks off the window.
+    Confined,
+}
+
+impl Pointer {
+    /// How this reads in a log line.
+    const fn tag(self) -> &'static str {
+        match self {
+            Self::Free => "free",
+            Self::Locked => "locked",
+            Self::Confined => "confined",
+        }
+    }
+}
+
 /// The window and its framebuffer.
 struct Screen {
     window: Arc<Window>,
     surface: softbuffer::Surface<Arc<Window>, Arc<Window>>,
+    /// What the platform actually gave when a grab was asked for.
+    pointer: Pointer,
 }
 
 impl Screen {
-    fn open(event_loop: &ActiveEventLoop, title: &str) -> Result<Self, String> {
+    fn open(event_loop: &ActiveEventLoop, title: &str, confine: bool) -> Result<Self, String> {
         let attributes = Window::default_attributes()
             .with_title(title)
             .with_inner_size(winit::dpi::LogicalSize::new(WINDOW.0, WINDOW.1));
@@ -162,27 +210,78 @@ impl Screen {
         // The OS pointer is hidden, because the aim a player sees is drawn by
         // this client from raw deltas and has nothing to do with where the OS
         // thinks the pointer is.
-        //
-        // It is deliberately **not grabbed**, and the reason is measured rather
-        // than argued. `CursorGrabMode::Confined` is the natural thing to write
-        // here — it stops the invisible OS pointer wandering off the window —
-        // and on X11 it makes the server deliver every raw motion event
-        // *twice*: 50 synthesised device motions produced 50
-        // `DeviceEvent::MouseMotion` without the grab and 100 with it, measured
-        // against `winit` alone with none of this crate involved. A duplicate
-        // five microseconds after its original is invisible on screen and is a
-        // second mode near zero in every inter-arrival distribution a detector
-        // at M8 would read, which is exactly the kind of platform artefact a
-        // corpus must not be quietly calibrated on.
-        //
-        // What it costs is that the invisible OS pointer drifts, and a click
-        // after it has left the window goes to whatever is under it. That is a
-        // usability wart on a fixture and it is the cheaper of the two. If a
-        // platform's grab is ever *shown* to deliver one event per motion, it
-        // can come back for that platform — [`crate::input::InputTrace::stats`]
-        // reports the coincident-sample count that would demonstrate it.
         window.set_cursor_visible(false);
-        Ok(Self { window, surface })
+        let pointer = Self::hold(&window, confine);
+        eprintln!(
+            "capture: pointer {}{}",
+            pointer.tag(),
+            match pointer {
+                Pointer::Free => "",
+                Pointer::Locked => " — the OS pointer cannot leave this window",
+                Pointer::Confined =>
+                    " — on X11 this mode delivers every raw motion twice; the \
+                     coincident count printed at exit is what says whether it did",
+            }
+        );
+        Ok(Self {
+            window,
+            surface,
+            pointer,
+        })
+    }
+
+    /// Asks the platform for a grab, and answers what it gave.
+    ///
+    /// # Why a grab is asked for at all now, and why never while recording
+    ///
+    /// This client used to take none, and the reason was measured rather than
+    /// argued: `CursorGrabMode::Confined` on X11 makes the server deliver every
+    /// raw motion event **twice**, five microseconds apart — 50 synthesised
+    /// device motions produced 50 `DeviceEvent::MouseMotion` without the grab
+    /// and 100 with it, measured against `winit` alone with none of this crate
+    /// involved. A duplicate is invisible on screen and is a second mode near
+    /// zero in every inter-arrival distribution a detector at M8 would read,
+    /// which is exactly the platform artefact a corpus must not be quietly
+    /// calibrated on. The cost accepted instead was that the invisible pointer
+    /// drifts and a click after it has left the window goes elsewhere.
+    ///
+    /// **The first playtest priced that cost and it is not small.** The aim
+    /// moves `client::input::WORLD_UNITS_PER_COUNT` per device count and the
+    /// renderer draws about 3.5 pixels per world unit at the default window, so
+    /// one count moves the drawn aim about a sixth of a pixel: reaching a lobby
+    /// element in the corner is a couple of thousand counts, and the invisible
+    /// OS pointer is off the window long before the aim arrives. The clicks then
+    /// land on somebody else's window, `Ready` never leaves, and the server —
+    /// which ticks only when every occupied seat is ready — never starts the
+    /// match. A menu nobody can finish is not a usability wart.
+    ///
+    /// So the grab is asked for **when this client is not recording**, and never
+    /// when it is. That is a line the corpus can hold rather than a compromise:
+    /// a session that records nothing cannot contaminate a distribution, a match
+    /// played without `--record` cannot enter the corpus at all
+    /// (`replay::Attested`), and `crate::gfx::play`'s caller refuses `--record`
+    /// together with an explicit grab rather than silently preferring one.
+    ///
+    /// `Locked` is asked for first and is not the mode the measurement is about:
+    /// it pins the pointer to a point, X11 does not implement it, and the
+    /// platforms that do — Wayland, Windows, macOS — reach it without the X11
+    /// pointer grab. `Confined` is the fallback, which is to say X11 is the
+    /// fallback, and the coincident count reported at exit is what tells an
+    /// operator what it cost on their machine.
+    fn hold(window: &Window, confine: bool) -> Pointer {
+        if !confine {
+            let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
+            return Pointer::Free;
+        }
+        for (mode, held) in [
+            (winit::window::CursorGrabMode::Locked, Pointer::Locked),
+            (winit::window::CursorGrabMode::Confined, Pointer::Confined),
+        ] {
+            if window.set_cursor_grab(mode).is_ok() {
+                return held;
+            }
+        }
+        Pointer::Free
     }
 
     /// Paints one frame.
@@ -223,6 +322,9 @@ struct Session {
     /// into an interval the client is in charge of — and `crate::lobby` is what
     /// that interval is for.
     ready: Option<ClientFrame>,
+    /// Whether to ask the platform to keep the OS pointer inside the window.
+    /// **False for a recording session, always** — see [`Screen::hold`].
+    confine: bool,
     /// The loop, measured against one tick. See this module's header.
     cadence: Cadence,
     /// When the current pass began, or `None` between passes.
@@ -310,6 +412,27 @@ impl Session {
         }
         let (Some(view), Some(prediction)) = (self.headless.view(), self.prediction.as_ref())
         else {
+            // Ready has left and no frame has come back yet. Drawing nothing
+            // here leaves the *lobby's* last frame on the screen, which is a
+            // client that looks frozen at exactly the moment a player is
+            // wondering whether their click did anything — the playtest
+            // report was "nothing happens once I click the white button". So
+            // the map is drawn empty with the cursor on it: the player sees
+            // where they are aiming and that the client is alive, and sees it
+            // without being told anything the server has not sent, because
+            // there is nothing here to tell.
+            let mut marks = Vec::with_capacity(8);
+            crate::draw::aim_limit(&mut marks);
+            marks.push(crate::draw::Mark::Cross {
+                at: self.play.aim(),
+                colour: crate::draw::colour::AIM,
+            });
+            let viewport = self.play.viewport();
+            if let Some(screen) = self.screen.as_mut()
+                && let Err(error) = screen.present(&marks, viewport)
+            {
+                self.outcome = Some(Ending::Failed(error));
+            }
             return;
         };
         let scene = crate::draw::Scene {
@@ -354,7 +477,7 @@ impl ApplicationHandler<Wake> for Session {
         if self.screen.is_some() {
             return;
         }
-        match Screen::open(event_loop, "moba") {
+        match Screen::open(event_loop, "moba", self.confine) {
             Ok(screen) => {
                 let size = screen.window.inner_size();
                 self.play.resized(size.width, size.height);
@@ -370,7 +493,10 @@ impl ApplicationHandler<Wake> for Session {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _wake: Wake) {
         self.advance();
-        if matches!(self.outcome, Some(Ending::Failed(_))) {
+        if self.outcome.is_some() {
+            // Both endings exit here, and `Over` is the one that matters: it is
+            // what the transport being gone looks like from this side, and a
+            // loop that kept running would leave a window nobody can explain.
             event_loop.exit();
             return;
         }
@@ -394,7 +520,10 @@ impl ApplicationHandler<Wake> for Session {
             // ticking yet, because it waits for every occupied seat to be ready,
             // so there are no views arriving to wake the loop. A cursor that
             // only moves when the player clicks is a cursor nobody can aim.
-            if self.play.in_lobby()
+            // …and between `Ready` and the first frame, for the same reason:
+            // nothing else asks for a redraw in that gap either, and a cursor
+            // that stops moving is how a player reads a client as hung.
+            if (self.play.in_lobby() || self.headless.view().is_none())
                 && let Some(screen) = self.screen.as_ref()
             {
                 screen.window.request_redraw();
@@ -418,6 +547,17 @@ impl ApplicationHandler<Wake> for Session {
                 }
             }
             WindowEvent::RedrawRequested => self.redraw(),
+            // A grab does not survive losing focus on every platform, and it
+            // must not: a window that kept the pointer while the player was in
+            // another one would be a window nobody can leave. So it is released
+            // on the way out and asked for again on the way back in, which is
+            // what makes alt-tab an ordinary thing to do rather than a thing to
+            // avoid.
+            WindowEvent::Focused(focused) => {
+                if let Some(screen) = self.screen.as_mut() {
+                    screen.pointer = Screen::hold(&screen.window, self.confine && focused);
+                }
+            }
             WindowEvent::MouseInput { state, button, .. } => {
                 let control = match button {
                     MouseButton::Left => Control::Move,
@@ -486,7 +626,17 @@ impl Session {
         };
         if self.outbox.try_send(ready).is_err() {
             self.outcome.get_or_insert(Ending::Over);
+            return;
         }
+        // Printed, because from here the screen is a map with nothing on it
+        // until the first frame arrives and the player has no other way to tell
+        // "waiting for the other seats" from "this client is broken". The wait
+        // is a real one: the server runs no tick until every occupied seat has
+        // sent this.
+        eprintln!(
+            "ready: waiting for the other seats — the match starts when every \
+             one of them has clicked Ready"
+        );
     }
 
     fn press(&mut self, at_ns: u64, control: Control, down: bool) {
@@ -546,6 +696,7 @@ pub fn play(
     address: std::net::SocketAddr,
     certificate: &[u8],
     recorded: Option<&Recorded>,
+    confine: bool,
 ) -> Result<(), String> {
     // Before the connection rather than after the match, for the reason
     // `moba-server` loads its signing key before playing: a session that plays a
@@ -598,20 +749,30 @@ pub fn play(
                 // only touched after a datagram has been read, so losing this
                 // branch to the other loses nothing.
                 state = wire.recv_state() => {
-                    let Ok(bytes) = state else { return };
+                    let Ok(bytes) = state else { break };
                     if in_tx.send(bytes).is_err() {
-                        return;
+                        break;
                     }
                     let _ = proxy.send_event(Wake);
                 }
                 outbound = out_rx.recv() => {
-                    let Some(frame) = outbound else { return };
+                    let Some(frame) = outbound else { break };
                     if wire.send(&frame).await.is_err() {
-                        return;
+                        break;
                     }
                 }
             }
         }
+        // **The last thing this task does is wake the loop**, and it is the
+        // difference between a client that says the connection ended and one
+        // that hangs. `Session::advance` learns the transport is gone by finding
+        // the channel disconnected, and it is only ever called from
+        // `user_event` — which is woken by this task. Returning without this
+        // line leaves a window drawing its last frame forever, which is what a
+        // playtest reported as "nothing happens": the connection had timed out
+        // during the lobby and there was nothing left to say so.
+        drop(in_tx);
+        let _ = proxy.send_event(Wake);
     });
 
     let mut session = Session {
@@ -624,6 +785,7 @@ pub fn play(
         inbox: in_rx,
         outbox: out_tx,
         ready: Some(ready),
+        confine,
         cadence: Cadence::new(),
         pass_began: None,
         outcome: None,
@@ -689,13 +851,14 @@ pub fn play(
 /// # Errors
 ///
 /// A string, if there is no display to open a window on.
-pub fn probe(seconds: u64) -> Result<(), String> {
+pub fn probe(seconds: u64, confine: bool) -> Result<(), String> {
     let event_loop = EventLoop::new().map_err(|error| error.to_string())?;
     let mut probe = Probe {
         screen: None,
         epoch: Instant::now(),
         play: Play::new(),
         until: seconds,
+        confine,
         failure: None,
     };
     event_loop
@@ -727,6 +890,14 @@ struct Probe {
     play: Play,
     until: u64,
     failure: Option<String>,
+    /// Whether to measure the capture path **under a grab**.
+    ///
+    /// The reopening criterion `Screen::hold` names, made runnable: a platform
+    /// whose grab is shown to deliver one event per motion could take one while
+    /// recording, and this is the instrument that would show it. `moba-client
+    /// --probe-input 10 --confine on` against the same run with `off` is the
+    /// comparison, and the coincident count is the answer.
+    confine: bool,
 }
 
 impl ApplicationHandler for Probe {
@@ -734,7 +905,7 @@ impl ApplicationHandler for Probe {
         if self.screen.is_some() {
             return;
         }
-        match Screen::open(event_loop, "moba — input probe") {
+        match Screen::open(event_loop, "moba — input probe", self.confine) {
             Ok(screen) => {
                 let size = screen.window.inner_size();
                 self.play.resized(size.width, size.height);

@@ -720,6 +720,41 @@ older than the one already applied is discarded and counted. M3's exit criterion
 had to be weakened to match — see `MILESTONES.md` — and that weakening is the
 honest price of removing head-of-line blocking.
 
+#### The lobby is a silence, and the transport had a timeout for silences
+
+**Nothing crosses this wire between `Ready` and the first tick.** The server
+emits no frame until every occupied seat is ready — `Match::tick` returns an
+empty vector before the match starts, which is the cadence invariant holding at
+the one moment it costs something — and a client sends an intention only in
+answer to a frame. So a lobby is a connection with nothing on it, and the lobby
+is *designed* to be a long one: it is where the other eight players are waited
+for and where the device measurement is taken.
+
+quinn's default idle timeout is thirty seconds and its default keep-alive is
+none, and neither end configured a transport, so **every session died half a
+minute into that wait.** What it looked like from outside is the reason it is
+written down here rather than in a commit message: the bots reported
+`0 view(s)` and exited *successfully*, because a closed connection is how a
+match ends and there is nothing in that path to tell the two apart, and the
+player who finally clicked `Ready` was clicking into a connection that had been
+gone for minutes — with the window still showing the lobby, because nothing
+redraws between `Ready` and the first frame either. Three symptoms, one cause,
+and none of them named it.
+
+So both ends announce a ten-minute ceiling and the client sends a keep-alive
+every five seconds, and the two constants are asserted equal in
+`client/src/net.rs`'s own tests, because a QUIC idle timeout is negotiated as
+the **minimum** of the two announcements — a generous server and a default
+client is a default connection, which is this bug with one of the two fixes
+applied. The keep-alive is the transport's PING rather than anything the game
+sends: an application-level heartbeat would be a message whose existence an
+observer counts, which is precisely what the traffic-shape invariant above is
+about, and the transport's runs only while the connection is otherwise idle.
+
+Isolated by mutation rather than argued: leaving the client's transport at
+quinn's defaults reproduces the original log exactly — two bots, forty-five
+seconds of lobby, `0 intention(s), 0 view(s)` each and a clean exit.
+
 #### Handles a recipient is given rather than told
 
 Champion and tower handles are public: a champion's handle *is* its seat and a
@@ -956,6 +991,44 @@ The renderer is letterboxed for the same reason: a world distance is the same
 number of pixels whichever way it points, at any window shape, so the terminal's
 3.55:1 anisotropy cannot come back through the display.
 
+**The clamp is a rule and therefore the drawn area has to be the map**, which is
+the correction the first playtest produced. `client::draw` framed the *triangle*
+— a square of 115 world units about `y = 20`, chosen so a screenshot wastes no
+strip at the bottom — while the aim reaches the whole map, `map_half_extent` of
+128 about the origin. The two disagreed in both directions at once: at the sides
+the cursor stopped against a wall standing in the middle of empty drawn ground,
+and at the bottom it left the window 33 units before it stopped at all. The
+report that came back was "the cursor is confined to an invisible box inside the
+window", which is exactly what it was.
+
+So `HALF_SPAN` is `RULES.map_half_extent`, derived rather than written down, the
+centre is the origin, and `client::draw::aim_limit` paints the boundary on both
+the match and the lobby. The reachable area, the drawn area and the map are now
+one thing — which is the sentence this document already used about the rules,
+that the map is square and the game is a triangle inscribed in it — and
+`client/tests/drawing.rs` asserts both halves: the four sides are drawn at the
+rule constant rather than at a number copied into the renderer, and every corner
+of them falls inside the window the client opens. Restoring the old frame turns
+it red at `pixel (194.8, 914.8) in a 1280×800 window: off the screen`. It costs
+about 11% of the drawn scale, which is the price of the window being the map.
+
+**And the sensitivity moved with it, which is a taste and is recorded as one.**
+`client::input::WORLD_UNITS_PER_COUNT` was `0.05` and is `0.15`. The complaint it
+answers is that the cursor in the window moved more slowly than the pointer in
+every other application, and the arithmetic is the whole of the explanation: the
+drawn aim advances that constant times the projection's pixels per world unit —
+3.125 at the default window — so `0.05` was a sixth of a pixel per device count
+against a desktop pointer's one, and crossing the map cost 3.2 inches of desk at
+1600 CPI against about one now. What it costs is a three times coarser aim
+quantum, `0.15` world units against a champion radius of `0.5`, which is
+affordable because no click in this client has to be accurate to a world unit —
+an attack resolves to the nearest enemy within six of the aim and a skillshot is
+a direction, where `0.15` at a twenty-unit throw is under half a degree. It
+changes no recorded telemetry, because `InputTrace` records the device's own
+units; it changes what a recorded *aim* means, which is why `docs/SCHEMA.md` §4b
+carries `world_units_per_count_e6` per session. Moving it was free because the
+corpus is empty. It will not be free again.
+
 #### A platform artefact the measurement found
 
 `CursorGrabMode::Confined` — the obvious way to stop an invisible OS pointer
@@ -966,22 +1039,44 @@ workspace involved: 50 synthesised device motions produce 50
 
 It is invisible on screen and it is a second mode near zero in every
 inter-arrival distribution, so a corpus recorded under it would have calibrated
-M8's timing detectors on an X11 grab. The client does not take a grab, and the
-cost — the hidden OS pointer drifts, and a click after it has left the window
-goes elsewhere — is the cheaper of the two.
+M8's timing detectors on an X11 grab.
 
 Filtering the duplicates was the tempting fix and is the same mistake in a
 better disguise: a predicate on the contents of the record is what the cell
 crossing was. So the trace keeps everything it is given and
 `InputTrace::stats().coincident` reports whether what it was given was sound.
 
+**The client took no grab at all until the first playtest, and what changed is
+the price of the other side rather than this measurement.** "The hidden OS
+pointer drifts and a click after it has left the window goes elsewhere" was
+recorded as the cheaper cost. It is not a wart: the aim moves 0.05 world units
+per device count and the renderer draws about 3.5 pixels per world unit, so the
+drawn aim advances a sixth of a pixel per count and the invisible pointer leaves
+the window long before the aim reaches a lobby element in the corner. The clicks
+go to another window, `Ready` never leaves, and a server that ticks only when
+every occupied seat is ready never starts the match — which is a menu nobody can
+finish rather than a wart.
+
+So the grab is taken **exactly when the session records nothing**, which is a
+line the corpus can hold rather than a compromise between the two costs: a
+session that records nothing writes no session part, and a match played without
+`--record` cannot enter the corpus at all (invariant 22). `moba-client` refuses
+`--record --confine on` rather than ordering them silently. `Locked` is asked for
+first and is deliberately not the mode measured above — it pins the pointer
+rather than confining it, X11 does not implement it, and the platforms that do
+reach it without the X11 pointer grab — so `Confined` is the fallback and the
+client prints which one it got. `--probe-input` takes `--confine` too, which
+turns the reopening criterion into a measurement anybody can repeat on their own
+platform.
+
 #### Nothing below the client changed
 
 `Input`, `Action`, `ClientFrame`, `ServerFrame`, `State::digest()`, `rules_hash`
 and the recording format are **byte-for-byte what they were**. The aim is still
 an `FxVec2` in Q15.16 and the wire still carries 24 bytes up and 1102 down. What
-changed is the resolution of what reaches that type — a device count is 0.05
-world units where a character cell was 1.158 and 4.111 — and R14's own hedge is
+changed is the resolution of what reaches that type — a device count is 0.15
+world units, and was 0.05 until the first playtest asked for a lighter cursor,
+where a character cell was 1.158 across and 4.111 down — and R14's own hedge is
 why that was free: it said the quantisation lived in one function and everything
 downstream carried full precision, and it did.
 

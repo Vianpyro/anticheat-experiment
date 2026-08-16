@@ -57,15 +57,27 @@ use sim::{
 
 /// The world window the map is drawn to, in world units.
 ///
-/// Wide enough for the whole triangle — bases at `(0, 100)`, `(86.6, -50)` and
-/// `(-86.6, -50)` — with a margin, square so that the two axes have the same
-/// scale, and fixed rather than fitted so a screenshot means the same thing in
-/// every session.
-const HALF_SPAN: f64 = 115.0;
-/// The middle of that window. The triangle's centroid is the origin, but its
-/// bases run from `y = -50` to `y = 100`, so a window centred on the origin
-/// wastes a strip at the bottom.
-const CENTRE_Y: f64 = 20.0;
+/// **It is the map**, `RULES.map_half_extent`, derived rather than written down
+/// so the two cannot drift. Square, so the two axes have the same scale, and
+/// fixed rather than fitted so a screenshot means the same thing in every
+/// session.
+///
+/// It was `115.0` with the centre pushed up to `y = 20`, which framed the
+/// triangle — bases at `(0, 100)`, `(86.6, -50)` and `(-86.6, -50)` — with a
+/// margin and wasted no strip at the bottom. That was a better *photograph* and
+/// a worse *window*, and the first playtest is what said so: `client::input::Aim`
+/// clamps to `RULES.map_half_extent`, so the reachable area is the map and the
+/// drawn area was smaller than it at the bottom and larger at the sides. The
+/// cursor stopped against a wall nothing was drawn at, and disappeared off the
+/// bottom edge before reaching one.
+///
+/// So the drawn area *is* the reachable area, and [`aim_limit`] paints its
+/// boundary. `docs/ARCHITECTURE.md` already says the map is square and the game
+/// is a triangle inscribed in it; this is the renderer agreeing with that
+/// sentence. The cost is that everything is drawn about 11% smaller.
+const HALF_SPAN: f64 = RULES.map_half_extent.to_raw() as f64 / 65536.0;
+/// The middle of that window, which is the middle of the map.
+const CENTRE_Y: f64 = 0.0;
 
 /// Colours, `0x00RRGGBB`, in one table because a collision in it is a lie on the
 /// screen rather than a compile error.
@@ -157,6 +169,41 @@ pub enum Mark {
     },
 }
 
+/// The four sides of the box the aim cannot leave.
+///
+/// `client::input::Aim` clamps to `RULES.map_half_extent`, which is a rule
+/// constant rather than a window — clamping to the window would make a recorded
+/// aim a function of a monitor, which is the whole of what
+/// `client/tests/capture.rs` asserts. The consequence is a wall, and until the
+/// first playtest nothing drew it: the cursor stopped, at a place where the
+/// screen showed empty ground, and the report that came back was "the cursor is
+/// confined to an invisible box inside the window".
+///
+/// A boundary a player can see is a rule. The same boundary unpainted is a bug
+/// report, and it was one. Drawn first, so everything else covers it.
+///
+/// It sits **inside** a window whose shape is not square: the projection
+/// letterboxes on the shorter axis, so a 16:10 window shows more world across
+/// than down and the side walls stand off the left and right edges. That is not
+/// a defect to fix by cropping — a distance has to mean the same number of
+/// pixels whichever way it points.
+pub fn aim_limit(marks: &mut Vec<Mark>) {
+    let extent = RULES.map_half_extent;
+    let corners = [
+        FxVec2::new(extent.neg(), extent.neg()),
+        FxVec2::new(extent, extent.neg()),
+        FxVec2::new(extent, extent),
+        FxVec2::new(extent.neg(), extent),
+    ];
+    for (index, from) in corners.iter().enumerate() {
+        marks.push(Mark::Segment {
+            from: *from,
+            to: corners[index.saturating_add(1) % corners.len()],
+            colour: colour::SPENT,
+        });
+    }
+}
+
 /// Everything the renderer is allowed to know.
 ///
 /// A borrowed view and three values the client owns. There is deliberately no
@@ -178,6 +225,7 @@ pub struct Scene<'a> {
 #[must_use]
 pub fn compose(scene: &Scene<'_>) -> Vec<Mark> {
     let mut marks = Vec::with_capacity(64);
+    aim_limit(&mut marks);
 
     // The three lanes and the three bases, derived from the rules rather than
     // remembered. A lane's position is a constant of the game and therefore
