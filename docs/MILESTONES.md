@@ -22,10 +22,14 @@ than a thing CI can stand in for. The client it will be played on is a window
 rather than a terminal, changed after M4 was merged and before M5 was started
 for the reason `RISKS.md` R14 now records: the terminal's sampling rate followed
 the pointer's speed, so the timing statistics M8 rests on were contaminated at
-the source and not, as R14 claimed, untouched. **M9 is built as far as distribution and is not reached**, for a reason that is
-neither a calendar nor a person: its release pipeline exists and two items of its
-exit criterion — the SBOM and the provenance attestation — do not, which the M9
-section states rather than rounds off. The workspace exists with
+the source and not, as R14 claimed, untouched. **M9 is complete as a pipeline and is not reached**, for a reason that is neither
+a calendar nor a person and that has changed shape once: the SBOM and the
+provenance attestation were the two items of its exit criterion the repository
+did not contain, and they are in it now — so what is left is that **no tag has
+run them**. `v0.1.0` is the precedent for why that distinction is kept: the build
+half stopped being a claim about YAML on the day a tag produced six archives, and
+produced one failure first. The M9 section states this rather than rounding it
+off. The workspace exists with
 its seven crates; the toolchain is pinned; `ci`, `pr-hygiene`, `determinism`,
 `supply-chain`, `cd` and `release` are the workflows, and the last two
 are the first to hold write permissions — job-scoped, with every third-party
@@ -1242,15 +1246,64 @@ Delivered, and it is `.github/workflows/cd.yml`,
 - The server image: distroless, non-root and checked to be non-root, amd64 only,
   on `ghcr.io`.
 
-**Not delivered, and this is what keeps M9 open:**
+**The two missing items are now in the repository, and M9 is still not reached.**
+The reason has changed shape: it is no longer that the pipeline lacks them, it is
+that **no tag has run the pipeline that has them**. `v0.1.0` is what made the
+build half a fact rather than a claim about YAML, and the same standard applies
+here — a workflow that has never run is a workflow nobody has verified, which is
+`RISKS.md` R15 pointed at a release. M9 closes on the first tag that produces both
+artefacts, and not before.
 
-- **The CycloneDX SBOM.** Nothing generates one and nothing attaches one.
-- **The provenance attestation.** Nothing signs anything, which also makes
-  "signed checksums" in the criterion above an overstatement of what a tag
-  produces today: the checksums are published, and they are not signed.
-  `id-token: write` is consequently held by no job in this repository, and that
-  absence is the honest state rather than an oversight — `ENGINEERING.md` says
-  why a permission should not arrive before the thing that uses it.
+What was added, in `.github/workflows/release.yml`:
+
+- **The CycloneDX SBOMs**, generated in the build matrix by `cargo-cyclonedx`
+  pinned to an exact version, one per shipped binary per target — six for six
+  archives — and attached to the draft beside them. `SHA256SUMS` covers twelve
+  files now rather than six.
+- **The provenance attestation**, in an `attest` job holding the only
+  `id-token: write` and `attestations: write` in this repository. It covers the
+  twelve assets by way of the checksum file and the server image by its digest,
+  and it ends by running the verification command the README publishes against
+  the artefacts the same run just produced.
+
+### Four things the criterion did not say, which the work had to decide
+
+**An SBOM has to be about an artefact, and the tool's default is about a crate.**
+Run plainly, `cargo cyclonedx` emits a bill of materials for every workspace
+member with a binary — including `anticheat`, `replay` and `moba-bots`, three
+things no release contains. `--target all` fails the other way, describing a
+union over platforms this project does not ship, which reports a vulnerability in
+a dependency nobody downloaded. `--describe binaries` on the target being built
+is the only one of the three whose answer is a fact about a file somebody can
+hold, and it is why the SBOMs are generated in the matrix rather than once.
+
+**The SBOM turned out to be a second witness to an invariant that had only one.**
+`ci` asserts that no production binary links `cheat-client` by reading the
+dependency graph; the shipped SBOMs assert it from the other end, on the document
+the release publishes about itself, and the workflow fails if either shipped SBOM
+names it. That is `RISKS.md` R7 reaching a release artefact — an SBOM naming the
+attack crate would be this project distributing a usable attacker with a manifest
+saying so — and it is the witness a downloader can check without the repository.
+**It was exercised rather than trusted**: `cheat-client` added as a dependency of
+`client` puts it in the client SBOM and turns the check red.
+
+**"Signed checksums" was an overstatement for two releases and the fix is not a
+signature.** There is no signing key here and there is deliberately none: a key
+this project holds is a key this project can leak, and `RISKS.md` R4 is already
+about the custody problem one signing key creates. What the attestation uses
+instead is the workflow's own OIDC identity, valid for the minutes the job runs,
+with the statement recorded in a public transparency log. So a downloader does
+not learn that somebody vouched for the file; they learn **which workflow, in
+which repository, at which commit, built it** — which is the claim worth making
+and the one a checksum alone cannot support.
+
+**The attest job holds `contents: write`, and that is a real cost rather than a
+rounding error.** A draft release is invisible to a read-scoped token, so the job
+that reads one holds write — which means the job holding the signing identity
+could also edit the release it is describing. That is the price of the
+draft-first shape this workflow chose, it is written on the job rather than left
+for a reader to notice, and the alternative — publish first, attest after — is
+the release-that-is-briefly-a-lie the workflow already refuses.
 
 **`v0.1.0` exists, and the tag half of this is no longer a claim about YAML.**
 One tag produced six archives across the three targets, a `SHA256SUMS` over the
@@ -1287,7 +1340,7 @@ The build half was not touched by that replacement — it is the one that ran.
 | Renovate | M3 | Same |
 | Coverage | M8, unGated | See below |
 | Release automation (`cd`), Docker | M9 | Nothing to release before then |
-| SBOM, provenance attestation | After M9's release pipeline, and M9 stays open until they land | Same reason, one step further: they describe a release, so they cannot precede one. They are the two items of M9's exit criterion the repository does not contain |
+| SBOM, provenance attestation | After M9's release pipeline; M9 stays open until a tag has produced them | Same reason, one step further: they describe a release, so they cannot precede one. They were the two items of M9's exit criterion the repository did not contain; they are in it now, and the milestone waits on a tag rather than on code |
 | Reproducible builds | Never | See `ENGINEERING.md` |
 | `cargo-audit` | Never | `cargo-deny`'s advisories check reads the same RustSec database; running both is one more automation for zero information |
 

@@ -737,6 +737,33 @@ needs it and none at the top of a workflow, so the moment this paragraph
 describes — a moved tag minting releases in this project's name — is now the
 moment being defended against rather than one being predicted.
 
+**And `id-token: write` has arrived too, which is the permission this entry named
+as the one that stops being survivable.** It is held by one job, `attest` in
+`release.yml`, together with `attestations: write`, and by nothing else in this
+repository. Three things about it that are this entry's own rule being applied
+rather than restated:
+
+- **The count of third-party actions went from two to three**, and the third is
+  `actions/attest-build-provenance`. That is a cost, not a free addition: it runs
+  in the job holding the signing identity, so a moved tag there mints provenance
+  in this project's name — the exact sentence above. What limits it is the same
+  thing that limits the other two, a commit SHA with the tag in a trailing
+  comment and Renovate's `helpers:pinGitHubActionDigests` moving it. The
+  alternative considered and refused was `cosign` invoked by hand, which removes
+  an action and adds a Sigstore workflow written here, in the file that holds the
+  write tokens. More code is not less surface.
+- **There is still no secret in this repository**, and the attestation is the
+  reason to say so again rather than assume it. It signs with the workflow's own
+  OIDC token, minted per run and expiring with the job. There is no key in a
+  settings page to steal, and a compromised action gets minutes of an identity
+  rather than a credential that outlives the incident.
+- **`cargo-cyclonedx` is installed with `cargo install --locked --version`, not
+  through an action**, for the reason `cargo-deny` is: a tool that reads a
+  lockfile is not worth another supply-chain surface in the release workflow. It
+  is pinned to an exact version for a second reason that is this entry's subject
+  — a tool that decides what a release *claims about itself* is a tool that must
+  not move under the pipeline.
+
 **The count of third-party actions is still two**, which is the outcome this
 entry would have asked for and not the one it expected. It was briefly three:
 `release-plz/action` arrived with the release pipeline, holding the largest
