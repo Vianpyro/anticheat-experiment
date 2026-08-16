@@ -1,0 +1,399 @@
+name: cd
+
+# The half of the release pipeline that decides, and the only automation in this
+# repository that can cause a publication. `release.yml` is the half that
+# builds; it is triggered from here and does not decide anything.
+#
+# The loop this closes: **code → push → CI → merge the release pull request →
+# published release**, with no command typed between the merge and the artefacts.
+#
+# On every push to `main` this asks one question — *is this push the merge of a
+# release pull request?* — and there are three answers:
+#
+#   `publish`  The subject of the head commit is `chore(release): publish vX.Y.Z`,
+#              which is the title this workflow gave that pull request and, under
+#              squash merge, the commit message it becomes. So the version has
+#              been reviewed and merged by a person: tag it and start `release`.
+#   `propose`  There are releasable commits since the last tag. Compute the next
+#              version from their types, write the changelog, and open or update
+#              **one** pull request. Nothing is published; the pull request is a
+#              proposal, and merging it is the decision.
+#   `none`     Nothing since the last tag changed anything that ships. No pull
+#              request, no run to ignore.
+#
+# **This replaces `release-plz`, and the reason is measured rather than
+# aesthetic.** release-plz decides whether a crate changed by running
+# `cargo package` against the previous tag; on this workspace — internal
+# dependencies by path, and five crate names that belong to strangers on
+# crates.io — that call fails from the second release onward (its issue #2595,
+# open). It produced `v0.1.0` and could not have produced `v0.1.1`. What is here
+# instead is the same model in a shell script that this repository can read,
+# which is `docs/ENGINEERING.md`'s standing rule: an automation that must be
+# explainable in one sentence and removable in one commit.
+#
+# **And it is `docs/RISKS.md` R11 re-decided rather than ignored.** R11 refuses
+# automation you inherit rather than choose, and the version this file replaces
+# deliberately stopped at a pull request so a human would push the tag. That was
+# re-decided at M9: the human act is now the merge instead of the tag, which is
+# the same decision made in a place with a diff attached to it. What R11 still
+# refuses is intact — nothing here writes to `main`, nothing force-pushes a
+# branch somebody is working on, and the only branch this touches is one it owns.
+on:
+  push:
+    branches: [main]
+
+# Elevate per job, never here.
+permissions:
+  contents: read
+
+# One at a time, and never cancelled. Two runs racing would compute the same
+# release branch and force-push over each other; a cancelled one could leave a
+# tag with no release behind it.
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+jobs:
+  # Reads history and decides. It holds no write permission at all, which is the
+  # point of splitting it out: the job that runs the most logic is the job that
+  # can do the least.
+  plan:
+    name: decide
+    if: github.repository_owner == 'Vianpyro'
+    runs-on: ubuntu-latest
+    outputs:
+      action: ${{ steps.plan.outputs.action }}
+      version: ${{ steps.plan.outputs.version }}
+      notes: ${{ steps.plan.outputs.notes }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # The whole history: every question below is asked about the range
+          # between the last `v*` tag and here, and a shallow clone has neither
+          # end of it.
+          fetch-depth: 0
+
+      - name: What this push means
+        id: plan
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # `[workspace.package] version`, which every crate but `sim` inherits.
+          # `sim` owns its own for `docs/RISKS.md` R13 and nothing here touches
+          # it: the `sim-version` job in `determinism.yml` is the only thing that
+          # may demand that number, and a release is not named after it.
+          manifest=$(sed -n 's/^version = "\([0-9][0-9A-Za-z.+-]*\)"$/\1/p' Cargo.toml | head -1)
+          subject=$(git log -1 --format=%s)
+
+          # ---- Answer 1: this is the merge of a release pull request. --------
+          if [[ "$subject" =~ ^chore\(release\):\ publish\ v([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            version="${BASH_REMATCH[1]}"
+            if [[ "$version" != "$manifest" ]]; then
+              echo "::error::the release commit names v$version and the manifest says $manifest."
+              echo "Something edited Cargo.toml after this pull request was opened. Nothing is tagged."
+              exit 1
+            fi
+            echo "action=publish" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "publish: v$version"
+            exit 0
+          fi
+
+          # ---- Answer 2 or 3: what would the next version be? ---------------
+          previous=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          range="HEAD"
+          [[ -n "$previous" ]] && range="$previous..HEAD"
+          echo "range: ${previous:-<no tag>}..HEAD"
+
+          added=(); fixed=(); performance=(); other=()
+          bump=none
+
+          while read -r sha; do
+            [[ -z "$sha" ]] && continue
+
+            # A commit counts only if it touched something that ships. The list
+            # is an exclusion rather than an inclusion so that a crate added
+            # later is releasable without anybody remembering to edit this file
+            # — the failure mode of an allow-list here is a release that
+            # silently omits a new component.
+            releasable=0
+            while read -r file; do
+              [[ -z "$file" ]] && continue
+              case "$file" in
+                docs/*|.github/*|.copilot/*|.vscode/*|.devcontainer/*) ;;
+                CHANGELOG.md|README.md|CONTRIBUTING.md|SECURITY.md|LICENSE) ;;
+                renovate.json|.gitignore|.gitattributes|.dockerignore) ;;
+                *) releasable=1 ;;
+              esac
+            done < <(git show --name-only --format= "$sha")
+            [[ "$releasable" -eq 1 ]] || continue
+
+            s=$(git log -1 --format=%s "$sha")
+            body=$(git log -1 --format=%B "$sha")
+
+            # `<type>(<scope>)!: <subject>`, which is
+            # `.copilot/commit-message-instructions.md` and what `pr-hygiene`
+            # already enforces on every pull request title. That check is what
+            # makes reading them here safe: the vocabulary is validated at the
+            # door rather than guessed at afterwards.
+            type=${s%%:*}; type=${type%%(*}; type=${type%!}
+            scope=""
+            [[ "$s" =~ ^[a-z]+\(([a-z0-9._-]+)\) ]] && scope="${BASH_REMATCH[1]}"
+            text=${s#*: }
+
+            breaking=0
+            if [[ "$s" =~ ^[a-z]+(\([a-z0-9._-]+\))?!: ]] || [[ "$body" == *"BREAKING CHANGE:"* ]]; then
+              breaking=1
+            fi
+
+            # Precedence, highest wins: breaking, then feat, then the types that
+            # change behaviour without adding to it. `docs`, `style`, `test`,
+            # `ci` and `chore` move nothing on their own — a commit of that type
+            # is here only because it also touched a crate, and it goes in the
+            # changelog without deciding the number.
+            if [[ "$breaking" -eq 1 ]]; then
+              bump=breaking
+            elif [[ "$type" == feat && "$bump" != breaking ]]; then
+              bump=minor
+            elif [[ "$bump" == none ]]; then
+              case "$type" in fix|perf|refactor|build|revert) bump=patch ;; esac
+            fi
+
+            entry="- "
+            [[ -n "$scope" ]] && entry+="*($scope)* "
+            [[ "$breaking" -eq 1 ]] && entry+="[**breaking**] "
+            entry+="$text"
+            # `(#18)` as the squash merge leaves it, turned into the link the
+            # existing CHANGELOG.md already uses.
+            entry=$(sed -E "s@\(#([0-9]+)\)\$@([#\1](https://github.com/$REPO/pull/\1))@" <<< "$entry")
+
+            case "$type" in
+              feat) added+=("$entry") ;;
+              fix)  fixed+=("$entry") ;;
+              perf) performance+=("$entry") ;;
+              *)    other+=("$entry") ;;
+            esac
+          done < <(git rev-list "$range")
+
+          if [[ "$bump" == none ]]; then
+            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "none: nothing since ${previous:-the beginning} changes anything that ships"
+            exit 0
+          fi
+
+          # Semver, with the `0.x` rule stated rather than assumed: below 1.0 a
+          # breaking change is a minor bump, because that is what Cargo's
+          # resolver treats as incompatible and there is no major to spend.
+          IFS=. read -r major minor patch <<< "$manifest"
+          case "$major:$bump" in
+            0:breaking|0:minor) minor=$((minor + 1)); patch=0 ;;
+            0:patch)            patch=$((patch + 1)) ;;
+            *:breaking)         major=$((major + 1)); minor=0; patch=0 ;;
+            *:minor)            minor=$((minor + 1)); patch=0 ;;
+            *:patch)            patch=$((patch + 1)) ;;
+          esac
+          version="$major.$minor.$patch"
+
+          section() {
+            [[ "$2" -eq 0 ]] && return 0
+            printf '\n### %s\n\n' "$1"
+          }
+          {
+            section Added "${#added[@]}";             printf '%s\n' "${added[@]+"${added[@]}"}"
+            section Fixed "${#fixed[@]}";             printf '%s\n' "${fixed[@]+"${fixed[@]}"}"
+            section Performance "${#performance[@]}"; printf '%s\n' "${performance[@]+"${performance[@]}"}"
+            section Other "${#other[@]}";             printf '%s\n' "${other[@]+"${other[@]}"}"
+          } | sed '/^$/N;/^\n$/D' > notes.md
+
+          echo "action=propose" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          {
+            echo "notes<<CHANGELOG_SECTION_EOF"
+            cat notes.md
+            echo "CHANGELOG_SECTION_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "propose: $manifest -> $version ($bump)"
+          cat notes.md
+
+  # Opens or updates the one release pull request. Nothing here is published and
+  # nothing here is tagged.
+  propose:
+    name: release pull request
+    needs: plan
+    if: needs.plan.outputs.action == 'propose'
+    runs-on: ubuntu-latest
+    permissions:
+      # `contents: write` to push the release branch — which this job owns and
+      # nothing else writes to — and `pull-requests: write` to open the pull
+      # request from it. A repository setting gates the second one as well:
+      # Settings → Actions → General → "Allow GitHub Actions to create and
+      # approve pull requests". With it off this job pushes its branch and then
+      # fails with a 403 (`docs/ENGINEERING.md`).
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Raise the version, and the lockfile with it
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # The one line every crate but `sim` inherits.
+          sed -i "0,/^version = \"[0-9][0-9A-Za-z.+-]*\"$/s//version = \"$VERSION\"/" Cargo.toml
+          grep -m1 '^version = ' Cargo.toml
+
+          # **And the lockfile, which is not optional.** `Cargo.lock` records the
+          # version of every workspace member, so raising the manifest without
+          # it leaves a tree where `cargo build --locked` fails — which is every
+          # build in this repository, including the one this release is for.
+          # `--workspace` restricts the update to the members; no external
+          # dependency moves in a release pull request, because Renovate owns
+          # that question and has its own review point.
+          cargo update --workspace --offline || cargo update --workspace
+
+          # Proof rather than hope: this resolves the graph against the lockfile
+          # and fails if they disagree, in about a second and without compiling.
+          cargo metadata --locked --format-version 1 > /dev/null
+          echo "ok: the lockfile agrees with the manifests"
+
+      - name: Write the changelog section
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          NOTES: ${{ needs.plan.outputs.notes }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          {
+            printf '## [%s](https://github.com/%s/releases/tag/v%s) - %s\n' \
+              "$VERSION" "$REPO" "$VERSION" "$(date -u +%Y-%m-%d)"
+            printf '%s\n' "$NOTES"
+          } > section.md
+
+          # Inserted after `## [Unreleased]` when that heading exists, before the
+          # first version heading otherwise, appended when the file has neither.
+          # `release.yml` reads this file back with an `awk` that looks for
+          # `## [x.y.z]`, so the shape of this heading is load-bearing.
+          if [[ ! -f CHANGELOG.md ]]; then
+            printf '# Changelog\n\n' > CHANGELOG.md
+          fi
+          awk -v section="$(cat section.md)" '
+            !done && /^## \[Unreleased\]/ { print; print ""; print section; done = 1; next }
+            !done && /^## \[/            { print section; print ""; print; done = 1; next }
+            { print }
+            END { if (!done) { print ""; print section } }
+          ' CHANGELOG.md > CHANGELOG.next && mv CHANGELOG.next CHANGELOG.md
+
+          head -30 CHANGELOG.md
+
+      - name: Open or update the release pull request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          NOTES: ${{ needs.plan.outputs.notes }}
+        run: |
+          set -euo pipefail
+
+          # Three files, named. Anything else in the working tree is a bug in the
+          # steps above, and `git add -A` is how that bug would reach a branch.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # `release/next` rather than `release/v$VERSION`: the branch name has
+          # to satisfy `pr-hygiene`'s pattern, which allows no dots in a slug,
+          # and one long-lived branch is also what makes "one release pull
+          # request at a time" true by construction rather than by cleanup.
+          git checkout -B release/next
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "chore(release): publish v$VERSION"
+          git push --force origin release/next
+
+          # The subject has to start lowercase to satisfy `pr-hygiene`'s title
+          # check, which is why it reads "publish v0.1.1" and not "v0.1.1" — and
+          # `cd.yml`'s own detection of a merged release matches this exact
+          # wording, so the two move together or not at all.
+          title="chore(release): publish v$VERSION"
+          {
+            printf 'Merging this pull request tags `v%s` and publishes the release.\n\n' "$VERSION"
+            printf '%s\n' "$NOTES"
+            printf '\n---\n\nOpened by `cd.yml`. It carries the version bump, the lockfile that\n'
+            printf 'follows from it, and the changelog section `release.yml` will read back\n'
+            printf 'as the release notes.\n'
+          } > body.md
+
+          if [[ -n "$(gh pr list --head release/next --state open --json number --jq '.[].number')" ]]; then
+            gh pr edit release/next --title "$title" --body-file body.md
+            echo "updated the open release pull request"
+          else
+            gh pr create --base main --head release/next --title "$title" --body-file body.md
+          fi
+
+  # The merge happened, so the version exists. Tag it and start `release`.
+  tag:
+    name: tag and start the release
+    needs: plan
+    if: needs.plan.outputs.action == 'publish'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "::error::v$VERSION is already tagged. A version is published once."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          git push origin "v$VERSION"
+          echo "tagged v$VERSION"
+
+          # The release branch has served its purpose. Deleting it here rather
+          # than relying on a repository setting keeps the next run's
+          # force-push from being a force-push over somebody's merged history.
+          git push origin --delete release/next || true
+
+      # **Why a dispatch and not the tag.** `release.yml` triggers on `push` of a
+      # `v*` tag, and that is still how a tag pushed by a person starts it. A tag
+      # pushed by `GITHUB_TOKEN` starts nothing: GitHub does not run workflows on
+      # events its own token created, which is the same rule that leaves the
+      # release pull request without CI. `repository_dispatch` is one of the two
+      # exceptions to that rule, so it is the bridge — and it costs no secret,
+      # which a personal access token would (`docs/RISKS.md` R12).
+      #
+      # `release.yml` therefore reads its tag from the payload or from the ref,
+      # and both paths check out the tag explicitly. One workflow, one behaviour,
+      # two ways in.
+      - name: Start the release build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          printf '{"event_type":"release","client_payload":{"tag":"v%s"}}' "$VERSION" \
+            | gh api "repos/$GITHUB_REPOSITORY/dispatches" --input -
+          echo "dispatched release for v$VERSION"

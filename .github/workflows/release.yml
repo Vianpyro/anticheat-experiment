@@ -23,15 +23,22 @@ name: release
 # `docs/MILESTONES.md` M9 records as not delivered. A write permission granted
 # ahead of the thing that uses it is a permission nobody is watching.
 #
-# What triggers it, and what does not: a tag, pushed by a person.
-# `docs/ENGINEERING.md`'s "what stays manual" table puts "pushing the release
-# tag" first on the list — a human decides that a version exists — and
-# `release-plz.yml` therefore stops at opening a pull request. This file is the
-# other half: it assumes the version already exists and refuses to invent one.
+# What triggers it: a tag that already exists. This file never invents a version
+# — it is handed one, and it refuses it if the commit disagrees.
+#
+# Two ways in, one behaviour. `cd.yml` tags the merge of a release pull request
+# and then sends a `repository_dispatch`, because a tag pushed by `GITHUB_TOKEN`
+# starts no workflow — GitHub does not run workflows on events its own token
+# created, and `repository_dispatch` is one of the two exceptions. A tag pushed
+# by a person starts this the ordinary way. Both resolve the same `TAG` and both
+# check out that tag explicitly rather than trusting the ref they arrived on,
+# which is what makes the two paths the same build.
 on:
   push:
     tags:
       - "v*"
+  repository_dispatch:
+    types: [release]
 
 # Elevate per job, never here.
 permissions:
@@ -41,11 +48,14 @@ permissions:
 # superseded check is worthless; a superseded release is a half-uploaded set of
 # assets.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event.client_payload.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  # The tag this run is about, whichever door it came in by. Every job reads it
+  # from here and every checkout pins itself to it.
+  TAG: ${{ github.event.client_payload.tag || github.ref_name }}
 
 jobs:
   # The draft exists before anything is built, for two reasons. It is where the
@@ -64,20 +74,25 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # The tag, explicitly. A `repository_dispatch` run arrives on
+          # `main`, so trusting the default ref would build whatever has
+          # landed since the merge rather than what was tagged.
+          ref: ${{ github.event.client_payload.tag || github.ref_name }}
 
       # The tag says a version exists; the manifest says which version this
-      # commit *is*. They disagree exactly when a human tagged before merging
-      # the release pull request `release-plz` opened, which is the one mistake
-      # this pipeline's manual step makes possible — so it is checked here,
-      # before an asset exists, rather than discovered by somebody downloading
-      # `moba-server-v0.2.0` and finding 0.1.0 inside it.
+      # commit *is*. On the automatic path `cd.yml` has already checked they
+      # agree, and this is deliberately not trusting it: a tag pushed by hand
+      # comes in the other door, and tagging before the release pull request is
+      # merged is the mistake that door makes possible. It cost one failed run
+      # on `v0.1.0` and no artefacts, which is what this check is for.
       - name: The tag and the workspace version must agree
         id: version
         shell: bash
         run: |
           set -euo pipefail
 
-          tag="${GITHUB_REF_NAME}"
+          tag="$TAG"
           version="${tag#v}"
 
           # `[workspace.package] version`, which every crate but `sim` inherits
@@ -91,8 +106,7 @@ jobs:
           fi
           if [[ "$version" != "$manifest" ]]; then
             echo "::error::tag $tag names version $version but this commit's workspace version is $manifest."
-            echo "The release pull request that raises the version has to be merged before its tag is pushed"
-            echo "(docs/ENGINEERING.md, 'what stays manual')."
+            echo "The release pull request that raises the version has to be merged before its tag exists."
             exit 1
           fi
 
@@ -100,13 +114,13 @@ jobs:
           echo "ok: $tag builds workspace version $manifest"
 
       # The narrative of a release is generated from conventional commits by
-      # `release-plz` and lives in `CHANGELOG.md`, which was merged with the
-      # release pull request. This lifts out the one section this tag is about.
-      # It is deliberately fatal when the section is missing: a release whose
-      # notes are "see the commits" is the failure `docs/ENGINEERING.md` names
-      # when it keeps the release-notes headline manual — the changelog is the
-      # part a tool does know, and if the tool did not produce it, something
-      # upstream went wrong and this is where it should stop.
+      # `cd.yml` and lives in `CHANGELOG.md`, which was merged with the release
+      # pull request. This lifts out the one section this tag is about. It is
+      # deliberately fatal when the section is missing: a release whose notes are
+      # "see the commits" is a release nobody can read, and a missing section
+      # means the tag and the changelog disagree about what is being published —
+      # which is the same class of mistake as the version check above, and it
+      # stops here for the same reason.
       - name: The changelog section for this tag
         shell: bash
         env:
@@ -115,13 +129,13 @@ jobs:
           set -euo pipefail
 
           if [[ ! -f CHANGELOG.md ]]; then
-            echo "::error::CHANGELOG.md does not exist; release-plz's pull request is what creates it"
+            echo "::error::CHANGELOG.md does not exist; cd.yml's release pull request is what creates it"
             exit 1
           fi
 
-          # Keep-a-changelog, which is what release-plz writes: `## [0.1.0]`
-          # possibly followed by a link and a date. Everything up to the next
-          # second-level heading is this version's section.
+          # Keep-a-changelog, which is the shape `cd.yml` writes: `## [0.1.0]`
+          # followed by a link and a date. Everything up to the next second-level
+          # heading is this version's section.
           awk -v v="$VERSION" '
             $0 ~ "^## \\[" v "\\]" { inside = 1; next }
             inside && /^## / { exit }
@@ -139,7 +153,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event.client_payload.tag || github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -184,6 +198,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # The tag, explicitly. A `repository_dispatch` run arrives on
+          # `main`, so trusting the default ref would build whatever has
+          # landed since the merge rather than what was tagged.
+          ref: ${{ github.event.client_payload.tag || github.ref_name }}
 
       # `--locked`, which is the whole point of committing `Cargo.lock`: the
       # binary somebody downloads is built from the dependency graph `ci`,
@@ -255,7 +274,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event.client_payload.tag || github.ref_name }}
           VERSION: ${{ needs.draft.outputs.version }}
           TARGET: ${{ matrix.target }}
           EXT: ${{ matrix.archive }}
@@ -283,7 +302,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event.client_payload.tag || github.ref_name }}
           VERSION: ${{ needs.draft.outputs.version }}
         run: |
           set -euo pipefail
@@ -317,7 +336,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event.client_payload.tag || github.ref_name }}
         run: gh release upload "$TAG" SHA256SUMS --clobber
 
   # The server image. `docs/ENGINEERING.md`: distroless base, non-root, and
@@ -345,6 +364,11 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # The tag, explicitly. A `repository_dispatch` run arrives on
+          # `main`, so trusting the default ref would build whatever has
+          # landed since the merge rather than what was tagged.
+          ref: ${{ github.event.client_payload.tag || github.ref_name }}
 
       - name: Build the server
         run: cargo build --release --locked --target x86_64-unknown-linux-gnu -p server
@@ -370,7 +394,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event.client_payload.tag || github.ref_name }}
           # Through the environment rather than interpolated into the script, so
           # that the shell never sees a value the event payload controls.
           ACTOR: ${{ github.actor }}
@@ -418,5 +442,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event.client_payload.tag || github.ref_name }}
         run: gh release edit "$TAG" --draft=false
