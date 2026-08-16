@@ -38,6 +38,19 @@
 *.telemetry
 *.telemetry-part
 
+# The SBOMs, which arrive at M9 and are the one shape here that is ignored for
+# being *derived* rather than for being personal or secret.
+#
+# `cargo cyclonedx` writes them into each crate's own directory, so running it
+# in a checkout leaves five of them scattered across the workspace and only two
+# are ever shipped. A committed one would be a bill of materials for whatever
+# lockfile happened to be current on somebody's machine, sitting next to a
+# release that generated its own — which is `docs/RISKS.md` R13's problem in a
+# different file: two versions of the same claim and nothing saying which is the
+# build's. The release workflow generates them per target and attaches them, and
+# that is the only copy that describes anything.
+*.cdx.json
+
 # The replay signing key, which arrives at M5.
 #
 # A different kind of secret from the corpus and refused for a different reason:

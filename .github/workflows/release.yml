@@ -18,10 +18,19 @@ name: release
 #      entry reaching a released binary is precisely the blast radius R12
 #      describes, and a release compiles from scratch once per tag.
 #
-# `id-token: write` is **not** declared anywhere in this file, and its absence is
-# deliberate: the only thing that needs it is the provenance attestation, which
-# `docs/MILESTONES.md` M9 records as not delivered. A write permission granted
-# ahead of the thing that uses it is a permission nobody is watching.
+# `id-token: write` and `attestations: write` are declared on exactly one job,
+# `attest`, and on no other. They arrived with the thing that uses them rather
+# than before it, which is what `docs/ENGINEERING.md` asks and what the previous
+# version of this comment was holding the line on. That job compiles nothing and
+# its whole body is one action over a list of files somebody else produced. It
+# does also hold `contents: write`, because a draft release is invisible to a
+# read-scoped token, and the comment on the job says so rather than leaving a
+# reader to find it.
+#
+# Five jobs became six. The three items M9's exit criterion was missing — an
+# SBOM, a provenance attestation, and checksums that are actually signed by
+# something — are the `Generate the SBOMs` step in the build matrix and the
+# `attest` job at the bottom.
 #
 # What triggers it: a tag that already exists. This file never invents a version
 # — it is handed one, and it refuses it if the commit disagrees.
@@ -214,6 +223,80 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }} -p client -p server
 
+      # `cargo install` rather than an action, for the reason `docs/RISKS.md`
+      # R12 gives about `cargo-deny` in `supply-chain`: a tool that reads a
+      # lockfile is not worth another supply-chain surface in the workflow that
+      # holds the write tokens. Pinned to an exact version for the same reason
+      # the actions are pinned by SHA — a tool that decides what a release
+      # claims about itself is not a tool that should move under the pipeline.
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked --version 0.5.9
+
+      # One SBOM per shipped binary per target, which is six for six archives.
+      # The alternatives were both worse and both were tried: the tool's default
+      # describes a *crate*, which on this workspace emits a bill of materials
+      # for `anticheat`, `replay` and `moba-bots` as well — three things no
+      # release contains — and `--target all` describes a union over platforms
+      # this project does not ship, which is a superset that reports a
+      # vulnerability in a dependency nobody downloaded. `--describe binaries`
+      # on the target being built is the only one of the three whose answer is a
+      # fact about an artefact somebody can hold.
+      #
+      # `--all` rather than `--top-level`, because the question an SBOM is
+      # consumed to answer is whether a transitively vendored crate is in the
+      # binary, and a top-level list cannot answer it.
+      - name: Generate the SBOMs
+        shell: bash
+        env:
+          VERSION: ${{ needs.draft.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          cargo cyclonedx \
+            --format json \
+            --spec-version 1.5 \
+            --all \
+            --describe binaries \
+            --target "$TARGET"
+
+          # Named, moved and checked one at a time. The tool writes into each
+          # crate's own directory and writes more files than a release ships,
+          # so collecting them with a glob would attach a bill of materials for
+          # a binary this workflow never built — the same rule the packaging
+          # steps below follow, one step earlier.
+          mv "client/moba-client_bin.cdx.json" "moba-client-v$VERSION-$TARGET.cdx.json"
+          mv "server/moba-server_bin.cdx.json" "moba-server-v$VERSION-$TARGET.cdx.json"
+
+          # `cargo cyclonedx` has no `--locked`, and every other cargo
+          # invocation in this workflow does. If it ever re-resolved the graph,
+          # the SBOM would describe a set of crates the binary beside it was not
+          # built from — a bill of materials that is wrong in the direction
+          # nobody checks, because it is the document people read *instead of*
+          # opening the binary. There is no flag to pass, so the check is
+          # whether the lockfile moved.
+          if ! git diff --quiet -- Cargo.lock; then
+            echo "::error::cargo-cyclonedx re-resolved the dependency graph; the SBOM does not describe the build"
+            git diff --stat -- Cargo.lock
+            exit 1
+          fi
+
+          # `ci` asserts that no production binary links `cheat-client`, by
+          # reading the dependency graph. This asserts it from the other end, on
+          # the document the release publishes about itself: an SBOM naming the
+          # attack crate would be this project distributing a usable attacker
+          # with a manifest saying so, which `docs/RISKS.md` R7 refuses. Two
+          # independent witnesses to one invariant, and this is the one a
+          # downloader can check without the repository.
+          for crate in client server; do
+            sbom="moba-$crate-v$VERSION-$TARGET.cdx.json"
+            if grep -q '"name": "cheat-client"' "$sbom"; then
+              echo "::error::$sbom names cheat-client; docs/RISKS.md R7"
+              exit 1
+            fi
+            echo "ok: $sbom, $(grep -c '"purl":' "$sbom") components, no cheat-client"
+          done
+
       # The archives, and this is where `docs/RISKS.md` R3 and R4 reach a
       # release workflow. Every file that goes into an archive is named on the
       # line that copies it. Nothing here globs a directory, walks the working
@@ -283,6 +366,8 @@ jobs:
           gh release upload "$TAG" \
             "moba-client-v$VERSION-$TARGET.$EXT" \
             "moba-server-v$VERSION-$TARGET.$EXT" \
+            "moba-client-v$VERSION-$TARGET.cdx.json" \
+            "moba-server-v$VERSION-$TARGET.cdx.json" \
             --clobber
 
   # SHA-256 for every artefact, in one file, computed from an enumerated list
@@ -290,6 +375,11 @@ jobs:
   # two jobs: it is the R3/R4 rule again — nothing is checksummed because it was
   # lying around — and it is a completeness check, because a release missing the
   # Windows server binary is otherwise a release that looks finished.
+  #
+  # It covers the SBOMs as well as the archives, and that is not symmetry for
+  # its own sake: an SBOM is the document a downloader consults instead of
+  # opening the binary, so an SBOM nobody can check is a place to lie about what
+  # a binary contains. Twelve files, one list.
   checksums:
     name: checksums
     needs: [draft, build]
@@ -297,7 +387,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Collect the six archives, by name
+      - name: Collect the twelve assets, by name
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -315,6 +405,12 @@ jobs:
             "moba-server-v$VERSION-x86_64-pc-windows-msvc.zip"
             "moba-client-v$VERSION-aarch64-apple-darwin.tar.gz"
             "moba-server-v$VERSION-aarch64-apple-darwin.tar.gz"
+            "moba-client-v$VERSION-x86_64-unknown-linux-gnu.cdx.json"
+            "moba-server-v$VERSION-x86_64-unknown-linux-gnu.cdx.json"
+            "moba-client-v$VERSION-x86_64-pc-windows-msvc.cdx.json"
+            "moba-server-v$VERSION-x86_64-pc-windows-msvc.cdx.json"
+            "moba-client-v$VERSION-aarch64-apple-darwin.cdx.json"
+            "moba-server-v$VERSION-aarch64-apple-darwin.cdx.json"
           )
 
           missing=0
@@ -362,6 +458,13 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      # The image's own digest, which is what an attestation over a container
+      # has to be about: a tag is a mutable pointer at a registry exactly as it
+      # is at a git forge (`docs/RISKS.md` R12), so attesting `:v0.2.0` would
+      # attest a name rather than a thing.
+      image: ${{ steps.push.outputs.image }}
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -391,6 +494,7 @@ jobs:
       # `docs/RISKS.md` R12 counts third-party actions. Three actions avoided in
       # the workflow that holds the write tokens is the trade R12 asks for.
       - name: Publish to ghcr.io
+        id: push
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -425,14 +529,164 @@ jobs:
           docker push "$image:$TAG"
           docker push "$image:latest"
 
-          echo "digest: $(docker image inspect --format '{{index .RepoDigests 0}}' "$image:$TAG" 2>/dev/null || echo unknown)"
+          # Read back rather than parsed out of `docker push`'s progress
+          # output, and required rather than defaulted to `unknown`: this
+          # digest is the subject of an attestation now, and a job that shrugged
+          # here would hand `attest` a name to sign instead of an image.
+          repo_digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image:$TAG")
+          digest="${repo_digest##*@}"
+          if [[ "$digest" != sha256:* ]]; then
+            echo "::error::the registry returned no digest for $image:$TAG"
+            exit 1
+          fi
+
+          echo "digest: $repo_digest"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+  # Provenance, which is the second of the two items `docs/MILESTONES.md` M9
+  # recorded as missing and the one that changes what a downloader can know.
+  #
+  # A checksum says the file you have is the file the release names. It says
+  # nothing about where that file came from, and it is signed by nothing — which
+  # is why the criterion's phrase "signed checksums" was an overstatement for
+  # two releases and is recorded as one. What an attestation adds is the other
+  # half: this artefact was built by this workflow, from this commit, in this
+  # repository, and the statement is signed by a Sigstore identity nobody in
+  # this project holds a key for. There is no key to leak because there is no
+  # key — the identity is the workflow's own OIDC token, valid for the minutes
+  # this job runs.
+  #
+  # `actions/attest-build-provenance` is the **third** third-party action in
+  # this repository, which is a number `docs/RISKS.md` R12 tracks deliberately.
+  # The trade taken: it is published by the same `actions` organisation as
+  # `checkout`, it is SHA-pinned like the other two, and the alternative is
+  # `cosign` plus a Sigstore workflow written by hand in the file that holds the
+  # write tokens — which is more code, not less surface. What is *not* traded is
+  # the permission: `id-token: write` and `attestations: write` live here and
+  # nowhere else in this repository.
+  #
+  # `contents: write` is here for a reason worth stating rather than absorbing:
+  # a **draft** release is invisible to a read-scoped token, so a job that reads
+  # one is a job that holds write. That is the price of the draft-first shape
+  # this workflow chose at the top, and it is a real cost — this job cannot
+  # build anything, but it could edit the release it is describing.
+  attest:
+    name: provenance
+    needs: [draft, checksums, container]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      # One file, not twelve. `subject-checksums` takes exactly the
+      # `sha256sum` format the previous job already produced from an enumerated
+      # list, so the set of things attested is the set of things checksummed, by
+      # construction rather than by two lists agreeing. Downloading the twelve
+      # binaries again to hash them here would be a second enumeration, and two
+      # enumerations are one more than can be kept in step.
+      - name: The checksum file, which names what is attested
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.client_payload.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --pattern SHA256SUMS
+          # Twelve archives and SBOMs, and a run that attested a truncated list
+          # would look exactly like a run that attested a full one.
+          lines=$(wc -l < SHA256SUMS)
+          if [[ "$lines" -ne 12 ]]; then
+            echo "::error::SHA256SUMS names $lines assets; the release ships 12"
+            exit 1
+          fi
+          cat SHA256SUMS
+
+      - name: Attest the archives and the SBOMs
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: SHA256SUMS
+
+      # The image is attested by digest and separately, because a container is
+      # not a file on a release and `ghcr.io` is not this repository. Same
+      # identity, same run, different subject.
+      #
+      # `push-to-registry` is deliberately off. It would also store the
+      # attestation next to the image on `ghcr.io`, which is a genuine
+      # convenience for tooling that only speaks OCI — and it requires
+      # `packages: write` on this job, which is the one job in this repository
+      # holding a signing identity. Widening the signer to gain a second copy of
+      # a statement GitHub already serves is the wrong side of that trade;
+      # `gh attestation verify oci://…` resolves the digest at the registry and
+      # reads the attestation from the API, which is the command the README
+      # publishes and the one the step below runs.
+      - name: Attest the server image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ needs.container.outputs.image }}
+          subject-digest: ${{ needs.container.outputs.digest }}
+
+      # An attestation nobody can check is a badge. This runs the command the
+      # README tells a downloader to run, against the artefacts this run just
+      # produced, on every release — so the day the verification stops working
+      # is a red release rather than a bug report from somebody who trusted the
+      # badge. It is `docs/RISKS.md` R15 pointed at a supply-chain claim: a
+      # guard that has never rejected anything is a guard nobody has verified.
+      - name: Verify what was just attested
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.client_payload.tag || github.ref_name }}
+          IMAGE: ${{ needs.container.outputs.image }}
+          DIGEST: ${{ needs.container.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          # One asset, downloaded and verified as a file rather than as a
+          # digest, so that the check exercises the path a person actually
+          # takes: download, then ask whether this is what it claims to be.
+          asset="moba-server-v${{ needs.draft.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz"
+          gh release download "$TAG" --pattern "$asset"
+
+          # `--signer-workflow` is the part that makes this a check rather than
+          # a formality. Without it the command answers "something in this
+          # repository built this", which a pull-request workflow also
+          # satisfies; with it, the answer is that the release pipeline did.
+          # The README publishes the flag for the same reason.
+          #
+          # Retried, because an attestation is written to a transparency log and
+          # an index a few seconds behind the job that created it. A verification
+          # that failed on the first attempt would be a red release describing a
+          # propagation delay rather than a broken claim, and the failure this
+          # step exists to catch does not go away with a second look.
+          verify() {
+            for attempt in 1 2 3 4 5; do
+              if gh attestation verify "$1" \
+                   --repo "$GITHUB_REPOSITORY" \
+                   --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"; then
+                return 0
+              fi
+              echo "attempt $attempt did not verify $1 yet; waiting"
+              sleep 15
+            done
+            echo "::error::$1 does not verify against this workflow's attestation"
+            return 1
+          }
+
+          verify "$asset"
+          verify "oci://$IMAGE@$DIGEST"
+
+          echo "ok: the archive and the image both verify against this workflow"
 
   # Everything succeeded, so the draft becomes a release. This is the last step
   # rather than the first because the alternative — publish, then attach — is a
   # release that is briefly a lie.
   publish:
     name: publish
-    needs: [draft, build, checksums, container]
+    needs: [draft, build, checksums, container, attest]
     runs-on: ubuntu-latest
     permissions:
       contents: write

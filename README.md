@@ -60,6 +60,38 @@ determinism fixtures additionally run on aarch64 macOS, under `--release`:
 cargo test -p sim --release --locked --test determinism -- --nocapture
 ```
 
+## Checking a release you downloaded
+
+Every asset on a release is covered by a build provenance attestation. It is not
+a signature by anybody here — this project holds no signing key for its releases
+and deliberately does not — so what it establishes is narrower and more useful:
+**which workflow, in which repository, at which commit, built this file.**
+
+```sh
+gh attestation verify moba-server-v0.2.0-x86_64-unknown-linux-gnu.tar.gz \
+  --repo Vianpyro/moba \
+  --signer-workflow Vianpyro/moba/.github/workflows/release.yml
+```
+
+The `--signer-workflow` flag is the part worth not dropping. Without it the
+command answers "something in this repository built it", which a pull-request
+workflow also satisfies; with it, the answer is that the release pipeline did.
+
+The server image is verified the same way, by digest rather than by tag, because
+a registry tag is a mutable pointer:
+
+```sh
+gh attestation verify oci://ghcr.io/vianpyro/moba-server@sha256:… \
+  --repo Vianpyro/moba \
+  --signer-workflow Vianpyro/moba/.github/workflows/release.yml
+```
+
+Each release also carries a CycloneDX SBOM per binary per platform
+(`moba-<crate>-v<version>-<target>.cdx.json`) listing every crate linked into
+that binary, and a `SHA256SUMS` over all twelve files. The SBOMs are covered by
+the attestation as well, since an SBOM nobody can check is a place to be wrong
+about what a binary contains.
+
 ## Playing it before nine people are free
 
 A match is nine seats. `moba-bots` fills the ones nobody is sitting in, so that
