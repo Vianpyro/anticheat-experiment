@@ -12,6 +12,17 @@ version.workspace = true
 name = "moba-client"
 path = "src/main.rs"
 
+# The playtest tool: it fills the seats nobody is sitting in so that one or two
+# people can start a nine-seat match. It is in *this* crate and not in
+# `cheat-client` deliberately — `docs/ARCHITECTURE.md` makes that crate the
+# machine this project assumes is compromised, `ci` asserts that no production
+# binary links it, and `docs/RISKS.md` R7 refuses to hand anybody a usable
+# attacker. `client::bot` reimplements the decision logic rather than linking
+# it, which costs eighty lines and keeps all three of those true.
+[[bin]]
+name = "moba-bots"
+path = "src/bin/bots.rs"
+
 [dependencies]
 protocol = { path = "../protocol" }
 quinn = { version = "0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }

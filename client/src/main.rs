@@ -56,8 +56,9 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use client::Headless;
 use client::health::{Declared, Recorded};
-use client::{Headless, net::Wire};
+use client::net::{Wire, certificate_from_hex};
 use sim::{Action, Tick};
 
 /// The value of `--name`, if it was given.
@@ -155,7 +156,7 @@ fn main() -> ExitCode {
         eprintln!("moba-client: {address} is not an address");
         return ExitCode::from(2);
     };
-    let Some(certificate) = unhex(certificate) else {
+    let Some(certificate) = certificate_from_hex(certificate) else {
         eprintln!("moba-client: the certificate is not hex");
         return ExitCode::from(2);
     };
@@ -252,15 +253,5 @@ fn hex(digest: sim::Digest) -> String {
         .as_bytes()
         .iter()
         .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-fn unhex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(text.get(at..at + 2)?, 16).ok())
         .collect()
 }

@@ -96,6 +96,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::ExitCode;
 
+use replay::attest::Attested;
 use replay::calibration::{DeviceProfileId, Profile, rate_seats};
 use replay::consent::{ConsentVersion, Permissions, Purpose};
 use replay::corpus::{ConsentRecord, Corpus};
@@ -676,7 +677,21 @@ fn store(
         },
     };
 
-    match corpus.store(&replay, &session, telemetry.as_ref()) {
+    // The gate, before anything is written and before anything is printed. A
+    // match one seat of which was played by a program is refused here by name,
+    // because `Corpus::store` takes a value only this can build — see
+    // `replay/src/attest.rs`. The playtest bot is what makes that reachable: it
+    // fills a seat over the protocol and writes no session part, so an operator
+    // who files the evening it played gets this and not a stored match.
+    let attested = match Attested::of(&replay, &session, telemetry.as_ref()) {
+        Ok(attested) => attested,
+        Err(error) => {
+            eprintln!("replay: refused: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match corpus.store(&attested) {
         Ok(()) => {
             println!(
                 "replay: stored {} — {} seat(s) occupied, {}, supervision {}, {}",

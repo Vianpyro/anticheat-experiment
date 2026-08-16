@@ -19,6 +19,7 @@
 
 use std::path::{Path, PathBuf};
 
+use replay::attest::Attested;
 use replay::calibration::{CalibrationState, DeviceProfileId, Observations, SeatCalibration};
 use replay::consent::{ConsentVersion, Permissions, Purpose};
 use replay::corpus::{ConsentRecord, Corpus};
@@ -163,6 +164,18 @@ fn a_recording() -> Recording {
         inputs,
     }
 }
+/// The one way through [`Attested::of`], for tests whose subject is a different
+/// refusal.
+///
+/// `Corpus::store` takes a value only `Attested::of` builds, and what that
+/// constructor refuses is a seat the replay's input log shows playing that no
+/// session record accounts for — a playtest bot, a headless client, a script
+/// (`replay/src/attest.rs`). Every fixture here logs no seat the session record
+/// leaves empty, so the gate opens; `client/tests/playtest_bots.rs` is where it
+/// does not.
+fn attested<'a>(replay: &'a Replay, session: &'a SessionRecord) -> Attested<'a> {
+    Attested::of(replay, session, None).expect("every seat that played is a person")
+}
 
 fn a_replay(match_id: &str, participants: &[&str]) -> Replay {
     let mut slots: [Option<Pseudonym>; PLAYER_COUNT] = [const { None }; PLAYER_COUNT];
@@ -213,7 +226,7 @@ fn populated(scratch: &Scratch, permissions: &[(&str, &[Purpose])]) -> Corpus {
         ("2026-09-11-a", ["bistre", "celadon"]),
     ] {
         corpus
-            .store(&a_replay(id, &who), &a_session(id, who.len()), None)
+            .store(&attested(&a_replay(id, &who), &a_session(id, who.len())))
             .expect("store");
     }
     corpus
@@ -292,11 +305,10 @@ fn a_record_from_the_previous_consent_regime_does_not_decode() {
     )
     .expect("write");
     let refused = corpus
-        .store(
+        .store(&attested(
             &a_replay("2026-09-20-a", &["alizarin", "bistre"]),
             &a_session("2026-09-20-a", 2),
-            None,
-        )
+        ))
         .expect_err("a match with a previous-regime consent record was stored");
     assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
     assert!(
@@ -325,11 +337,10 @@ fn a_match_with_a_participant_under_eighteen_is_refused() {
         .expect("enrol");
 
     let refused = corpus
-        .store(
+        .store(&attested(
             &a_replay("2026-09-03-a", &["alizarin", "bistre"]),
             &a_session("2026-09-03-a", 2),
-            None,
-        )
+        ))
         .expect_err("a match with a minor in it was stored");
     assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
     assert!(
@@ -350,11 +361,10 @@ fn a_match_with_a_participant_under_eighteen_is_refused() {
         .enrol(&adult, "alizarin@example.invalid")
         .expect("enrol");
     corpus
-        .store(
+        .store(&attested(
             &a_replay("2026-09-03-a", &["alizarin", "bistre"]),
             &a_session("2026-09-03-a", 2),
-            None,
-        )
+        ))
         .expect("the same match with the same record and one bit changed was refused");
 }
 

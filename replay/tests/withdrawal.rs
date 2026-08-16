@@ -16,6 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
+use replay::attest::Attested;
 use replay::calibration::{CalibrationState, DeviceProfileId, Observations, SeatCalibration};
 use replay::consent::{ConsentVersion, Permissions, Purpose};
 use replay::corpus::{ConsentRecord, Corpus};
@@ -24,7 +25,7 @@ use replay::manifest::{MatchId, Pseudonym, SessionFacts, SimCommit};
 use replay::session::{
     Clock, Declared, Measured, Platform, SeatRecord, SessionRecord, Supervision,
 };
-use replay::{Recording, Replay};
+use replay::{Recording, Replay, Telemetry};
 use sim::{Outcome, PLAYER_COUNT, new_state, rules_hash};
 
 /// A corpus in a directory of its own, removed when the test ends.
@@ -147,6 +148,22 @@ fn a_session(match_id: &str, participants: usize) -> SessionRecord {
 /// The key the corpus in these tests is sealed with. A written-down constant,
 /// and not a secret: see `replay/tests/tamper.rs`.
 const SEAL_SEED: [u8; 32] = *b"moba test corpus signing key...\0";
+/// The one way through [`Attested::of`], for tests whose subject is a different
+/// refusal.
+///
+/// `Corpus::store` takes a value only `Attested::of` builds, and what that
+/// constructor refuses is a seat the replay's input log shows playing that no
+/// session record accounts for — a playtest bot, a headless client, a script
+/// (`replay/src/attest.rs`). Every fixture here logs one seat that its session
+/// record fills, so the gate opens; `client/tests/playtest_bots.rs` is where it
+/// does not.
+fn attested<'a>(
+    replay: &'a Replay,
+    session: &'a SessionRecord,
+    telemetry: Option<&'a Telemetry>,
+) -> Attested<'a> {
+    Attested::of(replay, session, telemetry).expect("every seat that played is a person")
+}
 
 /// A short match, sealed and naming its participants.
 ///
@@ -230,7 +247,11 @@ fn populated(scratch: &Scratch) -> Corpus {
         ("2026-09-11-a", ["bistre", "celadon"]),
     ] {
         corpus
-            .store(&a_replay(id, &who), &a_session(id, who.len()), None)
+            .store(&attested(
+                &a_replay(id, &who),
+                &a_session(id, who.len()),
+                None,
+            ))
             .expect("store");
     }
     corpus
@@ -512,11 +533,11 @@ fn an_audit_catches_a_withdrawal_that_left_one_match_behind() {
         .enrol(&consent("alizarin"), "temporary")
         .expect("re-enrol so that store accepts it");
     corpus
-        .store(
+        .store(&attested(
             &a_replay("2026-09-03-a", &["alizarin", "bistre"]),
             &a_session("2026-09-03-a", 2),
             None,
-        )
+        ))
         .expect("store");
     // Undo the re-enrolment, so that what is left is exactly the state a
     // withdrawal that skipped one match directory would leave.
@@ -724,11 +745,11 @@ fn a_recording_naming_someone_with_no_consent_record_is_refused() {
         .enrol(&consent("alizarin"), "alizarin@example.invalid")
         .expect("enrol");
 
-    let refused = corpus.store(
+    let refused = corpus.store(&attested(
         &a_replay("2026-09-03-a", &["alizarin", "nobody"]),
         &a_session("2026-09-03-a", 2),
         None,
-    );
+    ));
     assert!(
         refused.is_err(),
         "a match with an unconsented player was stored"
@@ -780,11 +801,11 @@ fn a_match_recorded_under_a_superseded_consent_document_is_refused() {
         .expect("enrol");
 
     let refused = corpus
-        .store(
+        .store(&attested(
             &a_replay("2026-09-03-a", &["alizarin", "bistre"]),
             &a_session("2026-09-03-a", 2),
             None,
-        )
+        ))
         .expect_err("a match under a superseded document was stored");
     assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
     assert!(
@@ -816,11 +837,11 @@ fn a_consent_record_written_before_the_version_existed_is_not_a_consent_record()
     .expect("write");
 
     let refused = corpus
-        .store(
+        .store(&attested(
             &a_replay("2026-09-03-a", &["alizarin", "bistre"]),
             &a_session("2026-09-03-a", 2),
             None,
-        )
+        ))
         .expect_err("a match with a versionless consent record was stored");
     assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
     assert!(
@@ -845,11 +866,11 @@ fn one_pseudonym_cannot_occupy_two_seats_of_one_match() {
         .expect("enrol");
 
     let refused = corpus
-        .store(
+        .store(&attested(
             &a_replay("2026-09-03-a", &["alizarin", "alizarin"]),
             &a_session("2026-09-03-a", 2),
             None,
-        )
+        ))
         .expect_err("one person filled two seats and the corpus took it");
     assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
     assert!(
@@ -882,11 +903,11 @@ fn a_seat_that_recorded_no_device_event_is_refused() {
         measured.motions = 0;
     }
     let refused = corpus
-        .store(
+        .store(&attested(
             &a_replay("2026-09-03-a", &["alizarin", "bistre"]),
             &session,
             None,
-        )
+        ))
         .expect_err("a seat with no device events was stored");
     assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
     assert!(
@@ -912,11 +933,11 @@ fn a_seat_that_declares_pointer_acceleration_is_refused() {
         declared.pointer_acceleration = true;
     }
     let refused = corpus
-        .store(
+        .store(&attested(
             &a_replay("2026-09-03-a", &["alizarin", "bistre"]),
             &session,
             None,
-        )
+        ))
         .expect_err("an accelerated session was stored");
     assert!(
         refused.to_string().contains("pointer"),
@@ -942,11 +963,11 @@ fn a_session_record_that_disagrees_with_the_replay_about_a_seat_is_refused() {
 
     // Two people in the replay, one part collected.
     let refused = corpus
-        .store(
+        .store(&attested(
             &a_replay("2026-09-03-a", &["alizarin", "bistre"]),
             &a_session("2026-09-03-a", 1),
             None,
-        )
+        ))
         .expect_err("a match with a missing session part was stored");
     assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
     assert!(
@@ -956,11 +977,11 @@ fn a_session_record_that_disagrees_with_the_replay_about_a_seat_is_refused() {
 
     // …and a part collected for a seat nobody sat in fails the same way.
     let refused = corpus
-        .store(
+        .store(&attested(
             &a_replay("2026-09-03-b", &["alizarin"]),
             &a_session("2026-09-03-b", 2),
             None,
-        )
+        ))
         .expect_err("a match with a session part for an empty seat was stored");
     assert!(refused.to_string().contains("seat 1"));
 }
@@ -975,11 +996,11 @@ fn a_session_record_naming_another_match_is_refused() {
         .expect("enrol");
 
     let refused = corpus
-        .store(
+        .store(&attested(
             &a_replay("2026-09-03-a", &["alizarin"]),
             &a_session("2026-09-03-b", 1),
             None,
-        )
+        ))
         .expect_err("a session record for another match was stored");
     assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
 }
@@ -1221,11 +1242,11 @@ fn traced(scratch: &Scratch) -> (Corpus, String) {
     }
     let (sealed, companion) = a_traced_match("2026-09-03-a", &["alizarin", "bistre"]);
     corpus
-        .store(
+        .store(&attested(
             &sealed,
             &a_traced_session("2026-09-03-a", 2),
             Some(&companion),
-        )
+        ))
         .expect("store a traced match");
     (corpus, filed_as("2026-09-03-a"))
 }
@@ -1375,7 +1396,11 @@ fn a_companion_the_replay_did_not_name_and_a_commitment_with_no_companion_are_bo
 
     // A replay that commits to a companion, stored without one.
     let (sealed, companion) = a_traced_match("2026-09-03-a", &["alizarin", "bistre"]);
-    let refused = corpus.store(&sealed, &a_traced_session("2026-09-03-a", 2), None);
+    let refused = corpus.store(&attested(
+        &sealed,
+        &a_traced_session("2026-09-03-a", 2),
+        None,
+    ));
     let error = refused.expect_err("a commitment with no companion was stored");
     assert!(
         error.to_string().contains("commits to telemetry companion"),
@@ -1384,7 +1409,11 @@ fn a_companion_the_replay_did_not_name_and_a_commitment_with_no_companion_are_bo
 
     // And a replay that commits to none, stored with one.
     let untraced = a_replay("2026-09-03-b", &["alizarin", "bistre"]);
-    let refused = corpus.store(&untraced, &a_session("2026-09-03-b", 2), Some(&companion));
+    let refused = corpus.store(&attested(
+        &untraced,
+        &a_session("2026-09-03-b", 2),
+        Some(&companion),
+    ));
     let error = refused.expect_err("a companion nobody named was stored");
     assert!(
         error
@@ -1417,7 +1446,7 @@ fn a_session_record_that_disagrees_with_the_companion_about_a_seat_is_refused() 
         measured.samples += 1;
     }
     let error = corpus
-        .store(&sealed, &session, Some(&companion))
+        .store(&attested(&sealed, &session, Some(&companion)))
         .expect_err("a session record that miscounts its own seat was stored");
     assert!(
         error.to_string().contains("seat 1"),
@@ -1431,7 +1460,7 @@ fn a_session_record_that_disagrees_with_the_companion_about_a_seat_is_refused() 
         measured.platform = Platform::Windows;
     }
     let error = corpus
-        .store(&sealed, &session, Some(&companion))
+        .store(&attested(&sealed, &session, Some(&companion)))
         .expect_err("two files disagreeing about a platform were stored");
     assert!(error.to_string().contains("seat 0"));
     println!("store: {error}");
@@ -1453,11 +1482,11 @@ fn a_substituted_companion_is_refused_at_the_door() {
     let (_, elsewhere) = a_traced_match("2026-09-11-a", &["alizarin", "bistre"]);
 
     let error = corpus
-        .store(
+        .store(&attested(
             &sealed,
             &a_traced_session("2026-09-03-a", 2),
             Some(&elsewhere),
-        )
+        ))
         .expect_err("another match's companion was stored");
     assert!(
         error.to_string().contains("telemetry companion is refused"),
@@ -1540,11 +1569,11 @@ fn a_traced_seat_with_no_view_anchor_is_refused() {
     );
 
     let error = corpus
-        .store(
+        .store(&attested(
             &sealed,
             &a_traced_session("2026-09-03-a", 2),
             Some(&companion),
-        )
+        ))
         .expect_err("a stream with no view anchor was stored");
     assert!(
         error.to_string().contains("no view anchor"),

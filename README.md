@@ -60,6 +60,25 @@ determinism fixtures additionally run on aarch64 macOS, under `--release`:
 cargo test -p sim --release --locked --test determinism -- --nocapture
 ```
 
+## Playing it before nine people are free
+
+A match is nine seats. `moba-bots` fills the ones nobody is sitting in, so that
+one or two people can start one:
+
+```sh
+cargo run -p server --bin moba-server -- 3000 33 --players 9   # prints an address and a certificate
+cargo run -p client --bin moba-client -- <address> <certificate>
+cargo run -p client --bin moba-bots -- <address> <certificate> 8
+```
+
+The bots compose one intention per tick from the view the server sent them, over
+the ordinary protocol; they synthesise no device input of any kind. It is a
+**playtest tool**: it does not satisfy M4's exit criterion, which asks for three
+humans on two operating systems, it produces no corpus data — a match with a bot
+seat in it is refused at the corpus door by `replay::Attested` — and it
+calibrates nothing. `docs/MILESTONES.md` M4 and `docs/RISKS.md` R7 carry the
+reasoning, including why it is in `client` and not in `cheat-client`.
+
 ## Documents
 
 The documents in `docs/` are the specification. They are meant to be read in

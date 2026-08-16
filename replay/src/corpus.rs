@@ -127,7 +127,17 @@
 //!
 //! Every one of these is cheaper to enforce at the door than to discover in a
 //! distribution, and every one of them is a thing `docs/SCHEMA.md` states as a
-//! rule about the corpus:
+//! rule about the corpus.
+//!
+//! **One of them is not in the table, because it is not a check.** A seat the
+//! authority recorded inputs from and no session record accounts for — a
+//! playtest bot, a headless client, a script — is refused by
+//! [`crate::attest::Attested::of`], which is the only constructor of the only
+//! value this function accepts. It is stated over the replay's *input log*
+//! rather than over the manifest's participant list, because the log is what the
+//! server observed and the list is what an operator wrote down, and a
+//! bot-filled match has an operator-side list that agrees with itself perfectly.
+//! `replay/src/attest.rs` carries the argument.
 //!
 //! | Refused | Because |
 //! | --- | --- |
@@ -150,6 +160,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::attest::Attested;
 use crate::calibration::{DeviceProfileId, Profile};
 use crate::consent::{ConsentVersion, Permissions, Purpose};
 use crate::manifest::Commitment;
@@ -361,6 +372,14 @@ impl Corpus {
 
     /// Stores a sealed match and the record of the session it was recorded in.
     ///
+    /// **It takes an [`Attested`] rather than the three files**, and that is the
+    /// same arrangement [`crate::Publishable`] has one purpose over: the value
+    /// this function needs has one constructor, [`Attested::of`], and that
+    /// constructor refuses a match in which something that is not a hand was
+    /// playing. Filing a match a program played is therefore not a check
+    /// somebody has to remember to run before calling this — it is a value that
+    /// cannot be built. `replay/src/attest.rs` carries the reasoning.
+    ///
     /// The participants are **read out of the replay's manifest** rather than
     /// passed in, which is the M5 change and the whole of why this corpus has no
     /// index: there is one statement of who played a match, it is inside the
@@ -383,12 +402,10 @@ impl Corpus {
     /// [`io::ErrorKind::InvalidInput`] when the two files disagree, when one
     /// person occupies two seats, when a seat recorded no device event, or when a
     /// participant declared pointer acceleration left on.
-    pub fn store(
-        &self,
-        replay: &Replay,
-        session: &SessionRecord,
-        telemetry: Option<&Telemetry>,
-    ) -> io::Result<()> {
+    pub fn store(&self, attested: &Attested<'_>) -> io::Result<()> {
+        let replay = attested.replay();
+        let session = attested.session();
+        let telemetry = attested.telemetry();
         let manifest = &replay.manifest;
         let refuse = |kind: io::ErrorKind, message: String| -> io::Result<()> {
             Err(io::Error::new(kind, message))

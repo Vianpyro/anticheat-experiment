@@ -28,7 +28,7 @@ client   server --+---------+         |
 | `protocol` | The wire. Message types, framing, versioning, sequence numbers | `sim` (for `PlayerView`, `Input`, ids) | `server`, `client`, `anticheat`, any runtime |
 | `replay` | The replay container: format, signing, verification, resimulation. From M4, the corpus on disk and the commands that withdraw a participant from it and audit the result. From M6, the corpus's schema — the session record, the consent version, and the frozen train/holdout split. From M8, the telemetry companion: the device-event stream, sealed, and the commitment that binds it to a replay | `sim`; externally, an audited signature crate and a source of entropy for `keygen` | `server`, `client`, `anticheat`, any runtime |
 | `server` | Authority. Tick loop, the clock, sockets, sessions, fog application, telemetry capture, replay recording | `sim`, `protocol`, `replay`, `anticheat`, a runtime | `client`, `cheat-client` |
-| `client` | Presentation. Rendering, **input capture**, the lobby and the device measurement hidden in it, prediction, reconciliation | `sim`, `protocol`, a runtime, a window library and a framebuffer; plus `server` and `replay` as dev-dependencies for the M3 and M4 exit harnesses | `server`, **`anticheat`**, `replay`'s signing keys |
+| `client` | Presentation. Rendering, **input capture**, the lobby and the device measurement hidden in it, prediction, reconciliation; and the playtest bot that fills a seat nobody is sitting in | `sim`, `protocol`, a runtime, a window library and a framebuffer; plus `server` and `replay` as dev-dependencies for the M3 and M4 exit harnesses | `server`, **`anticheat`**, `replay`'s signing keys, **`cheat-client`** |
 | `anticheat` | Detection. Feature extraction from telemetry, detectors, thresholds, evidence bundles | `sim`, `replay`; plus `cheat-client`, `server` and `protocol` as dev-dependencies for the detector suite | `server` (it is called by the server, not the reverse), `client`, any network or filesystem I/O outside `src/bin` |
 | `cheat-client` | The attacker, and the exploit suite | `protocol` only, plus `server` as a dev-dependency for the in-process harness | `sim` internals, `client`, `anticheat` |
 
@@ -1784,6 +1784,36 @@ Each is a test or a lint, not a convention:
    participant is in, because re-reading the record a revocation just wrote would
    be the command agreeing with itself. Empty is the only acceptable answer to
    either.
+
+22. **A match a program played does not enter the corpus, and the refusal is a
+   value that cannot be built.** `replay::Attested` is the only value
+   `Corpus::store` accepts and `Attested::of` is its only constructor, which is
+   invariant 20's shape one level below a purpose: it refuses a match in which a
+   seat the **input log** shows playing has no `SeatRecord::Human` behind it.
+
+   The choice of what it reads is the whole of it. `Corpus::store` already
+   compared the session record against the manifest's participant list, and both
+   of those are written by the operator — so a playtest filed as "one person
+   played" produces two files that agree perfectly about a match whose other
+   eight seats were `client::bot`. The input log is what the *authority*
+   observed and is covered by `input_log_digest` inside the signature, so a seat
+   that played cannot be un-played by the way somebody files it. A session record
+   is the other half: it exists only because a client's capture path wrote a
+   part, and `SeatRecord::decode_part` refuses a part claiming any provenance but
+   a person's.
+
+   It is deliberately one-directional — a seat with a record that never played is
+   not refused here, because that is a broken client rather than synthetic play
+   and the manifest comparison already covers the operator's side. And it
+   establishes exactly one thing more than M6 did: a seat with **no device behind
+   it at all**. A bot moving a real mouse would write a part like anybody's, and
+   `docs/SCOPE.md`'s ceiling is where that stops.
+
+   Exercised end to end in `client/tests/playtest_bots.rs`: a match one person
+   and two bots played over the real transport is refused by name, the two
+   operator-side files are asserted to agree seat for seat so that the refusal is
+   demonstrably not the one that already existed, and the same pipeline stores
+   the match with no bot in it.
 
 ## Directions this architecture leaves open, and does not build
 

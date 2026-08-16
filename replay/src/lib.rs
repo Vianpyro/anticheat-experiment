@@ -100,6 +100,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs, missing_debug_implementations, unused_variables)]
 
+pub mod attest;
 pub mod calibration;
 pub mod consent;
 pub mod container;
@@ -112,6 +113,7 @@ pub mod session;
 pub mod split;
 pub mod telemetry;
 
+pub use crate::attest::{Attested, Unattested};
 pub use crate::calibration::{CalibrationState, DeviceProfileId, Profile};
 pub use crate::consent::{ConsentVersion, Permissions, Purpose};
 pub use crate::container::{

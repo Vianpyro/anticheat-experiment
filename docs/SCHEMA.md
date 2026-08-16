@@ -415,7 +415,7 @@ stratum a claim is actually made on.
 
 | Excluded | How it is enforced |
 | --- | --- |
-| A match played by a bot, a script, or a headless client | `Corpus::store` refuses any seat that recorded **zero device events**, and the schema has no `provenance` value but `human` and `empty` — a part claiming otherwise does not parse. §11's view anchors are counted apart from the device events for exactly this reason: a headless client receives thirty frames a second, and counting those among the samples would hand this refusal to the attacker it exists to catch |
+| A match played by a bot, a script, or a headless client | Two refusals, because the case has two shapes. A seat that filed a record and recorded **zero device events** is refused by `Corpus::store`, and the schema has no `provenance` value but `human` and `empty` — a part claiming otherwise does not parse. A seat that filed **no record at all** and played anyway — the playtest bot, `moba-bots` — is refused by `replay::Attested`, which reads the seats the *replay's own input log* shows playing and requires a person's record behind each of them; it is the only value `Corpus::store` accepts. §11's view anchors are counted apart from the device events for the first of those reasons: a headless client receives thirty frames a second, and counting those among the samples would hand the refusal to the attacker it exists to catch |
 | One person filling several seats | `Corpus::store` refuses a manifest naming one pseudonym twice |
 | A match nobody consented to | refused since M5; now also refused when the consent record is from another version of `docs/CONSENT.md`, has no version at all, or is silent about any purpose this build knows — a purpose nobody was asked about is a purpose nobody granted, so the record does not decode |
 | A match anybody under 18 is in | `Corpus::store` refuses a record whose age answer is `false`, and `replay enrol` refuses to write one. A minor's own consent is not sufficient under Law 25 and this project has no parental-consent procedure, so the refusal names the human decision it stands in for rather than inventing one |
@@ -423,19 +423,27 @@ stratum a claim is actually made on.
 | Any of it, in git | `.gitignore` plus a `ci` check on *tracked* files |
 
 **How narrow the synthetic-play defence is, stated because a table invites a
-reader to conclude more.** A scripted or headless client touches no device and
-records no sample, so it is caught. **A bot that moves a real mouse records exactly
-as many samples as a person and is not reachable from any file in this corpus** —
-which is `docs/SCOPE.md`'s stated ceiling for behavioural detection arriving early
-rather than a hole this schema could close. What keeps it closed is that the
-operator is in the room while the match is played, and that is a fact about a
-person rather than a property of a format — which is why §5a makes it a field
-rather than a habit, and why a session that had no operator in the room says so.
+reader to conclude more.** A client that touches no device is caught, whether it
+files a record of zero samples or files none and simply plays: the first by the
+silent-seat rule and the second by `replay::Attested`, and the second is stated
+over the input log rather than over the session record because the session record
+and the participant list are both written by the operator, and a playtest filed
+as "one person played" makes those two agree perfectly. **A bot that moves a real
+mouse records exactly as many samples as a person and is not reachable from any
+file in this corpus** — which is `docs/SCOPE.md`'s stated ceiling for behavioural
+detection arriving early rather than a hole this schema could close. What keeps
+it closed is that the operator is in the room while the match is played, and that
+is a fact about a person rather than a property of a format — which is why §5a
+makes it a field rather than a habit, and why a session that had no operator in
+the room says so.
 
 Both halves of that narrowness are executed rather than asserted, in
 `cheat-client/tests/botting.rs`: a bot plays a whole match, the server accepts
 every frame it sends, its replay verifies, and the silent-seat check catches the
 headless version and is blind to the mouse-moving one.
+`client/tests/playtest_bots.rs` executes the third: a match one person and two
+playtest bots played over the real transport is refused by name, and the same
+pipeline stores the match with no bot in it.
 
 ### Partially filled seats, and short matches
 

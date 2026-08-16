@@ -70,6 +70,23 @@ impl From<std::io::Error> for NetError {
     }
 }
 
+/// The DER of the certificate a server printed, from the hex it printed it as.
+///
+/// `None` for anything that is not an even number of hex digits. It lives here
+/// rather than in a binary because there are two of them now — `moba-client` and
+/// `moba-bots` — and a second hand-rolled parser is a second place for the one
+/// thing a client is handed out of band to be read wrongly.
+#[must_use]
+pub fn certificate_from_hex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(text.get(at..at.checked_add(2)?)?, 16).ok())
+        .collect()
+}
+
 /// One session's wire.
 #[derive(Debug)]
 pub struct Wire {

@@ -53,7 +53,7 @@ required.
 | `determinism` | PR and push touching `sim/`, `replay/`, the fixtures, the lockfile or the toolchain pin | `fixture` (the fixtures on Linux x86-64, Windows x86-64, macOS aarch64, under `--release`, each compared against digests committed in the repository, plus the replay and its telemetry companion sealed on Linux and committed, which every target must reproduce byte for byte, verify, and check the binding between), `properties` (the same three targets with a raised `PROPTEST_CASES`), and `sim-version` (a PR touching `sim/` must raise the crate version — `RISKS.md` R13) | `contents: read` | < 6 min |
 | `supply-chain` | PR touching a manifest, the lockfile or `deny.toml` (licenses, bans, sources) and weekly cron (advisories) | `cargo-deny` | `contents: read` | < 2 min |
 | `coverage` | Weekly cron, manual dispatch | `cargo llvm-cov`, uploaded as an artifact | `contents: read` | untimed |
-| `release-plz` | Push to `main` | `release-pr` (computes the bump from conventional commits, writes `CHANGELOG.md`, opens a pull request; it does not tag, publish or push to `main`) | `contents: write`, `pull-requests: write` — this job only | < 2 min |
+| `cd` | Push to `main` | `plan` (decides: propose, publish, or nothing — and holds no write permission at all), `propose` (version, lockfile, changelog, one pull request), `tag` (tags a merged release and dispatches `release`) | `contents: write` + `pull-requests: write` on `propose`; `contents: write` on `tag`; nothing on `plan` | < 2 min |
 | `release` | Tag `v*` | `draft`, `build` (client and server on the three targets), `checksums`, `container`, `publish` | `contents: write` on `draft`, `build`, `checksums` and `publish`; `packages: write` on `container` — per job, never at the top | < 20 min |
 
 `ci` runs fmt, clippy and the tests in one matrixed job rather than splitting a
@@ -115,13 +115,13 @@ workspace this size.
 Every third-party action is referenced by commit SHA with the tag in a trailing
 comment, since M3. `RISKS.md` R12 is why, and why not earlier: the pins and
 Renovate, which is what keeps them current, land in one change or not at all.
-The count is three. It was two for six milestones — `supply-chain` installs
-`cargo-deny` with `cargo install --locked` rather than reaching for an action —
-and the third is `release-plz/action`, taken because `release-plz` links `cargo`
-itself and compiling it on every push to `main` to open a pull request costs
-minutes where `cargo-deny` costs seconds. `release` adds none: it publishes with
-`gh` and builds its image with `docker`, both already on the runner, which is
-three actions avoided in the one workflow that holds write tokens.
+The count is two, and it stayed two through M9. It was briefly three:
+`release-plz/action` arrived with the release pipeline and left with it, because
+what replaced release-plz is a shell script. Neither workflow that holds a write
+token adds one — `cd` reads git and writes files, `release` publishes with `gh`
+and builds its image with `docker`, all of which are already on the runner. The
+older half of the same policy still holds: `supply-chain` installs `cargo-deny`
+with `cargo install --locked` rather than reaching for an action.
 
 ### Changes to what exists today
 
@@ -236,41 +236,101 @@ command.
 
 ## Release pipeline
 
-**Two halves with a person between them**, and the person is the point. This
+**Two halves with a merge between them**, and the merge is the decision. This
 section describes what is in the repository; `MILESTONES.md` M9 records which
 parts of its exit criterion are not there yet.
 
-The first half is `release-plz`, in release-pull-request mode. On every push to
-`main` it reads the conventional commits since the last `v*` tag, works out
-which crates their file paths belong to, computes the next version, writes
-`CHANGELOG.md`, and **opens a pull request**. It does not tag, does not publish,
-and does not push to `main` — `release-plz.toml` switches each of those off
-individually rather than leaving them unused, and the workflow only ever invokes
-`release-pr`. That is the "pushing the release tag" row of the table below
-holding: the tool proposes a version, a human merges it, and a human pushes
-`git tag v0.2.0`. It is also R11 holding — the automation that rewrites your
-branch while you work is the one this project deleted.
+The loop is `code → push → ci → merge the release pull request → published
+release`. Nothing is typed between the merge and the artefacts.
 
-Two consequences of that shape, both of which will otherwise be discovered at an
-inconvenient moment:
+The first half is `cd`, on every push to `main`. It asks one question — *is this
+push the merge of a release pull request?* — and there are three answers:
 
-- Every crate is `publish = false`, so release-plz cannot ask crates.io what was
-  last released and `git_only = true` points it at the git tags instead. Without
-  that line it does nothing at all — no error, an empty run. And the tag pattern
-  has to be `v{{ version }}`, because its default in a workspace is one tag per
-  crate and this project pushes one tag per release.
+- **It is.** The head commit's subject is `chore(release): publish vX.Y.Z`, which
+  is the title `cd` gave that pull request and, under squash merge, the commit it
+  became. A person reviewed and merged that version, so `cd` tags it and starts
+  `release`.
+- **It is not, and something releasable happened.** `cd` reads the conventional
+  commits since the last `v*` tag, takes the highest bump among them, writes the
+  version, the lockfile and the changelog section, and opens or updates **one**
+  pull request. Nothing is published.
+- **It is not, and nothing releasable happened.** No pull request and no run to
+  ignore.
+
+The bump rules are `.copilot/commit-message-instructions.md` read literally, which
+is safe because `pr-hygiene` validates that vocabulary on every pull request title
+— the types are checked at the door rather than guessed at afterwards. A breaking
+change (`!` or a `BREAKING CHANGE:` footer) or a `feat` is a minor bump while the
+version is below 1.0 and a major or minor after it; `fix`, `perf`, `refactor`,
+`build` and `revert` are a patch; `docs`, `style`, `test`, `ci` and `chore` decide
+nothing on their own. A commit is considered at all only if it touched something
+that ships, and that filter is an **exclusion list** — `docs/`, `.github/`, the
+editor and agent directories, the top-level prose files — so that a crate added
+later is releasable without anybody remembering to edit the workflow. An
+allow-list's failure mode here is a release that silently omits a new component.
+
+**This replaced `release-plz`, which produced `v0.1.0` and could not have produced
+`v0.1.1`.** It decides whether a crate changed by running `cargo package` against
+the previous tag; on this workspace — internal dependencies by path, and five
+crate names that belong to strangers on crates.io — that call fails from the
+second release onward (its issue #2595, open since January 2026). That was
+reproduced against this repository at `v0.1.0`, not predicted. What replaced it is
+the same model in a shell script this repository can read, which is the standing
+rule at the top of this document: explainable in one sentence, removable in one
+commit.
+
+Four things about that shape, each of which is otherwise found at an inconvenient
+moment — the third was:
+
+- **A version bump is a lockfile change.** `Cargo.lock` records the version of
+  every workspace member, so raising `[workspace.package] version` without it
+  leaves a tree where `cargo build --locked` fails — which is every build here,
+  including the release the bump is for. `cd` runs `cargo update --workspace`
+  and then proves the result with `cargo metadata --locked`, which resolves the
+  graph in about a second without compiling.
 - GitHub does not run workflows on a pull request opened by `GITHUB_TOKEN`, so
   the release pull request arrives with no checks on it. The alternative is a
   personal access token, which would be this repository's first secret and a
   credential a compromised action could read (`RISKS.md` R12) — in exchange for
-  CI on a change to a version string and a changelog. The token stays and the
-  cost is a manual step in the table below.
+  checks on a version bump, a lockfile and a changelog, on commits `ci` has
+  already passed individually.
+- **`permissions: pull-requests: write` is necessary and not sufficient.** A
+  repository setting gates it as well — *Settings → Actions → General → Workflow
+  permissions → "Allow GitHub Actions to create and approve pull requests"* —
+  and with it off the job pushes its branch, then fails with
+  `403 GitHub Actions is not permitted to create or approve pull requests`. It
+  is a setting rather than a file, so it is invisible to a checkout and survives
+  no clone; this line is the only place the requirement is written down. Note
+  what it grants, since it is repository-wide rather than scoped to this
+  workflow: any workflow holding `pull-requests: write` may then open a pull
+  request, and approve one. That is bounded here by branch protection not
+  requiring reviews in the first place (above) — there is no approval to
+  usefully forge — and by the count of workflows that hold the permission,
+  which is one.
+- **A tag pushed by `GITHUB_TOKEN` starts nothing.** GitHub does not run
+  workflows on events its own token created, which is the same rule that leaves
+  the release pull request without CI — so `cd` tagging the merge would tag and
+  then stop. `repository_dispatch` is one of the two exceptions to that rule and
+  is therefore the bridge: `cd` tags, then dispatches, and `release` accepts the
+  tag from the payload or from the ref it was pushed on. Two doors, one
+  behaviour, and no secret — a personal access token would have been the other
+  way to do it.
 
-The second half is `release`, triggered by that tag and by nothing else. Its
-first job checks that the tag and the workspace version agree — the one mistake
-the manual step makes possible is tagging before merging the release pull
-request — lifts this version's section out of `CHANGELOG.md`, and opens the
-GitHub Release **as a draft**. Then:
+Two names are load-bearing and look arbitrary otherwise. The branch is
+`release/next` because `pr-hygiene`'s pattern allows no dots in a slug, so
+`release/v0.1.1` would be rejected by this repository's own check; one long-lived
+branch also makes "one release pull request at a time" true by construction. And
+the title is `chore(release): publish vX.Y.Z` rather than `chore(release): vX.Y.Z`
+because the same file requires a lowercase word after the colon — and `cd`'s
+detection of a merged release matches that exact wording, so the two move together
+or not at all.
+
+The second half is `release`, triggered by that tag. Its first job checks that
+the tag and the workspace version agree — `cd` has already checked it on the
+automatic path, and this deliberately does not trust it, because a tag pushed by
+hand comes in the other door and tagging before the merge is the mistake that
+door makes possible. It then lifts this version's section out of `CHANGELOG.md`
+and opens the GitHub Release **as a draft**. Then:
 
 1. Build the client and server for Linux x86-64, Windows x86-64, and macOS
    aarch64, natively on each, with `--locked`. Each archive holds the binary,
@@ -316,26 +376,23 @@ is what `server/src/main.rs` does today, so it is a way to run the authority
 reproducibly rather than a way to host it, and the Dockerfile says so instead of
 carrying an `EXPOSE` for a port that does not exist.
 
-**One known limitation, upstream and open.** `release-plz` decides whether a
-crate changed by running `cargo package` against the previous tag, and
-`cargo package` refuses a workspace whose internal dependencies are path-only —
-then, once they carry a version requirement, resolves them from crates.io, where
-`sim`, `replay`, `protocol`, `client` and `server` are all names belonging to
-somebody else. That is release-plz issue #2595, open since January 2026. The
-consequence is bounded and worth stating plainly: the first release pull request
-works, and a later one may fail with a `cargo package` error rather than
-silently producing a wrong version. The fallback is the manual one — raise
-`[workspace.package] version` and add the changelog section by hand in a pull
-request, which is what the release workflow reads anyway.
+**One limitation that is this pipeline's own rather than a tool's.** The bump is
+computed from commit *types*, and a type is a claim a human made in a pull
+request title. `pr-hygiene` checks that the claim is well-formed; nothing checks
+that it is true. A behavioural change described as `chore` moves the patch digit
+and not the minor one, and no automation can know better. That is the same class
+of imperfection `RISKS.md` R13 states about `sim`'s own version — "nothing forces
+the size of the bump to match the size of the change" — and it has the same
+answer: the release pull request says which version it proposes, in its title,
+before anything is published.
 
 ## What stays manual, and why
 
 | Manual step | Why it is not automated |
 | --- | --- |
-| Pushing the release tag | A human decides that a version exists. Auto-tagging on merge turns every merge into a release. `release-plz` therefore stops at a pull request, and `release.yml` refuses a tag whose version disagrees with the merged manifest |
-| Running CI on the release pull request | GitHub does not run workflows on a pull request opened by `GITHUB_TOKEN`, so it arrives with no checks. Close and reopen it to run them, or merge it knowing CI last ran on the commits it describes. The alternative is a stored personal access token — this repository's first secret, readable by any action in the job — in exchange for checks on a version string and a changelog (`RISKS.md` R12) |
-| Choosing the first version | With no previous tag, `release-plz` proposes the version the manifests already declare, and `0.0.0` is not a release. Set `[workspace.package] version` by hand once; after the first tag it computes the bumps |
-| The release notes headline | The changelog is generated; the narrative of what changed is not a thing a tool knows |
+| Merging the release pull request | The one act that publishes, and the only one left. A human decides that a version exists; `cd` only proposes it, and until the merge nothing is tagged and nothing is built. This row replaced "pushing the release tag" at M9, which was the same decision made one step later and one command more (`RISKS.md` R11) |
+| Reading the release pull request before merging it | It arrives with no checks, because GitHub does not run workflows on a pull request opened by `GITHUB_TOKEN`, and merging it now publishes. What it contains is a version, a lockfile diff that follows from it, and a changelog — each of which `cd` proved consistent (`cargo metadata --locked`) and none of which `ci` has re-run. Close and reopen it to run checks if a release ever warrants it |
+| The release notes headline | The changelog is generated; the narrative of what changed is not a thing a tool knows. Since M9 it is also the only writing a release needs |
 | Approving production-dependency updates | The blast radius is the running server and, for `sim`, the determinism guarantee |
 | Committing a proptest counter-example | The seed is printed into the run summary of the job that found it and pasted into `sim/proptest-regressions/properties.txt`. A bot pushing it would need write permissions on the branch, which is the automation `RISKS.md` R11 exists to refuse; the paste costs seconds and the case is permanent afterwards |
 | Rotating the replay signing key | Rotation without publishing the retired key orphans every replay signed with it (`RISKS.md` R4). Rare, consequential, and better done deliberately |

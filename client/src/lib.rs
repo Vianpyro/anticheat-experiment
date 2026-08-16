@@ -49,6 +49,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs, missing_debug_implementations)]
 
+pub mod bot;
 pub mod draw;
 pub mod gfx;
 pub mod health;

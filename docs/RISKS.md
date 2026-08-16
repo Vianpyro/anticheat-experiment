@@ -525,6 +525,35 @@ detectors against a bot that plays through the wire, and it cannot measure them
 against the ceiling at all. Naming what cannot be tested is the same obligation
 as naming what cannot be defended.
 
+### A second bot, on the other side of the workspace, and why it is not this risk
+
+There is now a bot in `client` as well — `client::bot`, driven by `moba-bots` —
+which fills the seats nobody is sitting in so that one or two people can play a
+nine-seat match. Three things keep it out of this entry, and the first is the one
+that decides it:
+
+**It builds none of the layer this risk is about.** No `uinput`, no `SendInput`,
+no `XTest`, no pointer, nothing that drives an operating system. It composes an
+`Action` from a `PlayerView` and hands it to the same session the person's client
+uses, which makes it a function of this wire format and this game's rules — the
+same test the account above applies to `cheat_client::bot`, with the same answer:
+pointed at another game there is no wire to speak, no `Action` to compose and no
+`sim::step` rule to mirror.
+
+**It is in `client` and not in `cheat-client`, and that is the point rather than
+a filing decision.** `docs/ARCHITECTURE.md` makes `cheat-client` the machine this
+project assumes is compromised and `ci` asserts that no production binary links
+it. A testers' build that linked the attacker to save eighty lines would put the
+exploit suite on the machines of everybody who ever tries the game, which is what
+this entry exists to refuse. So the logic is reimplemented, the two bots are
+allowed to differ, and the invariant is untouched.
+
+**And what it plays cannot become evidence of anything.** `replay::Attested`
+refuses a match whose input log shows a seat playing that no session record
+accounts for, and it is the only value `Corpus::store` accepts — so the corpus
+cannot acquire a bot-filled match by an operator forgetting which evening was a
+playtest. `docs/ARCHITECTURE.md` invariant 22.
+
 ## R8 — Corpus size versus detector claims
 
 **Not irreversible, but unrecoverable within the project's budget.** A corpus of
@@ -615,6 +644,39 @@ the count stays small enough to hold in your head. Reaching for five
 automations you understand over fifteen you endure is a maintenance decision,
 not an aesthetic one.
 
+### Re-decided at M9: the human act is the merge, not the tag
+
+Until M9 this entry and `ENGINEERING.md`'s manual table put the release tag in a
+person's hands — `release-plz` stopped at a pull request and somebody typed
+`git tag v0.2.0`. That was re-decided deliberately, and the new shape is
+`code → push → ci → merge the release pull request → published release`, with
+`cd` tagging the merge and starting the build.
+
+What changed is *where* the human decision sits, not whether there is one. A
+release still requires a person to read a diff and merge it; it no longer
+requires them to also remember a command afterwards. The failure the old wording
+was guarding against — "auto-tagging on merge turns every merge into a release" —
+is not what this does: only the merge of a pull request whose commit subject is
+`chore(release): publish vX.Y.Z` is tagged, and that pull request exists only
+because `cd` proposed a version, so an ordinary merge to `main` publishes
+nothing.
+
+**What this entry still refuses, and it is the substance of it:** nothing writes
+to `main`, nothing force-pushes a branch somebody is working on, and the only
+branch the automation touches is `release/next`, which it owns and deletes after
+the merge. `super-linter` was deleted for pushing commits onto *your* branch
+while you worked. That is a different act from proposing a branch of its own, and
+the distinction is the one this entry was always about.
+
+**What it costs, stated because it is a real loss.** A merge is now irreversible
+in the way a publication is: the tag, the six archives, the checksums and the
+`ghcr.io` image all follow from it with nothing in between. The compensating
+controls are that the pull request is small and reviewable by construction — a
+version, the lockfile that follows from it, a changelog section — and that
+`release` re-checks the tag against the manifest before it creates anything.
+The thing to be careful about is the merge button, which is the correct place for
+care to be needed.
+
 ## R12 — Third-party actions pinned by mutable tag
 
 **Cheap now, and it is the one supply-chain surface the project has today.**
@@ -668,22 +730,22 @@ as noise (`ENGINEERING.md` offers that exit), the SHA pins must be replaced by
 tags in the same commit, so the pins never outlive the automation that maintains
 them.
 
-**The write permissions have arrived, and the precondition held.** `release-plz`
-and `release` are in the repository. Between them they hold `contents: write`,
+**The write permissions have arrived, and the precondition held.** `cd` and
+`release` are in the repository. Between them they hold `contents: write`,
 `pull-requests: write` and `packages: write`, every one declared on the job that
 needs it and none at the top of a workflow, so the moment this paragraph
 describes — a moved tag minting releases in this project's name — is now the
 moment being defended against rather than one being predicted.
 
-The count of third-party actions is **three**, and the third is
-`release-plz/action`, pinned at commit `2eb1d8bc` with `# v0.5.131` beside it.
-It is the one place this register's own preference was not taken: `supply-chain`
-installs `cargo-deny` with `cargo install --locked` rather than reaching for an
-action, and the same move here would have kept the count at two. It was not
-taken because `release-plz` links `cargo` itself and would compile for minutes
-on every push to `main` in order to open a pull request, where `cargo-deny`
-builds in seconds. The trade is stated rather than hidden: one more publisher to
-trust, in the workflow holding `contents: write`, bought with the minutes.
+**The count of third-party actions is still two**, which is the outcome this
+entry would have asked for and not the one it expected. It was briefly three:
+`release-plz/action` arrived with the release pipeline, holding the largest
+permission set in the repository, and left again when release-plz was replaced by
+a shell script for an unrelated reason (`ENGINEERING.md`, and its issue #2595).
+Neither workflow that holds a write token now uses a third-party action at all —
+`cd` reads git and writes three files, `release` publishes with `gh` and builds
+its image with `docker`, all of which the runner already has. `actions/checkout`
+and `Swatinem/rust-cache` remain the whole list.
 
 Three things reduce what a moved pin could reach, and they were chosen for that
 rather than for tidiness:
@@ -785,14 +847,14 @@ version field at `0.0.0`, which no build has, so verifying it as *this* build
 must fail with `SimVersion` — and that assertion is stable across every bump this
 entry's mechanism will ever demand.
 
-### Re-decided at M9: the number stays the human's, and `release-plz` is told so
+### Re-decided at M9: the number stays the human's, and the release automation never touches it
 
-The release pipeline brought a tool that computes version bumps from
-conventional commits, which is a second mechanism pointed at the one number this
-entry is about — and a number with two owners has none. `release-plz.toml`
-therefore carries `[[package]] name = "sim"` with `release = false`, which takes
-`sim` out of every release-plz command; the `sim-version` job is unchanged and
-remains the only thing that demands the bump.
+The release pipeline computes version bumps from conventional commits, which is a
+second mechanism pointed at the one number this entry is about — and a number
+with two owners has none. So it does not touch it: `cd.yml` raises
+`[workspace.package] version`, which is the number the other six crates inherit,
+and `sim/Cargo.toml` is not a file it opens. The `sim-version` job in
+`determinism.yml` is unchanged and remains the only thing that demands the bump.
 
 The choice was between granularity and convenience, and the two reasons it went
 this way are both about meaning:
@@ -807,15 +869,16 @@ this way are both about meaning:
   semver and a minor under this rule, so the tool would have quietly overruled
   the rule while appearing to enforce it.
 
-**The cost, which belongs beside the imperfections listed above.** release-plz
-attributes a commit to the crate whose files it touches, so a change confined to
-`sim/` is attributed to a package it does not process: a release cycle containing
-only rules changes proposes no version at all, and `[workspace.package] version`
-has to be raised by hand. That is the smallest of the failure modes on this page
-— it is loud, it happens before anything is built, and `release.yml` refuses a
-tag that disagrees with the manifest — but it is a real consequence of keeping
-this number out of the tool's hands, and it is the price of the two reasons
-above.
+**The cost this had under release-plz, and why it is gone.** release-plz
+attributed a commit to the crate whose files it touched, so excluding `sim` also
+excluded rules changes from triggering a release: a cycle containing only changes
+under `sim/` proposed no version at all. That was a real price for the two
+reasons above, and it is no longer paid. `cd` decides whether a commit is
+releasable by asking whether it touched anything that ships — an exclusion list
+of `docs/`, `.github/` and the prose files — which is a different question from
+*whose version does it raise*. A rules change is releasable and raises the
+workspace version like any other; `sim`'s own number stays where this entry put
+it, in the hand of whoever changed the rules.
 
 ## R14 — Input fidelity is a property of the client, and the corpus inherits it
 

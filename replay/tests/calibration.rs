@@ -18,6 +18,7 @@
 
 use std::path::PathBuf;
 
+use replay::attest::Attested;
 use replay::calibration::{
     CalibrationState, DeviceProfileId, Estimate, Observations, Profile, SeatCalibration,
     rate_seats, sufficiency,
@@ -86,6 +87,18 @@ fn a_recording() -> Recording {
         final_state_digest: state.digest(),
         inputs: Vec::new(),
     }
+}
+/// The one way through [`Attested::of`], for tests whose subject is a different
+/// refusal.
+///
+/// `Corpus::store` takes a value only `Attested::of` builds, and what that
+/// constructor refuses is a seat the replay's input log shows playing that no
+/// session record accounts for — a playtest bot, a headless client, a script
+/// (`replay/src/attest.rs`). Every fixture here logs no seat the session record
+/// leaves empty, so the gate opens; `client/tests/playtest_bots.rs` is where it
+/// does not.
+fn attested<'a>(replay: &'a Replay, session: &'a SessionRecord) -> Attested<'a> {
+    Attested::of(replay, session, None).expect("every seat that played is a person")
 }
 
 fn a_replay(match_id: &str, participants: &[&str]) -> Replay {
@@ -294,11 +307,10 @@ fn a_profile_accumulates_across_a_participants_sessions() {
             },
         );
         corpus
-            .store(
+            .store(&attested(
                 &a_replay(id, &["alizarin"]),
                 &a_session(id, vec![seat]),
-                None,
-            )
+            ))
             .expect("store");
     }
 
@@ -376,7 +388,10 @@ fn two_devices_under_one_participant_are_two_profiles() {
             },
         );
         corpus
-            .store(&a_replay(id, &["bistre"]), &a_session(id, vec![seat]), None)
+            .store(&attested(
+                &a_replay(id, &["bistre"]),
+                &a_session(id, vec![seat]),
+            ))
             .expect("store");
     }
 
@@ -417,11 +432,10 @@ fn a_session_on_another_device_is_marked_out_of_tune_and_is_still_stored() {
         },
     );
     corpus
-        .store(
+        .store(&attested(
             &a_replay("2026-09-03-a", &["celadon"]),
             &a_session("2026-09-03-a", vec![first]),
-            None,
-        )
+        ))
         .expect("store");
     let profile = corpus
         .profile_of("celadon", &label("mouse-a"), None)
@@ -459,7 +473,7 @@ fn a_session_on_another_device_is_marked_out_of_tune_and_is_still_stored() {
     // on it, because blocking a player for a calibration reason is the shortest
     // path to an anti-cheat that degrades honest play (`docs/SCOPE.md`).
     corpus
-        .store(&a_replay("2026-09-11-a", &["celadon"]), &session, None)
+        .store(&attested(&a_replay("2026-09-11-a", &["celadon"]), &session))
         .expect("a mismatched seat must not stop a match being stored");
     assert_eq!(
         corpus.session_of(&filed).expect("the stored record").seats[0].calibration(),
@@ -502,7 +516,10 @@ fn a_seat_with_no_calibration_at_all_is_stored_without_complaint() {
     assert!(!session.seats[0].calibration().scale_is_known());
 
     corpus
-        .store(&a_replay("2026-09-03-a", &["alizarin"]), &session, None)
+        .store(&attested(
+            &a_replay("2026-09-03-a", &["alizarin"]),
+            &session,
+        ))
         .expect("an uncalibrated seat must not stop a match being stored");
     assert_eq!(corpus.matches().expect("matches").len(), 1);
 }

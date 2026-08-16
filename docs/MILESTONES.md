@@ -27,7 +27,7 @@ neither a calendar nor a person: its release pipeline exists and two items of it
 exit criterion — the SBOM and the provenance attestation — do not, which the M9
 section states rather than rounds off. The workspace exists with
 its seven crates; the toolchain is pinned; `ci`, `pr-hygiene`, `determinism`,
-`supply-chain`, `release-plz` and `release` are the workflows, and the last two
+`supply-chain`, `cd` and `release` are the workflows, and the last two
 are the first to hold write permissions — job-scoped, with every third-party
 action pinned by commit SHA (`RISKS.md` R12); `LICENSE`,
 `SECURITY.md` and `CONTRIBUTING.md` exist. The template's super-linter, its
@@ -539,6 +539,39 @@ Four things the criterion did not say, which the work had to decide:
   instrument; `replay withdraw` and `replay audit` are the mechanism, and
   `replay/tests/withdrawal.rs` exercises the audit by breaking the withdrawal
   three ways.
+
+### The playtest bot, which is a tool and not a milestone
+
+A nine-seat game is unplayable until nine people are in a room, and every
+question a playable client raises — does a fight read on the screen, does the
+prediction feel right, does a tower kill you at the range you thought — is a
+question one person could answer on a Tuesday if the other eight seats were
+filled. So they can be: `client::bot` composes an `Action` per tick from the view
+the server sent it, `moba-bots` drives eight of them over the ordinary transport,
+and `moba-server --players 9` is the seat count that lets a match of nine start.
+
+**It is a playtest tool and it is three things it is not**, stated here because
+this is the document a reader checks a claim against:
+
+- It **does not satisfy this milestone's exit criterion**, which asks for three
+  humans on two operating systems. That clause is a fact about a calendar, no
+  program stands in for it, and M4 stays open exactly as it was.
+- It **produces no corpus data**, and that is mechanical rather than a promise. A
+  bot seat writes no session part, and `replay::Attested` — the only value
+  `Corpus::store` accepts, with one constructor — refuses a match whose input log
+  shows a seat playing that no session record accounts for.
+  `client/tests/playtest_bots.rs` executes both halves: a bot-filled match is
+  refused by name, and the same pipeline stores the match with no bot in it.
+- It **calibrates nothing.** The lobby measures a hand crossing a menu and there
+  is no hand.
+
+It lives in `client` and not in `cheat-client`, which is a boundary rather than a
+preference: `docs/ARCHITECTURE.md` makes that crate the machine this project
+assumes is compromised, `ci` asserts that no production binary links it, and
+`docs/RISKS.md` R7 refuses to hand anybody a usable attacker. `cheat_client::bot`
+stays where it is, `client::bot` reimplements the eighty lines it needed, and
+neither synthesises device input — R7's line, and the only part of a bot that
+would generalise to another game.
 
 And one thing M4 found in M3's own criterion, which is the reason to run a
 criterion under conditions it has never seen. `LocalWorld::digest` hashed the
@@ -1174,7 +1207,7 @@ Deliberately last. Nothing before M4 is worth distributing, and release
 automation built before there is anything to release is automation you maintain
 for free.
 
-Work: `release-plz` for version bump, changelog, and GitHub Release (with
+Work: automated version bump, changelog, and GitHub Release (with
 `publish = false` on every crate — nothing here belongs on crates.io);
 multi-platform binaries for client and server; a distroless non-root amd64
 server image on ghcr.io; SBOM; provenance attestation.
@@ -1191,15 +1224,16 @@ time: **two of the six things the exit criterion asks for are not in the
 repository.** What is there is everything needed to put a binary in a tester's
 hands, which is what the milestone was cut down to.
 
-Delivered, and it is `release-plz.toml`, `.github/workflows/release-plz.yml`,
+Delivered, and it is `.github/workflows/cd.yml`,
 `.github/workflows/release.yml`, `server/Dockerfile` and `.dockerignore`:
 
-- `release-plz` in release-pull-request mode. It computes the bump from
-  conventional commits and the paths they touch, writes `CHANGELOG.md`, and
-  opens a pull request. It does not tag and does not push to `main`;
-  `ENGINEERING.md`'s "what stays manual" table and `RISKS.md` R11 are why, and
-  every tagging and publishing switch in its configuration is off rather than
-  merely unused.
+- `cd`, which turns a push to `main` into either a release pull request or a
+  published release. It computes the bump from conventional commits and the paths
+  they touch, writes the version, the lockfile and `CHANGELOG.md`, and opens one
+  pull request; merging that pull request is what tags and publishes. It writes
+  to no branch but its own. `RISKS.md` R11 records why the human act is the merge
+  rather than the tag, which is a decision re-taken at M9 rather than the one
+  this milestone was planned with.
 - A `release` workflow on tag `v*` building client and server for
   `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc` and
   `aarch64-apple-darwin` with `--locked`, a `SHA256SUMS` over an enumerated list
@@ -1218,18 +1252,26 @@ Delivered, and it is `release-plz.toml`, `.github/workflows/release-plz.yml`,
   absence is the honest state rather than an oversight — `ENGINEERING.md` says
   why a permission should not arrive before the thing that uses it.
 
-Two things are known about the delivered half that its green YAML does not say,
-because neither can be observed before the first real tag. `release-plz` runs
-`cargo package` to decide whether a crate changed, and on a workspace whose
-internal dependencies are path-only — where `sim`, `replay`, `protocol`,
-`client` and `server` are also the names of unrelated crates on crates.io — that
-call fails from the second release onward (release-plz issue #2595, open). And
-the changelog it generated over this repository's history caught five of about
-twenty changes. Neither is a reason to hold the milestone open, since the
-fallback for both is the manual step `ENGINEERING.md` already records — the
-narrative of a release is a person's job — but a reader who finds a thin
-changelog in a release pull request should know it is this and not an empty
-month.
+**`v0.1.0` exists, and the tag half of this is no longer a claim about YAML.**
+One tag produced six archives across the three targets, a `SHA256SUMS` over the
+enumerated set, the image on `ghcr.io`, and the release published from the
+changelog section. It also produced one failure first, which is the part worth
+recording: a tag pushed before the release pull request was merged was refused by
+the `draft` job — no draft, no build, no asset — because `CHANGELOG.md` had no
+section for the version the tag named. That check exists for exactly the mistake
+the manual step makes possible, and it made it on the first try.
+
+**`v0.1.0` was released by `release-plz`, and nothing after it could have been.**
+release-plz decides whether a crate changed by running `cargo package` against
+the previous tag, and on a workspace whose internal dependencies are path-only —
+where `sim`, `replay`, `protocol`, `client` and `server` are also the names of
+unrelated crates on crates.io — that call fails from the second release onward
+(its issue #2595, open). It was reproduced against this repository at `v0.1.0`
+rather than predicted, and its changelog had already caught five of about twenty
+changes across this history. So the release-pull-request half is now `cd.yml`, a
+shell script that reads the same conventional commits and asks the simpler
+question this repository can answer: did this commit touch anything that ships.
+The build half was not touched by that replacement — it is the one that ran.
 
 ---
 
@@ -1244,7 +1286,7 @@ month.
 | `cargo-deny` | M3 | Meaningless with zero dependencies |
 | Renovate | M3 | Same |
 | Coverage | M8, unGated | See below |
-| `release-plz`, Docker | M9 | Nothing to release before then |
+| Release automation (`cd`), Docker | M9 | Nothing to release before then |
 | SBOM, provenance attestation | After M9's release pipeline, and M9 stays open until they land | Same reason, one step further: they describe a release, so they cannot precede one. They are the two items of M9's exit criterion the repository does not contain |
 | Reproducible builds | Never | See `ENGINEERING.md` |
 | `cargo-audit` | Never | `cargo-deny`'s advisories check reads the same RustSec database; running both is one more automation for zero information |

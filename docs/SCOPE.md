@@ -277,6 +277,28 @@ producing statistically human timing and is out of the adversary model by
 construction. A larger file does not move a ceiling that was never about file
 size.
 
+**And there is a third case between those two, which this project now creates
+for itself.** A **playtest bot** exists — `client::bot`, driven by `moba-bots` —
+so that one or two people can start a nine-seat match before nine of them are
+free. It speaks the protocol, so the authority records its inputs exactly as it
+records a person's; it touches no device, so it writes no session part. A seat
+like that is neither of the two cases above: it is not a silent seat, because
+there is no seat record to be silent, and it is not a mouse-moving bot, because
+there is no mouse. What would have filed it is an operator naming only the seat a
+person sat in — two operator-written files agreeing perfectly about a match whose
+circumstances were eight bots.
+
+So the refusal is stated over the one artefact the operator does not write:
+`replay::Attested` reads the **seats that appear in the replay's own input log**,
+which is inside the signature, and refuses a match in which any of them has no
+session record behind it. It is the only value `Corpus::store` accepts and
+`Attested::of` is its only constructor, which is the shape this project already
+gives every separable consent — filing a match a program played is not a mistake
+to avoid, it is a value that cannot be built. It catches the headless client the
+same way, and for the same reason.
+
+That narrows the gap by one case and moves nothing about the ceiling:
+
 So **what guarantees a match is human is supervision — a fact about a person, not
 a property of the format.** Somebody was in the room. That is a real guarantee and
 it is the only one there is, which is why it is written down rather than

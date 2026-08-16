@@ -35,8 +35,16 @@
 //! a file, and `replay::manifest::Commitment::Absent` is a legitimate named state
 //! that says exactly what happened.
 //!
+//! # Seats
+//!
+//! `--players <n>` is how many seats must be filled and ready before the first
+//! tick runs, three by default — M4's shape, one team of the three. A playtest
+//! that fills the other seats with `moba-bots` wants nine, and the flag is what
+//! says so; the server refuses a join once the match has started, so a count
+//! below the number of clients that turn up leaves somebody outside.
+//!
 //! Usage:
-//! `moba-server [ticks] [tick-ms] [signing-key] [replay-out] [parts-dir] [telemetry-out] [wait-s]`.
+//! `moba-server [ticks] [tick-ms] [signing-key] [replay-out] [parts-dir] [telemetry-out] [wait-s] [--players n]`.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -54,6 +62,14 @@ use server::{MatchConfig, net::Listener};
 /// and nine people copying a file off nine laptops are not. It is a wait rather
 /// than a prompt so that the same binary runs unattended in a harness.
 const DEFAULT_WAIT_SECONDS: u64 = 60;
+
+/// Seats a match waits for when nobody says otherwise.
+///
+/// Three, which is M4's shape — one team of the three, the other six seats
+/// unoccupied, a state the rules already handle. `--players 9` is what a
+/// playtest with `moba-bots` in the other seats wants, and it is a flag rather
+/// than a new default because the default is what the exit criterion runs.
+const DEFAULT_PLAYERS: usize = 3;
 
 /// The seats that sent something, which is what the authority knows about who
 /// was playing.
@@ -129,9 +145,42 @@ fn collect(parts: &Path, expected: &[usize], wait: Duration) -> Option<Telemetry
     }
 }
 
+/// The value of `--name`, if it was given.
+///
+/// The positional list below is what this binary has always taken and it stays
+/// positional; a seat count is not an eighth position, because the seven that
+/// exist are the recording pipeline's and this one is about the match. It is
+/// pulled out of the arguments before they are read in order, so the two do not
+/// interleave.
+fn flag<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
+    let at = arguments.iter().position(|argument| argument == name)?;
+    arguments.get(at.checked_add(1)?).map(String::as_str)
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
-    let mut arguments = std::env::args().skip(1);
+    let given: Vec<String> = std::env::args().skip(1).collect();
+    let players = match flag(&given, "--players") {
+        None => DEFAULT_PLAYERS,
+        Some(value) => match value.parse::<usize>() {
+            Ok(players) if (1..=sim::PLAYER_COUNT).contains(&players) => players,
+            _ => {
+                eprintln!(
+                    "moba-server: --players takes a number of seats between 1 and {}",
+                    sim::PLAYER_COUNT
+                );
+                return ExitCode::from(2);
+            }
+        },
+    };
+    let flagged: Vec<String> = ["--players"]
+        .into_iter()
+        .filter_map(|name| flag(&given, name).map(str::to_owned))
+        .collect();
+    let mut arguments = given
+        .iter()
+        .filter(|argument| !argument.starts_with("--") && !flagged.contains(argument))
+        .cloned();
     let ticks: u32 = arguments
         .next()
         .map_or(Ok(1000), |value| value.parse())
@@ -191,12 +240,13 @@ async fn main() -> ExitCode {
             .collect::<String>()
     );
     println!("ticks {ticks}");
+    println!("players {players}");
 
     match listener
         .host(
             MatchConfig {
                 seed: 0x00C0_FFEE_0D15_EA5E,
-                players: 3,
+                players,
             },
             Duration::from_millis(period_ms),
             ticks,
